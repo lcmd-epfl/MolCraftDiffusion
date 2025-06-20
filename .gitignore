@@ -1,0 +1,15 @@
+__pycache__
+*.egg-info
+/.coverage
+/dist
+/build
+docs/build
+docs/source/_autosummary
+*.db
+*.csv
+*.out
+
+wandb/
+outputs/
+training/
+lightning_logs/
