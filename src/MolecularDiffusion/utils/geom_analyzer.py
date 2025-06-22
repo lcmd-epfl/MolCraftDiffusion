@@ -1,24 +1,23 @@
 from typing import Dict, List, Optional, Tuple
 
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-import wandb
-from rdkit import Chem
-from ase.data import covalent_radii
-from torch_geometric.nn import radius_graph
-from torch_geometric.utils import to_networkx
-from torch_geometric.data import Data
-import networkx as nx
 import os
 
 import ase
+import matplotlib.pyplot as plt
 import numpy as np
+import networkx as nx
 import scipy as sp
+import torch
+import wandb
 from ase import neighborlist
+from ase.data import covalent_radii
 from ase.io.extxyz import read_xyz
+from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import MolToSmiles as mol2smi
+from torch_geometric.nn import radius_graph
+from torch_geometric.utils import to_networkx
+from torch_geometric.data import Data
 
 from cell2mol.xyz2mol import xyz2mol
 
@@ -600,67 +599,6 @@ def build_xae_molecule(positions, atom_types, atom_decoder):
     return X, A, E
 
 
-def random_rotation(x):
-    bs, n_nodes, n_dims = x.size()
-    device = x.device
-    angle_range = torch.pi * 2
-    if n_dims == 2:
-        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
-        cos_theta = torch.cos(theta)
-        sin_theta = torch.sin(theta)
-        R_row0 = torch.cat([cos_theta, -sin_theta], dim=2)
-        R_row1 = torch.cat([sin_theta, cos_theta], dim=2)
-        R = torch.cat([R_row0, R_row1], dim=1)
-
-        x = x.transpose(1, 2)
-        x = torch.matmul(R, x)
-        x = x.transpose(1, 2)
-
-    elif n_dims == 3:
-
-        # Build Rx
-        Rx = torch.eye(3).unsqueeze(0).repeat(bs, 1, 1).to(device)
-        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
-        cos = torch.cos(theta)
-        sin = torch.sin(theta)
-        Rx[:, 1:2, 1:2] = cos
-        Rx[:, 1:2, 2:3] = sin
-        Rx[:, 2:3, 1:2] = -sin
-        Rx[:, 2:3, 2:3] = cos
-
-        # Build Ry
-        Ry = torch.eye(3).unsqueeze(0).repeat(bs, 1, 1).to(device)
-        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
-        cos = torch.cos(theta)
-        sin = torch.sin(theta)
-        Ry[:, 0:1, 0:1] = cos
-        Ry[:, 0:1, 2:3] = -sin
-        Ry[:, 2:3, 0:1] = sin
-        Ry[:, 2:3, 2:3] = cos
-
-        # Build Rz
-        Rz = torch.eye(3).unsqueeze(0).repeat(bs, 1, 1).to(device)
-        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
-        cos = torch.cos(theta)
-        sin = torch.sin(theta)
-        Rz[:, 0:1, 0:1] = cos
-        Rz[:, 0:1, 1:2] = sin
-        Rz[:, 1:2, 0:1] = -sin
-        Rz[:, 1:2, 1:2] = cos
-
-        x = x.transpose(1, 2)
-        x = torch.matmul(Rx, x)
-        # x = torch.matmul(Rx.transpose(1, 2), x)
-        x = torch.matmul(Ry, x)
-        # x = torch.matmul(Ry.transpose(1, 2), x)
-        x = torch.matmul(Rz, x)
-        # x = torch.matmul(Rz.transpose(1, 2), x)
-        x = x.transpose(1, 2)
-    else:
-        raise Exception("Not implemented Error")
-
-    return x.contiguous()
-
 
 def check_consistency_bond_dictionaries():
     for bonds_dict in [bonds1, bonds2, bonds3]:
@@ -989,4 +927,3 @@ class BasicMolecularMetrics(object):
         uniqueness = uniqueness
         novelty = novelty
         return [validity, uniqueness, novelty], unique
-

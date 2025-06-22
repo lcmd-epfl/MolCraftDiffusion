@@ -29,6 +29,66 @@ def sample_gaussian_with_mask(size, device, node_mask, std=1.0):
     return x_masked
 
 
+def random_rotation(x):
+    bs, n_nodes, n_dims = x.size()
+    device = x.device
+    angle_range = torch.pi * 2
+    if n_dims == 2:
+        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
+        cos_theta = torch.cos(theta)
+        sin_theta = torch.sin(theta)
+        R_row0 = torch.cat([cos_theta, -sin_theta], dim=2)
+        R_row1 = torch.cat([sin_theta, cos_theta], dim=2)
+        R = torch.cat([R_row0, R_row1], dim=1)
+
+        x = x.transpose(1, 2)
+        x = torch.matmul(R, x)
+        x = x.transpose(1, 2)
+
+    elif n_dims == 3:
+
+        # Build Rx
+        Rx = torch.eye(3).unsqueeze(0).repeat(bs, 1, 1).to(device)
+        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
+        cos = torch.cos(theta)
+        sin = torch.sin(theta)
+        Rx[:, 1:2, 1:2] = cos
+        Rx[:, 1:2, 2:3] = sin
+        Rx[:, 2:3, 1:2] = -sin
+        Rx[:, 2:3, 2:3] = cos
+
+        # Build Ry
+        Ry = torch.eye(3).unsqueeze(0).repeat(bs, 1, 1).to(device)
+        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
+        cos = torch.cos(theta)
+        sin = torch.sin(theta)
+        Ry[:, 0:1, 0:1] = cos
+        Ry[:, 0:1, 2:3] = -sin
+        Ry[:, 2:3, 0:1] = sin
+        Ry[:, 2:3, 2:3] = cos
+
+        # Build Rz
+        Rz = torch.eye(3).unsqueeze(0).repeat(bs, 1, 1).to(device)
+        theta = torch.rand(bs, 1, 1).to(device) * angle_range - np.pi
+        cos = torch.cos(theta)
+        sin = torch.sin(theta)
+        Rz[:, 0:1, 0:1] = cos
+        Rz[:, 0:1, 1:2] = sin
+        Rz[:, 1:2, 0:1] = -sin
+        Rz[:, 1:2, 1:2] = cos
+
+        x = x.transpose(1, 2)
+        x = torch.matmul(Rx, x)
+        # x = torch.matmul(Rx.transpose(1, 2), x)
+        x = torch.matmul(Ry, x)
+        # x = torch.matmul(Ry.transpose(1, 2), x)
+        x = torch.matmul(Rz, x)
+        # x = torch.matmul(Rz.transpose(1, 2), x)
+        x = x.transpose(1, 2)
+    else:
+        raise Exception("Not implemented Error")
+
+    return x.contiguous()
 
 
 

@@ -1,8 +1,7 @@
 import logging
 import warnings
 
-from torchdrug.core import Registry as R
-from torchdrug.utils import pretty
+from MolecularDiffusion.utils import pretty
 
 
 class LoggerBase(object):
@@ -34,7 +33,6 @@ class LoggerBase(object):
         raise NotImplementedError
 
 
-@R.register("core.LoggingLogger")
 class LoggingLogger(LoggerBase):
     """
     Log outputs with the builtin logging module of Python.
@@ -72,7 +70,6 @@ class LoggingLogger(LoggerBase):
         self.logger.warning(pretty.format(config, compact=True))
 
 
-@R.register("core.WandbLogger")
 class WandbLogger(LoggingLogger):
     """
     Log outputs with `Weights and Biases`_ and track the experiment progress.
