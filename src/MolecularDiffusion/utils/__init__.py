@@ -45,7 +45,8 @@ from .torch import (
     clone,
     mean,
     cat,
-    stack
+    stack,
+    seed_everything
 )
 
 from .file import (
@@ -105,6 +106,7 @@ __all__ = [
     "mean",
     "cat",
     "stack",
+    "seed_everything",
     "download",
     "smart_open",
     "extract",

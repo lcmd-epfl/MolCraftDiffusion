@@ -61,6 +61,7 @@ class ModelTaskFactory:
     """
     def __init__(
         self,
+        task_type: str,
         train_set,
         atom_vocab,
         task_names,
@@ -70,7 +71,9 @@ class ModelTaskFactory:
         act_fn_in: torch.nn.Module = torch.nn.SiLU(),
         act_fn_out: torch.nn.Module = torch.nn.SiLU(),
         chkpt_path: str = None,
+        **kwargs
     ):
+        self.task_type = task_type
         self.train_set = train_set
         self.atom_vocab = atom_vocab
         self.task_names = task_names
@@ -89,6 +92,9 @@ class ModelTaskFactory:
         
         # checkpoint path
         self.chkpt_path = chkpt_path
+        
+        self.kwargs = kwargs
+
 
     def build(self, task_type: str, **kwargs):
         """
@@ -261,115 +267,4 @@ class ModelTaskFactory:
         return self.task
 
 
-
-
-def analyze_and_save(
-    model,
-    epoch,
-    n_samples=1000,
-    batch_size=100,
-    logger="logging",
-    path_save="samples",
-):
-    DIST_THRESHOLD = 3
-    DIST_RELAX_BOND = 0.25
-    print(f"Analyzing molecule stability at epoch {epoch}...")
-    batch_size = min(batch_size, n_samples)
-    # assert n_samples % batch_size == 0
-    molecules = {"one_hot": [], "x": [], "node_mask": []}
-    model.max_n_nodes = 150
-    for i in tqdm(range(int(n_samples / batch_size)), total=int(n_samples / batch_size)):
-        nodesxsample = model.node_dist_model.sample(batch_size)
-        try:
-            one_hot, charges, x, node_mask = model.sample(nodesxsample=nodesxsample)
-            keep = charges > 0
-            keep = keep.squeeze()
-            one_hot = one_hot[:, keep, :]
-            charges = charges[:, keep]
-            x = x[:, keep, :]
-            molecules["one_hot"].append(one_hot.detach().cpu().squeeze(0))
-            molecules["x"].append(x.detach().cpu().squeeze(0))
-            molecules["node_mask"].append(node_mask.detach().cpu().squeeze(0))
-
-            save_xyz_file(
-                path_save,
-                one_hot,
-                x,
-                atom_decoder=atom_vocab,
-            )
-            path_xyz = os.path.join(path_save, f"molecule_000.xyz")
-            shutil.move(
-                path_xyz,
-                os.path.join(path_save, f"molecule_{str(i+1).zfill(4)}.xyz"),
-            )
-
-        except Exception as e:
-            print(f"Fuck {e}")
-        
-    xyzs = glob.glob(f"{path_save}/*xyz")
-    is_valid_strict = torch.zeros(len(xyzs), dtype=torch.float16)
-    is_valid_relax = torch.zeros(len(xyzs), dtype=torch.float16)
-    is_fully_connected = torch.zeros(len(xyzs), dtype=torch.float16)
-    percent_atom_valids = torch.zeros(len(xyzs), dtype=torch.float16)
-    for idx, xyz in enumerate(tqdm(xyzs, desc="Processing XYZ files", total=len(xyzs))):
-        try:
-            cartesian_coordinates_tensor, atomic_numbers_tensor = read_xyz_file(xyz)
-            data = create_pyg_graph(cartesian_coordinates_tensor, atomic_numbers_tensor, r=DIST_THRESHOLD)
-            data = correct_edges(data, d_relax=DIST_RELAX_BOND)
-            #TODO change 
-            (is_valid, percent_atom_valid, 
-            num_components, bad_atoms, to_be_recheck_flag) = check_validity_v0(data, 
-                                                                            angle_relax=20, 
-                                                                            verbose=True)
-        
-            if is_valid:
-                is_valid_strict[idx] = 1
-                is_valid_relax[idx] = 1
-            else:
-                if to_be_recheck_flag:
-                    is_valid_strict[idx] = 0
-                    is_valid_relax[idx] = 1
-                else:
-                    is_valid_strict[idx] = 0
-                    is_valid_relax[idx] = 0
-            if num_components == 1:
-                is_fully_connected[idx] = 1
-            else:
-                is_fully_connected[idx] = 0
-            
-            percent_atom_valids[idx] = percent_atom_valid
-        except Exception as e:  
-            print(f"Error: {e}")
-            is_valid_strict[idx] = 0
-            is_valid_relax[idx] = 0
-            is_fully_connected[idx] = 0
-            percent_atom_valids[idx] = 0
-    validity_dict = {
-        "Validity Strict": is_valid_strict.mean().item(),
-        "Validity Relax": is_valid_relax.mean().item(),
-        "Fully-connected": is_fully_connected.mean().item(),
-        "Percent Atom Valid": percent_atom_valids.mean().item(),
-    }
-
-    validity_dict_save = {
-        "Filename": xyzs,
-        "Validity Strict": is_valid_strict,
-        "Validity Relax": is_valid_relax,
-        "Fully-connected": is_fully_connected,
-        "Percent Atom Valid": percent_atom_valids,
-    }
-    
-    
-    df = pd.DataFrame(validity_dict_save)
-    df.to_csv(f"{path_save}/validity.csv", index=False)
-    
-
-    if logger == "wandb":
-        wandb.log(validity_dict)
-        #    return validity_dict
-    elif logger == "logging":
-        for key, value in validity_dict.items():
-            print(f"{key}: {value}")
-    
-    return validity_dict
 

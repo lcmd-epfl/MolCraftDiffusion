@@ -3,7 +3,12 @@
 import torch
 
 from MolecularDiffusion import data # TODO
+import os
+import numpy as np
+import random
 
+MIN_SEED_VALUE = 0
+MAX_SEED_VALUE = 2**32 - 1
 
 def cpu(obj, *args, **kwargs):
     """
@@ -111,3 +116,40 @@ def stack(objs, *args, **kwargs):
     raise TypeError("Can't perform stack over object type `%s`" % type(obj))
 
 
+def seed_everything(seed: int = None, workers: bool = False, verbose: bool = True) -> int:
+    """Sets seed for reproducibility across torch, numpy, and random modules.
+
+    Args:
+        seed (int, optional): The seed to use. If None, it checks 'PL_GLOBAL_SEED' in env or defaults to 0.
+        workers (bool): Whether to set the 'PL_SEED_WORKERS' env variable.
+        verbose (bool): If True, logs the chosen seed.
+    """
+    if seed is None:
+        env_seed = os.environ.get("PL_GLOBAL_SEED", None)
+        try:
+            seed = int(env_seed) if env_seed is not None else 0
+        except ValueError:
+            seed = 0
+            if verbose:
+                print(f"Invalid env seed {repr(env_seed)}; defaulting to 0")
+    else:
+        seed = int(seed)
+
+    if not (MIN_SEED_VALUE <= seed <= MAX_SEED_VALUE):
+        if verbose:
+            print(f"Seed {seed} out of bounds; must be between {MIN_SEED_VALUE} and {MAX_SEED_VALUE}")
+        seed = 0
+
+    if verbose:
+        print(f"Setting seed to {seed}")
+
+    os.environ["PL_GLOBAL_SEED"] = str(seed)
+    os.environ["PL_SEED_WORKERS"] = f"{int(workers)}"
+
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
+    return seed

@@ -1,0 +1,22 @@
+_target_: MolecularDiffusion.runmodes.train.DataModule
+filename: /home/pregabalin/RF/blue_edm/data/qm9/dsgdb9nsd_ready.csv
+task_type: diffusion
+atom_vocab: [H,B,C,N,O,F,Al,Si,P,S,Cl,As,Se,Br,I,Hg,Bi]
+with_hydrogen: True
+node_feature: None
+max_atom: 29
+xyz_dir: /home/pregabalin/RF/blue_edm/data/qm9/dsgdb9nsd/
+coord_file: None
+natoms_file: None
+forbidden_atom: None
+data_efficient_collator: True
+train_ratio: 0.8,
+load_pkl: False
+save_pkl: True
+data_type: pointcloud
+batch_size: 32
+num_workers: 0
+
+
+
+
