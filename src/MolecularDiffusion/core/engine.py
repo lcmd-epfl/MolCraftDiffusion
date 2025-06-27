@@ -226,7 +226,7 @@ class Engine(core.Configurable):
         if batch_size != self.batch_size:
             logger.warning(f"Batch size adjusted to {batch_size} for training")
 
-        dataloader = data.DataLoader(
+        dataloader = data.dataloader.DataLoader(
             self.train_set,
             batch_size,
             sampler=sampler,
@@ -393,7 +393,7 @@ class Engine(core.Configurable):
         if batch_size != self.batch_size:
             logger.warning(f"Batch size adjusted to {batch_size} for split {split}")
 
-        dataloader = data.DataLoader(
+        dataloader = data.dataloader.DataLoader(
             test_set,
             batch_size,
             sampler=sampler,

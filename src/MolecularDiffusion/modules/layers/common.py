@@ -1,51 +1,77 @@
 import torch
 import torch.nn as nn
-import math
+from torch.nn import functional as F
 
+import math
+from collections.abc import Sequence
 
 class MLP(nn.Module):
     """
-    Multi-Layer Perceptron (MLP) module consisting of:
-      - A linear layer to expand the input dimension by 4x
-      - GELU activation
-      - A linear projection back to the original dimension
-      - Dropout for regularization
+    Multi-layer Perceptron.
+    Note there is no batch normalization, activation or dropout in the last layer.
 
-    Args:
-        config: An object with attributes:
-            - n_embd (int): The embedding dimension of the input and output.
-            - bias (bool): Whether to use bias in linear layers.
-            - dropout (float): Dropout probability.
+    Parameters:
+        input_dim (int): input dimension
+        hidden_dim (list of int): hidden dimensions
+        short_cut (bool, optional): use short cut or not
+        batch_norm (bool, optional): apply batch normalization or not
+        activation (str or function, optional): activation function
+        dropout (float, optional): dropout rate
     """
 
-    def __init__(self, config):
-        """
-        Initializes the MLP module with the given configuration.
+    def __init__(
+        self,
+        input_dim,
+        hidden_dims,
+        short_cut=False,
+        batch_norm=False,
+        activation="relu",
+        dropout=0,
+    ):
+        super(MLP, self).__init__()
 
-        Args:
-            config: An object with attributes n_embd, bias, and dropout.
-        """
-        super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
-        self.dropout = nn.Dropout(config.dropout)
+        if not isinstance(hidden_dims, Sequence):
+            hidden_dims = [hidden_dims]
+        self.dims = [input_dim] + hidden_dims
+        self.short_cut = short_cut
 
-    def forward(self, x):
-        """
-        Forward pass of the MLP.
+        if isinstance(activation, str):
+            self.activation = getattr(F, activation)
+        else:
+            self.activation = activation
+        if dropout:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = None
 
-        Args:
-            x (torch.Tensor): Input tensor of shape (..., n_embd)
+        self.layers = nn.ModuleList()
+        for i in range(len(self.dims) - 1):
+            self.layers.append(nn.Linear(self.dims[i], self.dims[i + 1]))
+        if batch_norm:
+            self.batch_norms = nn.ModuleList()
+            for i in range(len(self.dims) - 2):
+                self.batch_norms.append(nn.BatchNorm1d(self.dims[i + 1]))
+        else:
+            self.batch_norms = None
 
-        Returns:
-            torch.Tensor: Output tensor of the same shape as input.
-        """
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
-        x = self.dropout(x)
-        return x
+    def forward(self, input):
+        """"""
+        layer_input = input
+
+        for i, layer in enumerate(self.layers):
+            hidden = layer(layer_input)
+            if i < len(self.layers) - 1:
+                if self.batch_norms:
+                    x = hidden.flatten(0, -2)
+                    hidden = self.batch_norms[i](x).view_as(hidden)
+                hidden = self.activation(hidden)
+                if self.dropout:
+                    hidden = self.dropout(hidden)
+            if self.short_cut and hidden.shape == layer_input.shape:
+                hidden = hidden + layer_input
+            layer_input = hidden
+
+        return hidden
 
 
 class SinusoidalPositionEmbedding(nn.Module):

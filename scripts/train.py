@@ -5,7 +5,7 @@ from typing import Any, Dict,  Optional, Tuple
 import hydra
 import rootutils
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # ------------------------------------------------------------------------------------ #
@@ -84,16 +84,18 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         seed_everything(cfg.seed, workers=True)
 
-    log.info(f"Instantiating datamodule <{cfg.data.datamodule._target_}>")
+    log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module: DataModule = hydra.utils.instantiate(
-        cfg.data.datamodule
+        cfg.data
     )
+    data_module.load()
     log.info(f"Instantiating task <{cfg.tasks._target_}>")
-    task_module: ModelTaskFactory_EGCL = hydra.utils.instantiate(cfg.tasks,
-                                                                  _recursive_=False)
-
+    
+    act_fn = hydra.utils.instantiate(cfg.tasks.act_fn)
+    task_module: ModelTaskFactory_EGCL = hydra.utils.instantiate(cfg.tasks, act_fn=act_fn)
+    task_module.build()
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    trainer_module: OptimSchedulerFactory = hydra.utils.instantiate(cfg.trainer)
+    trainer_module: OptimSchedulerFactory = hydra.utils.instantiate(cfg.trainer, parameters=task_module.task.parameters())
 
     project_name = trainer_module.output_path.split('/')[-1] if "/" in trainer_module.output_path else trainer_module.output_path
     log.info(f"Instantiating loggers... <{cfg.logger._target_}>")

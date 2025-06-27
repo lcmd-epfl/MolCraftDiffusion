@@ -16,7 +16,7 @@ normalization: False
 include_cosine: True
 norm_constant: 1.0
 normalization_factor: 1.0
-chkpt_path: None
+chkpt_path: null
 
 # specific to diffusion
 task_learn: [gap]
@@ -28,7 +28,7 @@ diffusion_steps: 900
 diffusion_noise_precision: 1e-5
 nu_arr: [2,2,2]
 mapping: ["pos", "categorical", "integer"]
-weight_classes: None
+weight_classes: null
 norm_values: [1,4,10]
 t_max: 0.7
 

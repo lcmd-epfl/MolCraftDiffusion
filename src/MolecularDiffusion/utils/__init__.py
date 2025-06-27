@@ -46,7 +46,8 @@ from .torch import (
     mean,
     cat,
     stack,
-    seed_everything
+    seed_everything,
+    get_vram_size
 )
 
 from .file import (
@@ -107,6 +108,7 @@ __all__ = [
     "cat",
     "stack",
     "seed_everything",
+    "get_vram_size",
     "download",
     "smart_open",
     "extract",

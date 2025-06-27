@@ -264,7 +264,12 @@ class ModelTaskFactory:
         print(f"\n{'='*50}\nNumber of parameters: {n_params}\n{'='*50}\n")
         
         if self.chkpt_path:    
-            chk_point = torch.load(self.chkpt_path)["model"]
-    
-        self.task.load_state_dict(chk_point, strict=False)
+            try:
+                chk_point = torch.load(self.chkpt_path)["model"]
+                print(f"Loading checkpoint from {self.chkpt_path}")
+                self.task.load_state_dict(chk_point, strict=False)
+            except FileNotFoundError:
+                print(f"Checkpoint not found at {self.chkpt_path}. Initializing model without loading.")
+          
+            
         return self.task

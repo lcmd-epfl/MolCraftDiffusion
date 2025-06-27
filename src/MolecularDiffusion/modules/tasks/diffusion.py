@@ -82,7 +82,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self,
         train_set=None,
     ):
-        self.atomic_numbers = train_set.atom_types
+        self.atomic_numbers = train_set.atom_types()
         self.atom_decoder = [
             chemical_symbols[number]
             for number in self.atomic_numbers

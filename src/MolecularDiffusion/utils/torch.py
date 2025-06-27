@@ -153,3 +153,11 @@ def seed_everything(seed: int = None, workers: bool = False, verbose: bool = Tru
     np.random.seed(seed)
 
     return seed
+
+def get_vram_size():
+    if torch.cuda.is_available():
+        vram_bytes = torch.cuda.get_device_properties(0).total_memory
+        vram_gb = vram_bytes / (1024**3)  # Convert bytes to gigabytes
+        return vram_gb
+    else:
+        return None

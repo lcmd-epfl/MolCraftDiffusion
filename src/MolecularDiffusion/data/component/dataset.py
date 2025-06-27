@@ -2,6 +2,7 @@
 import csv
 import logging
 import math
+from typing import Callable, Dict, List, Optional, Union, Any
 import os
 import pickle
 from collections import defaultdict
@@ -61,15 +62,15 @@ class GraphDataset(torch_data.Dataset):
     
     def load_csv(
         self,
-        csv_file,
-        xyz_dir,
-        xyz_field="xyz",
-        smiles_field="smiles",
-        target_fields=None,
-        atom_vocab=[],
-        node_feature=None,
-        forbidden_atoms=[],
-        verbose=0,
+        csv_file: str,
+        xyz_dir: str,
+        xyz_field: str = "xyz",
+        smiles_field: str = "smiles",
+        target_fields: Optional[List[str]] = None,
+        atom_vocab: List[str] = [],
+        node_feature: Optional[str] = None,
+        forbidden_atoms: List[str] = [],
+        verbose: int = 0,
         **kwargs,
     ):
         """
@@ -141,20 +142,20 @@ class GraphDataset(torch_data.Dataset):
     
     def load_xyz(
         self,
-        xyz_list,
-        smiles_list,
-        targets,
-        atom_vocab=[],
-        node_feature=None,
-        transform=None,
-        max_atom=200,
-        with_hydrogen=True,
-        forbidden_atoms=[],
-        edge_type="distance",
-        radius=4.0,
-        n_neigh=5,
-        verbose=0,
-        **kwargs,
+        xyz_list: List[str],
+        smiles_list: List[str],
+        targets: Dict[str, List[Union[float, int]]],
+        atom_vocab: List[str] = [],
+        node_feature: Optional[str] = None,
+        transform: Optional[Callable] = None,
+        max_atom: int = 200,
+        with_hydrogen: bool = True,
+        forbidden_atoms: List[str] = [],
+        edge_type: str = "distance",
+        radius: float = 4.0,
+        n_neigh: int = 5,
+        verbose: int = 0,
+        **kwargs: Any,
     ):
         """
         Load the dataset from XYZ and targets.
@@ -392,18 +393,18 @@ class PointCloudDataset(torch_data.Dataset):
 
     def load_xyz(
         self,
-        xyz_list,
-        smiles_list,
-        targets,
-        atom_vocab=[],
-        node_feature=None,
-        transform=None,
-        max_atom=200,
-        with_hydrogen=True,
-        forbidden_atoms=[],
-        pad_data=False,
-        verbose=0,
-        **kwargs,
+        xyz_list: List[str],
+        smiles_list: List[str],
+        targets: Dict[str, List[Union[float, int]]],
+        atom_vocab: List[str] = [],
+        node_feature: Optional[str] = None,
+        transform: Optional[Callable] = None,
+        max_atom: int = 200,
+        with_hydrogen: bool = True,
+        forbidden_atoms: List[str] = [],
+        pad_data: bool = False,
+        verbose: int = 0,
+        **kwargs: Any,
     ):
         """
         Load the dataset from XYZ and targets.
@@ -587,19 +588,19 @@ class PointCloudDataset(torch_data.Dataset):
 
     def load_npy(
         self,
-        coords,
-        natoms,
-        smiles_list,
-        targets,
-        atom_vocab=[],
-        node_feature=None,
-        transform=None,
-        max_atom=200,
-        with_hydrogen=True,
-        forbidden_atoms=[],
-        pad_data=False,
-        verbose=0,
-        **kwargs,
+        coords: torch.Tensor,
+        natoms: torch.Tensor,
+        smiles_list: List[str],
+        targets: Dict[str, List[Union[float, int]]],
+        atom_vocab: List[str] = [],
+        node_feature: Optional[str] = None,
+        transform: Optional[Callable] = None,
+        max_atom: int = 200,
+        with_hydrogen: bool = True,
+        forbidden_atoms: List[str] = [],
+        pad_data: bool = False,
+        verbose: int = 0,
+        **kwargs: Any,
     ):
         """
         Load the dataset from npy and targets.

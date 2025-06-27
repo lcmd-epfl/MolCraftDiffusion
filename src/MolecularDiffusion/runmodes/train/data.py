@@ -1,19 +1,18 @@
 import os
 import torch
-from MolecularDiffusion import data
 from MolecularDiffusion.data.dataset import pointcloud_dataset, pointcloud_dataset_pyG
 from MolecularDiffusion.data.component.dataset import PointCloudDataset
 from MolecularDiffusion.data.dataloader import pointcloud_collate, graph_collate, pointcloud_collate_v0
-
+from MolecularDiffusion.utils import get_vram_size
 
 class DataModule:
     """
-    DataModule to load, optionally save/load pickle, and split datasets for generative or predictive tasks.
+    DataModule to load, optionally save/load pickle, and split datasets for diffusion or predictive tasks.
 
     Usage:
         module = DataModule(
             filename="data.pkl",
-            task_type="generative",
+            task_type="diffusion",
             atom_vocab=atom_vocab_list,
             with_hydrogen=True,
             node_feature="geom",
@@ -77,6 +76,7 @@ class DataModule:
             self.collate_fn = graph_collate
         else:
             if self.data_efficient_collator:
+                self.VRAM_SIZE = int(get_vram_size())
                 self.collate_fn = pointcloud_collate(self.VRAM_SIZE)
             else:
                 self.collate_fn = pointcloud_collate_v0  # or None
@@ -110,7 +110,7 @@ class DataModule:
             )
         else:
             # instantiate dataset for task
-            if self.task_type == "generative":
+            if self.task_type == "diffusion":
         
                 if self.data_type == "pyg":
                     dataset = pointcloud_dataset_pyG(
@@ -155,7 +155,7 @@ class DataModule:
                     verbose=1,
                 )
             else:
-                raise ValueError(f"Unknown task_type '{self.task_type}'. Choose 'generative', 'predictive', or 'guidance'.")
+                raise ValueError(f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'predictive', or 'guidance'.")
 
             # save to pickle if requested
             if self.save_pkl:
@@ -173,7 +173,7 @@ class DataModule:
         # attach metadata
         for subset in (self.train_set, self.valid_set, self.test_set):
             subset.atom_types = dataset.atom_types
-        if self.task_type == "generative":
+        if self.task_type == "diffusion":
             for subset in (self.train_set, self.valid_set, self.test_set):
                 subset.smiles_list = dataset.smiles_list
                 subset.num_atoms = dataset.num_atoms
