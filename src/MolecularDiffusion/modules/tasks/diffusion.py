@@ -35,7 +35,7 @@ from .task import Task, _get_criterion_name, _get_metric_name
 logger = logging.getLogger(__name__)
 
 
-
+@core.Registry.register("GeomMolecularGenerative")
 class GeomMolecularGenerative(Task, core.Configurable):
 
     _option_members = {"task"}
@@ -950,7 +950,7 @@ def reverse_tensor(x):
 
 
 
-
+@core.Registry.register("GuidanceModelPrediction")
 class GuidanceModelPrediction(Task, core.Configurable):
     eps = 1e-10
     _option_members = {"task", "criterion", "metric"}

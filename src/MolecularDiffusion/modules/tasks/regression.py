@@ -12,7 +12,7 @@ from .task import Task, _get_criterion_name, _get_metric_name
 from .metrics import pearsonr, accuracy, matthews_corrcoef, area_under_prc, area_under_roc, r2, spearmanr
 
 
-
+@core.Registry.register("ProperyPrediction")
 class ProperyPrediction(Task, core.Configurable):
     eps = 1e-10
     _option_members = {"task", "criterion", "metric"}

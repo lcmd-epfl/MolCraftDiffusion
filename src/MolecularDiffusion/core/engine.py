@@ -56,7 +56,7 @@ class Engine(core.Configurable):
         train_set,
         valid_set,
         test_set,
-        optimizer,
+        optimizer=None,
         collate_fn=None,
         scheduler=None,
         batch_size=1,
@@ -79,7 +79,7 @@ class Engine(core.Configurable):
             self.rank = comm.get_rank()
 
         if collate_fn is None:
-            self.collate_fn = data.graph_collate
+            self.collate_fn = data.dataloader.graph_collate
         else:
             self.collate_fn = collate_fn
 
@@ -163,7 +163,7 @@ class Engine(core.Configurable):
                 if not isinstance(buffer, torch.Tensor):
                     buffers_to_ignore.append(name)
             task._ddp_params_and_buffers_to_ignore = set(buffers_to_ignore)
-        if self.device.type == "cuda":
+        if self.device.type == "cuda" and task is not None:
             task = task.cuda(self.device)
 
         self.model = task
@@ -440,6 +440,56 @@ class Engine(core.Configurable):
 
         return metric, preds, targets
 
+    @classmethod
+    def load_from_checkpoint(cls, checkpoint_path: str, strict: bool = True):
+        """
+        Load full Engine from a checkpoint using saved hyperparameters.
+
+        Parameters:
+            checkpoint_path (str): Path to the checkpoint file.
+            strict (bool): Whether to strictly enforce that the keys in state_dict match the model.
+
+        Returns:
+            Engine: Fully reconstructed Engine with model, optimizer, and scheduler states.
+        """
+        checkpoint_path = os.path.expanduser(checkpoint_path)
+        state = torch.load(checkpoint_path, map_location="cpu")  # CPU for safe loading
+
+        # Reconstruct the Engine using saved hyperparameters
+        if "hyperparameters" not in state:
+            raise ValueError("Checkpoint does not contain hyperparameters.")
+        config_dict = state["hyperparameters"]
+        optimizer_state = state.get("optimizer", None)
+        
+        engine = cls.load_config_dict(config_dict)  # Uses class method to build Engine
+
+        # Move model to device
+        engine.model.to(engine.device)
+
+        # Load weights
+        engine.model.load_state_dict(state["model"], strict=strict)
+
+        # Load optimizer
+        if engine.optimizer is not None and optimizer_state is not None:
+            engine.optimizer.to(engine.device)
+            engine.optimizer.load_state_dict(optimizer_state)
+            
+            
+        # EMA model setup
+        if engine.ema_decay > 0:
+            engine.ema_model = copy.deepcopy(engine.model)
+            engine.ema_model.eval()
+            for param in engine.ema_model.parameters():
+                param.requires_grad = False
+        else:
+            engine.ema_model = engine.model
+
+        # Scheduler state
+        if "scheduler" in state and engine.scheduler is not None:
+            engine.scheduler.load_state_dict(state["scheduler"])
+
+        return engine
+
     def load(self, checkpoint, load_optimizer=True, strict=True):
         """
         Load a checkpoint from file.
@@ -473,7 +523,6 @@ class Engine(core.Configurable):
 
         comm.synchronize()
 
-    # should we save both ema model and model?
     def save(self, checkpoint):
         """
         Save checkpoint to file.
@@ -488,7 +537,10 @@ class Engine(core.Configurable):
             state = {
                 "model": self.ema_model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
+                "hyperparameters": self.sanitized_config_dict(), # Save full config dictionary
             }
+            # if self.scheduler is not None:
+            #     state["scheduler"] = self.scheduler.state_dict()
             torch.save(state, checkpoint)
 
     @classmethod
@@ -502,16 +554,13 @@ class Engine(core.Configurable):
                 % (cls.__name__, config["class"])
             )
 
-        optimizer_config = config.pop("optimizer")
         new_config = {}
         for k, v in config.items():
             if isinstance(v, dict) and "class" in v:
                 v = core.Configurable.load_config_dict(v)
             if k != "class":
                 new_config[k] = v
-        optimizer_config["params"] = new_config["task"].parameters()
-        new_config["optimizer"] = core.Configurable.load_config_dict(optimizer_config)
-
+                
         return cls(**new_config)
 
     @property
@@ -519,3 +568,8 @@ class Engine(core.Configurable):
         """Current epoch."""
         return self.meter.epoch_id
 
+    # These cannot be saved.
+    def sanitized_config_dict(self):
+        cfg = self.config_dict()
+        exclude_keys = {"optimizer", "scheduler", "collate_fn",}
+        return {k: v for k, v in cfg.items() if k not in exclude_keys}

@@ -13,3 +13,5 @@ wandb/
 outputs/
 training/
 lightning_logs/
+
+logs/
