@@ -536,7 +536,7 @@ class Engine(core.Configurable):
         if self.rank == 0:
             state = {
                 "model": self.ema_model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
+                "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
                 "hyperparameters": self.sanitized_config_dict(), # Save full config dictionary
             }
             # if self.scheduler is not None:

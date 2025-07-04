@@ -1,0 +1,28 @@
+_target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
+task_type: inpaint
+sampling_mode: "ddpm"
+num_generate: 100
+mol_size:  [0,0]
+target_values: [] 
+property_names: []
+batch_size: 1
+seed: 86
+visualize_trajectory: False
+output_path: generated_mol
+condition_configs:
+  reference_structure_path: "template.xyz"
+  condition_component: xh
+  mask_node_index: [0,1,2,3,4]
+  denoising_strength: 0.75
+  t_critical_1: 0.75
+  t_critical_2: 0.45
+  d_threshold_f: 2.2
+  w_b: 2
+  all_frozen: False
+  use_covalent_radii: True
+  scale_factor: 1.2
+  noise_initial_mask: False
+  n_frames: 0
+  n_retrys: 3
+  t_retry: 180
+

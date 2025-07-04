@@ -30,6 +30,7 @@ data_augmentation: False
 context_mask_rate: 0
 mask_value: 0
 normalize_condition: null # [None, "maxmin", "mad"]
+sp_regularizer_deploy: False
 sp_regularizer_regularizer: hard
 sp_regularizer_lambda_: 0
 sp_regularizer_lambda_2: 1000

@@ -1,0 +1,11 @@
+_target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
+task_type: unconditional
+sampling_mode: "ddpm"
+num_generate: 100
+mol_size:  [0,0]
+target_values: []
+property_names: []
+batch_size: 1
+seed: 86
+visualize_trajectory: False
+output_path: generated_mol

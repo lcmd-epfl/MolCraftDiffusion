@@ -2812,7 +2812,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         denoising_strength=0.0, # For Inpainting
         noise_initial_mask=False, # For Inpainting
         connector_dicts={}, # For outpainting
-        t_start=0.8,
+        t_start=1.0,
         t_critical_1=0.8,
         t_critical_2=0.5,
         d_threshold_f=1.4,

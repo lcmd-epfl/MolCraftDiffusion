@@ -78,80 +78,89 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self.reference_indices = reference_indices
         self.normalize_condition = normalize_condition
         
+        
     def preprocess(
         self,
         train_set=None,
     ):
-        self.atomic_numbers = train_set.atom_types()
-        self.atom_decoder = [
-            chemical_symbols[number]
-            for number in self.atomic_numbers
-            if number < len(chemical_symbols)
-        ]
+        if train_set is not None:
+            self.atomic_numbers = train_set.atom_types()
+            self.atom_decoder = [
+                chemical_symbols[number]
+                for number in self.atomic_numbers
+                if number < len(chemical_symbols)
+            ]
 
-        self.atom_encoder = {symbol: i for i, symbol in enumerate(self.atom_decoder)}
+            self.atom_encoder = {symbol: i for i, symbol in enumerate(self.atom_decoder)}
 
         
-        self.dataset_smiles_list = []
-        if "graph" in train_set[0]:
-            self.max_n_nodes = 0
-            self.n_node_dist = {}
-            for sample in train_set:
-                self.dataset_smiles_list.append(sample["graph"].smiles)
-                n_node = sample["graph"].natoms
-                if n_node > self.max_n_nodes:
-                    self.max_n_nodes = n_node
-                if n_node in self.n_node_dist:
-                    self.n_node_dist[n_node] += 1
-                else:
-                    self.n_node_dist[n_node] = 1    
-                      
-        else:
-
-            self.max_n_nodes = train_set[0]["coords"].size()[0]
-            
-            # train_set = tqdm(train_set, "Determining number of atoms distibution")
-            if not self.n_node_dist:
+            self.dataset_smiles_list = []
+            if "graph" in train_set[0]:
+                self.max_n_nodes = 0
                 self.n_node_dist = {}
                 for sample in train_set:
-                    node_mask = sample["node_mask"].nonzero()
-                    n_node = node_mask.size(0)
+                    self.dataset_smiles_list.append(sample["graph"].smiles)
+                    n_node = sample["graph"].natoms
+                    if n_node > self.max_n_nodes:
+                        self.max_n_nodes = n_node
                     if n_node in self.n_node_dist:
                         self.n_node_dist[n_node] += 1
                     else:
-                        self.n_node_dist[n_node] = 1
+                        self.n_node_dist[n_node] = 1    
+                        
+            else:
 
-        if self.node_dist_model is None:
-            print("---------------Creating node distribution model-----------------")
-            self.node_dist_model = DistributionNodes(self.n_node_dist)
+                self.max_n_nodes = train_set[0]["coords"].size()[0]
+                
+                # train_set = tqdm(train_set, "Determining number of atoms distibution")
+                if not self.n_node_dist:
+                    self.n_node_dist = {}
+                    for sample in train_set:
+                        node_mask = sample["node_mask"].nonzero()
+                        n_node = node_mask.size(0)
+                        if n_node in self.n_node_dist:
+                            self.n_node_dist[n_node] += 1
+                        else:
+                            self.n_node_dist[n_node] = 1
 
-        if (self.prop_dist_model is None) and len(self.condition) > 0:
-            print("---------------Creating property distribution model---------------")
-            num_atoms = train_set.num_atoms
-            props = []
-            for task in self.condition:
-                props.append(train_set.get_property(task))
-            props = torch.stack(props)
-            self.prop_dist_model = DistributionProperty(
-                num_atoms, props, self.condition, num_bins=10
-            )
+            if self.node_dist_model is None:
+                print("---------------Creating node distribution model-----------------")
+                self.node_dist_model = DistributionNodes(self.n_node_dist)
 
-            self.property_norms = compute_mean_mad_from_dataloader(
-                props, self.condition
-            )
-            self.prop_dist_model.set_normalizer(self.property_norms)
+            if (self.prop_dist_model is None) and len(self.condition) > 0:
+                print("---------------Creating property distribution model---------------")
+                num_atoms = train_set.num_atoms
+                props = []
+                for task in self.condition:
+                    props.append(train_set.get_property(task))
+                props = torch.stack(props)
+                self.prop_dist_model = DistributionProperty(
+                    num_atoms, props, self.condition, num_bins=10
+                )
+
+                self.property_norms = compute_mean_mad_from_dataloader(
+                    props, self.condition
+                )
+                self.prop_dist_model.set_normalizer(self.property_norms)
 
 
-        if len(self.dataset_smiles_list) == 0:
-            smiles_list = train_set.smiles_list
-            canonical_smiles = []
-            for smiles in smiles_list:
-                if smiles is None:
-                    continue
-                mol = Chem.MolFromSmiles(smiles)
-                if mol is not None:
-                    canonical_smiles.append(Chem.MolToSmiles(mol))
-            self.dataset_smiles_list = list(set(canonical_smiles))
+            if len(self.dataset_smiles_list) == 0:
+                smiles_list = train_set.smiles_list
+                canonical_smiles = []
+                for smiles in smiles_list:
+                    if smiles is None:
+                        continue
+                    mol = Chem.MolFromSmiles(smiles)
+                    if mol is not None:
+                        canonical_smiles.append(Chem.MolToSmiles(mol))
+                self.dataset_smiles_list = list(set(canonical_smiles))
+        else:
+            self.atomic_numbers = []
+            self.atom_decoder = []
+            self.atom_encoder = {}
+            self.dataset_smiles_list = []
+            self.max_n_nodes = 0
+            self.n_node_dist = {}
 
 
     def forward(self, batch):
@@ -414,10 +423,10 @@ class GeomMolecularGenerative(Task, core.Configurable):
         Tuple[Tensor, Tensor, Tensor, Tensor]: One-hot encoding of atoms, charges, positions, and node mask.
         """
         # assert int(torch.max(nodesxsample)) <= self.max_n_nodes
-        nodesxsample = torch.where(
-            nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
-        )
-        batch_size = len(nodesxsample)
+        # nodesxsample = torch.where(
+        #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
+        # )
+        batch_size = nodesxsample.size(0)
 
         if batch_size > 1:
             node_mask = torch.zeros(batch_size, self.max_n_nodes)
@@ -683,10 +692,10 @@ class GeomMolecularGenerative(Task, core.Configurable):
         Tuple[Tensor, Tensor, Tensor, Tensor]: Positions, one-hot encoding of atoms, node mask, and edge mask.
         """
         # assert int(torch.max(nodesxsample)) <= self.max_n_nodes
-        nodesxsample = torch.where(
-            nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
-        )
-        batch_size = len(nodesxsample)
+        # nodesxsample = torch.where(
+        #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
+        # )
+        batch_size = nodesxsample.size(0)
         if batch_size > 1:
             node_mask = torch.zeros(batch_size, self.max_n_nodes)
             nnode = self.max_n_nodes
