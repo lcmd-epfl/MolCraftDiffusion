@@ -1,0 +1,31 @@
+# @package _global_
+
+# specify here default configuration
+# order of defaults determines the order in which configs override each other
+defaults:
+  - tasks: regression
+  - interference: prediction
+  # - hydra: default
+  - _self_
+
+# run name, eg. for wandb logging
+name: "akatsuki"
+
+
+# Paths
+chkpt_directory: "/home/pregabalin/RF/MolecularDiffusion/trained_models/regression_60.pkl"
+xyz_directory: "/home/pregabalin/RF/MolecularDiffusion/tests/test_xyz/"
+output_directory: "/home/pregabalin/RF/MolecularDiffusion/test_output/"
+
+
+
+# Model setting
+atom_vocab: [H,B,C,N,O,F,Al,Si,P,S,Cl,As,Se,Br,I,Hg,Bi]
+node_feature: null
+# tags to help you identify your experiments
+# you can overwrite this in experiment configs
+# overwrite from command line with `python train.py tags="[first_tag, second_tag]"`
+
+# seed for random number generators in pytorch, numpy and python.random
+seed: 9
+

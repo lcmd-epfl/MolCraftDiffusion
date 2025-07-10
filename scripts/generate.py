@@ -34,7 +34,8 @@ def load_model(chkpt_directory):
     engine.model.node_dist_model = edm_stats["node"]
     if "prop" in edm_stats:
         engine.model.prop_dist_model = edm_stats["prop"]
-
+    
+    engine.model.eval()
     return engine
 
 

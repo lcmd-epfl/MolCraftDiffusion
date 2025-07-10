@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 from itertools import islice
+from tqdm import tqdm
 
 import torch
 from torch import distributed as dist
@@ -18,7 +19,8 @@ module = sys.modules[__name__]
 logger = logging.getLogger(__name__)
 
 
-
+#TODO print avg loss of epoch
+#TODO print current and best val
 class Engine(core.Configurable):
     """
     General class that handles everything about training and test of a task.
@@ -154,8 +156,8 @@ class Engine(core.Configurable):
             if result is not None:
                 train_set, valid_set, test_set = result
             new_params = list(task.parameters())
-            if len(new_params) != len(old_params):
-                optimizer.add_param_group({"params": new_params[len(old_params) :]})
+            # if len(new_params) != len(old_params):
+            #     optimizer.add_param_group({"params": new_params[len(old_params) :]})
         if self.world_size > 1:
             task = nn.SyncBatchNorm.convert_sync_batchnorm(task)
             buffers_to_ignore = []
@@ -251,6 +253,7 @@ class Engine(core.Configurable):
 
         scaler = GradScaler() if use_amp and self.device.type == "cuda" else None
 
+        
         for epoch in self.meter(num_epoch):
             sampler.set_epoch(epoch)
 
@@ -261,7 +264,15 @@ class Engine(core.Configurable):
             # batches
             gradient_interval = min(batch_per_epoch - start_id, self.gradient_interval)
 
-            for batch_id, batch in enumerate(islice(dataloader, batch_per_epoch)):
+            progress_bar = tqdm(
+                enumerate(islice(dataloader, batch_per_epoch)),
+                desc=f"Training Epoch [{epoch + 1}]",
+                leave=True,
+                dynamic_ncols=True,
+                total=batch_per_epoch
+            )
+
+            for batch_id, batch in progress_bar:
                 if len(batch) == 0 or batch is None:
                     continue
                 if self.device.type == "cuda":
@@ -298,7 +309,7 @@ class Engine(core.Configurable):
                                 )
 
                 metrics.append(metric)
-                if torch.isnan(torch.tensor(grad_norms)).any():
+                if torch.isnan(torch.tensor(grad_norms)).any() and self.debug:
                     module.logger.info(
                         "NaN gradients detected in batch {}. Skipping this batch.".format(
                             batch_id
@@ -324,14 +335,15 @@ class Engine(core.Configurable):
                     if use_amp:
                         scaler.unscale_(self.optimizer)
                     grad_norms = self.clipper(model, self.clip_value)
-                    module.logger.info(f"Gradient norm: {grad_norms}")
+                    if self.debug:
+                        module.logger.info(f"Gradient norm: {grad_norms}")
 
                 if batch_id - start_id + 1 == gradient_interval:
                     if use_amp:
                         # Check for scaler overflow
                         scaler_result = scaler.step(self.optimizer)
                         scaler.update()
-                        if scaler_result is not None:
+                        if scaler_result is not None and self.debug:
                             module.logger.warning(f"Scaler overflow detected in batch {batch_id}")
                     else:
                         self.optimizer.step()
@@ -352,6 +364,11 @@ class Engine(core.Configurable):
 
                 if self.EMA:
                     self.EMA.update_model_average(self.ema_model, self.model)
+                progress_bar.set_postfix({
+                    "batch": batch_id + 1,
+                })
+                for metric_name in metric.keys():
+                    progress_bar.set_postfix({metric_name: metric[metric_name].item() if isinstance(metric[metric_name], torch.Tensor) else metric[metric_name]})
 
             if self.scheduler:
                 if type(self.scheduler).__name__ == "ReduceLROnPlateau":
@@ -365,6 +382,7 @@ class Engine(core.Configurable):
                     self.scheduler.step()
 
         return metric
+
 
     @torch.no_grad()
     def evaluate(self, split, log=True, use_amp=False):

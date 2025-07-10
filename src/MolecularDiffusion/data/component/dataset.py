@@ -255,24 +255,27 @@ class GraphDataset(torch_data.Dataset):
                         node_features_extra = torch.tensor(
                             [atom_default_condense(atom) for atom in mol.GetAtoms()]
                         )
-                    elif node_feature == "topological" and atom_topological is not None:
-                        node_features_extra = atom_topological(
-                            np.array(charges), coords
-                        )
-                    elif node_feature == "geomv1" and atom_geom is not None:
-                        node_features_extra = atom_geom(np.array(charges), coords)
-                    elif node_feature == "geomv2" and atom_geom_v2 is not None:
-                        node_features_extra = atom_geom_v2(np.array(charges), coords)
-                    elif (
-                        node_feature == "geomv2_trun" and atom_geom_v2_trun is not None
-                    ):
-                        node_features_extra = atom_geom_v2_trun(
-                            np.array(charges), coords
-                        )
-                    elif node_feature == "geomv2_compact" and atom_geom_compact is not None:
-                        node_features_extra = atom_geom_compact(
-                            np.array(charges), coords
-                        )
+                    elif node_feature in [
+                        "atom_topological",
+                        "atom_geom",
+                        "atom_geom_v2",
+                        "atom_geom_v2_trun",
+                        "atom_geom_opt",
+                        "atom_geom_compact"
+                    ]:
+                        feature_mapping = {
+                            "atom_topological": atom_topological,
+                            "atom_geom": atom_geom,
+                            "atom_geom_v2": atom_geom_v2,
+                            "atom_geom_v2_trun": atom_geom_v2_trun,
+                            "atom_geom_opt": atom_geom_opt,
+                            "atom_geom_compact": atom_geom_compact,
+                        }
+                        feature_function = feature_mapping.get(node_feature)
+                        if feature_function is not None:
+                            node_features_extra = feature_function(
+                                charges, coords
+                            )                                                           
                     else:
                         raise ValueError(
                             "Unknown node feature type, not yet installed dependency (cell2mol or libarvo)"

@@ -75,9 +75,14 @@ class OptimSchedulerFactory:
         self.num_epochs = num_epochs
         self.train_set = train_set
         self.batch_size = batch_size
-        self.gradnorm_queue = Queue(max_len=queue_size)
-        if init_grad_norm is not None:
-            self.gradnorm_queue.add(init_grad_norm)
+        
+        if queue_size > 0:
+            self.gradnorm_queue = Queue(max_len=queue_size)
+            if init_grad_norm is not None:
+                self.gradnorm_queue.add(init_grad_norm)
+        else:
+            self.gradnorm_queue = None
+
         self.ema_decay = ema_decay
         self.gradient_clip_mode = gradient_clip_mode
         self.validation_interval = validation_interval

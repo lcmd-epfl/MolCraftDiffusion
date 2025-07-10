@@ -46,7 +46,7 @@ class Meter(object):
             step_id = self.batch_id
         elif category.endswith("epoch"):
             step_id = self.epoch_id
-        self.logger.log(record, step_id=step_id, category=category)
+        # self.logger.log(record, step_id=step_id, category=category)
 
     def log_config(self, config):
         """
