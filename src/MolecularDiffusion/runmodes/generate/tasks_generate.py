@@ -78,13 +78,16 @@ class GenerativeFactory:
         
         for i in progress_bar:
             try:
-                if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                    nodesxsample = self.task.node_dist_model.sample(self.batch_size)
-                else:
-                    mean = (self.mol_size[0] + self.mol_size[1]) / 2
-                    std = (self.mol_size[1] - self.mol_size[0]) / 4
-                    nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
-                    nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
+                if len(self.mol_size) == 1:
+                    nodesxsample = torch.tensor(self.mol_size, dtype=torch.long)
+                elif len(self.mol_size) == 2:
+                    if self.mol_size[0] == 0 and self.mol_size[1] == 0:
+                        nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                    else:
+                        mean = (self.mol_size[0] + self.mol_size[1]) / 2
+                        std = (self.mol_size[1] - self.mol_size[0]) / 4
+                        nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
+                        nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
 
                 if self.task.prop_dist_model and len(target_value) == 0:
                     size = nodesxsample.item()
@@ -127,41 +130,43 @@ class GenerativeFactory:
         
         assert len(self.target_values) == len(self.task.condition); "Number of target values must match with number of conditions in the model"
         
-        if self.tasks.predictive_model is None:
-            logging.warning("Property model is not available, skip evaluation.")
-            property_eval = False
-        else:
+        if hasattr(self.task, 'predictive_model'):
             property_eval = True
             df_dict = {
                 "filename": [],
             }
             for prop_name in self.property_names:
                 df_dict[prop_name] = []
-            df_dict["size"] = []
-        
+            df_dict["size"] = []           
+        else:
+            logging.warning("Property model is not available, skip evaluation.")
+            property_eval = False        
         
         fail_count = 0
         progress_bar = tqdm(range(self.num_generate), desc="Sampling molecules", leave=True)
         
         for i in progress_bar:
             try:
-                if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                    nodesxsample = self.task.node_dist_model.sample(self.batch_size)
-                else:
-                    mean = (self.mol_size[0] + self.mol_size[1]) / 2
-                    std = (self.mol_size[1] - self.mol_size[0]) / 4
-                    nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
-                    nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
+                if len(self.mol_size) == 1:
+                    nodesxsample = torch.tensor(self.mol_size, dtype=torch.long)
+                elif len(self.mol_size) == 2:
+                    if self.mol_size[0] == 0 and self.mol_size[1] == 0:
+                        nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                    else:
+                        mean = (self.mol_size[0] + self.mol_size[1]) / 2
+                        std = (self.mol_size[1] - self.mol_size[0]) / 4
+                        nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
+                        nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                 
                 if self.sampling_mode == "ddpm":
                     one_hot, charges, x, _ = self.task.sample_conditonal(
                             nodesxsample=nodesxsample, 
-                            target_value=self.target_value
+                            target_value=self.target_values
                         )
                 elif self.sampling_mode == "cfg":
                     one_hot, charges, x, _ = self.task.sample_guidance_conitional(
                             target_function=None,
-                            target_value=self.target_value,
+                            target_value=self.target_values,
                             nodesxsample=nodesxsample, 
                             cfg_scale=self.condition_configs.get("cfg_scale",1),
                             guidance_ver="cfg"
@@ -183,7 +188,7 @@ class GenerativeFactory:
                     xh = torch.cat([
                         x,
                         one_hot,
-                        charges.unsqueeze(-1)
+                        charges
                     ])
                     preds = self.property_prediction(xh, t=0)
                     for prop_name in self.property_names:
@@ -201,7 +206,7 @@ class GenerativeFactory:
                 "success": (i + 1 - fail_count),
                 "success_rate": f"{100 * (i + 1 - fail_count) / (i + 1):.1f}%",
             })
-            
+        if property_eval:    
             self.df = pd.DataFrame(df_dict)
     
     
@@ -209,33 +214,36 @@ class GenerativeFactory:
     
         fail_count = 0
         progress_bar = tqdm(range(self.num_generate), desc="Sampling molecules", leave=True)
-        if self.tasks.predictive_model is None:
-            logging.warning("Property model is not available, skip evaluation.")
-            property_eval = False
-        else:
+        
+        if hasattr(self.task, 'predictive_model'):
             property_eval = True
             df_dict = {
                 "filename": [],
             }
             for prop_name in self.property_names:
                 df_dict[prop_name] = []
-            df_dict["size"] = []
-        
+            df_dict["size"] = []           
+        else:
+            logging.warning("Property model is not available, skip evaluation.")
+            property_eval = False
              
         for i in progress_bar:
             try:
-                if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                    nodesxsample = self.task.node_dist_model.sample(self.batch_size)
-                else:
-                    mean = (self.mol_size[0] + self.mol_size[1]) / 2
-                    std = (self.mol_size[1] - self.mol_size[0]) / 4
-                    nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
-                    nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
+                if len(self.mol_size) == 1:
+                    nodesxsample = torch.tensor(self.mol_size, dtype=torch.long)
+                elif len(self.mol_size) == 2:
+                    if self.mol_size[0] == 0 and self.mol_size[1] == 0:
+                        nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                    else:
+                        mean = (self.mol_size[0] + self.mol_size[1]) / 2
+                        std = (self.mol_size[1] - self.mol_size[0]) / 4
+                        nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
+                        nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                 
                 
                 one_hot, charges, x, node_mask  = self.task.sample_guidance_conitional(
                     target_function=self.condition_configs.get("target_function", None),
-                    target_value=self.target_value,
+                    target_value=self.target_values,
                     nodesxsample=nodesxsample,
                     gg_scale=self.condition_configs.get("gg_scale",1),
                     cfg_scale=self.condition_configs.get("cfg_scale",1),
@@ -251,7 +259,7 @@ class GenerativeFactory:
                     xh = torch.cat([
                         x,
                         one_hot,
-                        charges.unsqueeze(-1)
+                        charges
                     ])
                     preds = self.property_prediction(xh, t=0)
                     for prop_name in self.property_names:
@@ -270,17 +278,22 @@ class GenerativeFactory:
                 "success_rate": f"{100 * (i + 1 - fail_count) / (i + 1):.1f}%",
             })
             
+        if property_eval:    
             self.df = pd.DataFrame(df_dict)
-    
     
     def structural_guidance(self):
         
         # get condition structure
         xh_ref = self.preprocess_ref_structure(self.task.device)
 
+        n_retrys = self.condition_configs.get("n_retrys")
+        n_frames = self.condition_configs.get("n_frames")
+        if n_retrys > 0 and n_frames == 0:
+            logging.info("No frames saved, set n_retrys = 0")
+            n_retrys = 0
         
         # process condition values
-        if self.target_value is not None:
+        if len(self.target_values) > 0 and self.task.prop_dist_model is not None:
             
             context = []
             for i, key in enumerate(self.task.prop_dist_model.distributions):
@@ -290,16 +303,16 @@ class GenerativeFactory:
                         self.task.prop_dist_model.normalizer[key]["mean"],
                         self.task.prop_dist_model.normalizer[key]["mad"],
                     )
-                    val = (self.target_value[i] - mean) / (mad)
+                    val = (self.target_values[i] - mean) / (mad)
                 elif self.task.normalize_condition == "maxmin":   
                     mean, min, max = (
                         self.task.prop_dist_model.normalizer[key]["mean"],
                         self.task.prop_dist_model.normalizer[key]["min"],
                         self.task.prop_dist_model.normalizer[key]["max"],
                     )
-                    val = 2 * (self.target_value[i] - min) / (max - min) - 1           
+                    val = 2 * (self.target_values[i] - min) / (max - min) - 1           
                 else:
-                    val = self.target_value[i]
+                    val = self.target_values[i]
                 context_row = torch.tensor(
                         [val]
                 ).unsqueeze(1)
@@ -317,14 +330,16 @@ class GenerativeFactory:
         
         for i in progress_bar:
             try:
-                if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                    nodesxsample = self.task.node_dist_model.sample(self.batch_size)
-                else:
-                    mean = (self.mol_size[0] + self.mol_size[1]) / 2
-                    std = (self.mol_size[1] - self.mol_size[0]) / 4
-                    nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
-                    nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
-                
+                if len(self.mol_size) == 1:
+                    nodesxsample = torch.tensor(self.mol_size, dtype=torch.long)
+                elif len(self.mol_size) == 2:
+                    if self.mol_size[0] == 0 and self.mol_size[1] == 0:
+                        nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                    else:
+                        mean = (self.mol_size[0] + self.mol_size[1]) / 2
+                        std = (self.mol_size[1] - self.mol_size[0]) / 4
+                        nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
+                        nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])                
 
                 if self.task_type == "inpaint":
                     try:
@@ -340,6 +355,7 @@ class GenerativeFactory:
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
                         denoising_strength=self.condition_configs.get("denoising_strength", 0.8),
+                        t_start=self.condition_configs.get("t_start", 1),
                         t_critical_1=self.condition_configs.get("t_critical_1"),
                         t_critical_2=self.condition_configs.get("t_critical_2"),
                         d_threshold_f=self.condition_configs.get("d_threshold_f"),
@@ -356,11 +372,11 @@ class GenerativeFactory:
                     )
                 
                 elif self.task_type == "outpaint":
-
                     one_hot, charges, x, node_mask = self.task.sample(
                         nodesxsample,
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
+                        t_start=self.condition_configs.get("t_start", 1),
                         t_critical_1=self.condition_configs.get("t_critical_1"),
                         t_critical_2=self.condition_configs.get("t_critical_2"),
                         d_threshold_f=self.condition_configs.get("d_threshold_f"),
@@ -379,6 +395,7 @@ class GenerativeFactory:
                         nodesxsample,
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
+                        t_start=self.condition_configs.get("t_start", 1),
                         n_frames=self.condition_configs.get("n_frames"),
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
@@ -471,7 +488,7 @@ class GenerativeFactory:
         n_atoms = len(mol.atoms)
 
         # One-hot encode atomic types
-        atom_vocab = self.task.model.atom_vocab
+        atom_vocab = self.task.atom_vocab
         node_features = [
             onehot(atom.element, atom_vocab, allow_unknown=False)
             for atom in mol.atoms

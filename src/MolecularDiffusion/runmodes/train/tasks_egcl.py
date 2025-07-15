@@ -221,7 +221,7 @@ class ModelTaskFactory:
 
         elif self.task_type == "guidance":
             model = EGNN(
-                in_node_nf=self.in_node_nf,
+                in_node_nf=self.dynamics_in_node_nf,
                 hidden_nf=self.hidden_size,
                 act_fn=self.act_fn,
                 n_layers=self.num_layers,

@@ -23,7 +23,7 @@ import os
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
-def load_model(chkpt_directory):
+def load_model(chkpt_directory, total_step=0):
 
     model_path = os.path.join(chkpt_directory, "edm_chem.pkl")
     with open(os.path.join(chkpt_directory, "edm_stat.pkl"), "rb") as file:
@@ -31,10 +31,14 @@ def load_model(chkpt_directory):
 
     engine = Engine(None, None, None, None, None)
     engine = engine.load_from_checkpoint(model_path)
+
     engine.model.node_dist_model = edm_stats["node"]
     if "prop" in edm_stats:
         engine.model.prop_dist_model = edm_stats["prop"]
     
+    if total_step > 0:
+        engine.model.model.T = total_step
+
     engine.model.eval()
     return engine
 
@@ -58,12 +62,10 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
 
     log.info(f"Instantiating diffusion task and loading the model <{cfg.tasks._target_}>")
-    solver = load_model(cfg.chkpt_directory)
-    
-    if not(hasattr(solver.model, 'atom_vocab')):
+    solver = load_model(cfg.chkpt_directory, cfg.diffusion_steps)
+    if not(hasattr(solver.model, 'atom_vocab')) or solver.model.atom_vocab is None:
         solver.model.atom_vocab = cfg.atom_vocab
     
-
     log.info(f"Instantiating generator... <{cfg.interference._target_}>")
     generator: GenerativeFactory = hydra.utils.instantiate(cfg.interference, task=solver.model)
 

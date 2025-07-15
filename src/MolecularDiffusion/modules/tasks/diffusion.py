@@ -397,7 +397,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
                n_frames=0,
                n_retrys=0,
                t_retry=180,
-               t_start=0.8,
+               t_start=1,
                mode="ddpm",
                **kwargs):
         """
@@ -467,6 +467,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 n_frames=n_frames,
                 n_retrys=n_retrys,
                 t_retry=t_retry,
+                t_start=t_start,
                 **kwargs
             )
         elif mode == "ddim":    
@@ -1285,8 +1286,12 @@ class GuidanceModelPrediction(Task, core.Configurable):
             # if not(self.include_charge):
             #     z_h = z_h[:, :-1]
             if evaluate:
-                # t = torch.zeros((n_nodes, 1), device=x.device)
                 t = batch["graph"].times # size: (n_nodes, 1)
+                if isinstance(t, float) or (isinstance(t, torch.Tensor) and t.ndim == 0):
+                    t = torch.full((n_nodes, 1), t, device=x.device)
+                elif isinstance(t, torch.Tensor) and t.ndim == 1:
+                    t = t.unsqueeze(-1).repeat(n_nodes // t.shape[0], 1)
+
             z_h = torch.cat([z_h, t], dim=1)
               
             edge_index = batch["graph"].edge_index

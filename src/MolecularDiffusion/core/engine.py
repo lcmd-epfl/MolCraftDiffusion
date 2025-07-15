@@ -8,7 +8,7 @@ from tqdm import tqdm
 import torch
 from torch import distributed as dist
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils import data as torch_data
 
 from MolecularDiffusion import utils, core, data
@@ -19,8 +19,7 @@ module = sys.modules[__name__]
 logger = logging.getLogger(__name__)
 
 
-#TODO print avg loss of epoch
-#TODO print current and best val
+
 class Engine(core.Configurable):
     """
     General class that handles everything about training and test of a task.
@@ -151,11 +150,11 @@ class Engine(core.Configurable):
             if self.rank == 0:
                 module.logger.warning("Preprocess training set")
             # handle dynamic parameters in optimizer
-            old_params = list(task.parameters())
+            # old_params = list(task.parameters())
             result = task.preprocess(train_set)
             if result is not None:
                 train_set, valid_set, test_set = result
-            new_params = list(task.parameters())
+            # new_params = list(task.parameters())
             # if len(new_params) != len(old_params):
             #     optimizer.add_param_group({"params": new_params[len(old_params) :]})
         if self.world_size > 1:
@@ -279,7 +278,7 @@ class Engine(core.Configurable):
                     batch = utils.cuda(batch, device=self.device)
 
                 # Forward pass with autocast
-                with autocast(enabled=use_amp, dtype=torch.float16):
+                with autocast(enabled=use_amp, dtype=torch.float16, device_type=self.device.type):
                     loss, metric = model(batch)
                     if not loss.requires_grad:
                         raise RuntimeError(
@@ -302,11 +301,11 @@ class Engine(core.Configurable):
                             module.logger.info(
                                 f"Gradient - {name}: {param.grad.norm().item()}"
                             )
-                            if torch.isnan(param.grad).any():
-                                print(f"Faulty Grad: {param.grad}")
-                                print(
-                                    f"Params whose grad is NaN: {param[torch.isnan(param.grad)]}"
-                                )
+                            # if torch.isnan(param.grad).any():
+                            #     print(f"Faulty Grad: {param.grad}")
+                            #     print(
+                            #         f"Params whose grad is NaN: {param[torch.isnan(param.grad)]}"
+                            #     )
 
                 metrics.append(metric)
                 if torch.isnan(torch.tensor(grad_norms)).any() and self.debug:
@@ -436,7 +435,7 @@ class Engine(core.Configurable):
 
             try:
                 # AMP: Autocast context for mixed precision during evaluation
-                with autocast(enabled=use_amp, dtype=torch.float16):
+                with autocast(enabled=use_amp, dtype=torch.float16, device_type=self.device.type):
                     pred, target = model.predict_and_target(batch)
                     preds.append(pred)
                     targets.append(target)
@@ -459,7 +458,7 @@ class Engine(core.Configurable):
         return metric, preds, targets
 
     @classmethod
-    def load_from_checkpoint(cls, checkpoint_path: str, strict: bool = True):
+    def load_from_checkpoint(cls, checkpoint_path: str, strict: bool = False):
         """
         Load full Engine from a checkpoint using saved hyperparameters.
 

@@ -163,7 +163,8 @@ def xyz2mol(xyz_file, atom_vocab, node_feature, edge_type="distance", radius=4.0
         atomic_numbers=charges,
         natoms=torch.tensor([n_nodes]),
         edge_index=edge_index,
-        batch=torch.tensor([1],)
+        times=torch.tensor([0]),
+        batch=torch.tensor([0],)
             ).to(device)
     mol_obj["graph"] = graph_data
     return mol_obj
@@ -205,17 +206,17 @@ def _runner(solver, xyz_paths: list) -> torch.Tensor:
                         atom_vocab=solver.model.atom_vocab,
                         node_feature=solver.model.node_feature,
                         device=device)
-        
-        prediction = solver.model.predict(mol_obj)
-        predictions.append(prediction.detach().cpu().numpy())
 
+        prediction = solver.model.predict(mol_obj, evaluate=True)[0]
+        predictions.append(prediction.detach().cpu().numpy())
         current_preds_dict = {prop_name: prediction[j].item() for j, prop_name in enumerate(task_names)}
         progress_bar.set_postfix({"batch": i + 1, **current_preds_dict})
         xyz_paths_clear.append(xyz_path)
-        # except Exception as e:
-            # pass
-    predictions = np.array(predictions).squeeze(-1)
 
+    predictions = np.array(predictions)
+    if predictions.ndim > 1 and predictions.shape[-1] == 1:
+        predictions = predictions.squeeze(-1)
+    
     return predictions, xyz_paths_clear
         
 def log_hyperparameters(object_dict: dict):
@@ -286,7 +287,17 @@ def runner(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     log.info(f"Instantiating diffusion task and loading the model <{cfg.tasks._target_}>")
     solver = load_model(cfg.chkpt_directory)
+    
     task_names = list(solver.model.task.keys())
+    
+
+    if not(hasattr(solver.model, 'std')):
+        chkpt = torch.load(cfg.chkpt_directory)
+        solver.model.std = chkpt["model"]["std"].to(solver.model.device)    
+        solver.model.weight = chkpt["model"]["weight"].to(solver.model.device)
+        solver.model.mean = chkpt["model"]["mean"].to(solver.model.device)
+        
+        
     
     if not(hasattr(solver.model, 'atom_vocab')):
         solver.model.atom_vocab = cfg.atom_vocab
@@ -351,4 +362,3 @@ def main(cfg: DictConfig) -> Optional[float]:
 
 if __name__ == "__main__":
     main()
-
