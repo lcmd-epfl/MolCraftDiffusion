@@ -789,9 +789,9 @@ class GeomMolecularGenerative(Task, core.Configurable):
         Tuple[Tensor, Tensor, Tensor, Tensor]: Positions, one-hot encoding of atoms, node mask, and edge mask.
         """
         # assert int(torch.max(nodesxsample)) <= self.max_n_nodes
-        nodesxsample = torch.where(
-            nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
-        )
+        # nodesxsample = torch.where(
+        #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
+        # )
         batch_size = len(nodesxsample)
         if batch_size > 1:
             node_mask = torch.zeros(batch_size, self.max_n_nodes)
