@@ -213,9 +213,12 @@ class GenerativeFactory:
     def property_guidance(self):
         
         target_function=self.condition_configs.get("target_function", None)
-        target_function.atom_vocab = self.task.atom_vocab   
-        target_function.norm_factor = self.task.norm_factor
-        
+        target_function.atom_vocab = self.task.atom_vocab  
+
+        target_function.norm_factor = self.task.model.norm_values
+        target_function = target_function()
+        scheduler = self.condition_configs.get("scheduler", None)()
+
         fail_count = 0
         progress_bar = tqdm(range(self.num_generate), desc="Sampling molecules", leave=True)
         
@@ -244,21 +247,35 @@ class GenerativeFactory:
                         nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                 
-                
-                one_hot, charges, x, node_mask  = self.task.sample_guidance_conitional(
-                    target_function=target_function,
-                    target_value=self.target_values,
-                    nodesxsample=nodesxsample,
-                    gg_scale=self.condition_configs.get("gg_scale",1),
-                    cfg_scale=self.condition_configs.get("cfg_scale",1),
-                    max_norm=self.condition_configs.get("max_norm",1),
-                    std=1,
-                    scheduler=self.condition_configs.get("scheduler", None),
-                    guidance_ver=self.condition_configs.get("guidance_ver",1),
-                    guidance_at=self.condition_configs.get("guidance_at",1),
-                    guidance_stop=self.condition_configs.get("guidance_stop",0),
-                    n_backwards=self.condition_configs.get("n_backwards",1)
-                )   
+                if len(self.target_values) == 0:
+                    one_hot, charges, x, _  = self.task.sample_guidance(
+                        target_function=target_function,
+                        nodesxsample=nodesxsample,
+                        scale=self.condition_configs.get("gg_scale",1),
+                        max_norm=self.condition_configs.get("max_norm",1),
+                        std=1,
+                        scheduler=scheduler,
+                        guidance_ver=self.condition_configs.get("guidance_ver",1),
+                        guidance_at=self.condition_configs.get("guidance_at",1),
+                        guidance_stop=self.condition_configs.get("guidance_stop",0),
+                        n_backwards=self.condition_configs.get("n_backwards",1)
+                    )              
+                else:
+                    
+                    one_hot, charges, x, _  = self.task.sample_guidance_conitional(
+                        target_function=target_function,
+                        target_value=self.target_values,
+                        nodesxsample=nodesxsample,
+                        gg_scale=self.condition_configs.get("gg_scale",1),
+                        cfg_scale=self.condition_configs.get("cfg_scale",1),
+                        max_norm=self.condition_configs.get("max_norm",1),
+                        std=1,
+                        scheduler=scheduler,
+                        guidance_ver=self.condition_configs.get("guidance_ver",1),
+                        guidance_at=self.condition_configs.get("guidance_at",1),
+                        guidance_stop=self.condition_configs.get("guidance_stop",0),
+                        n_backwards=self.condition_configs.get("n_backwards",1)
+                    )   
                 if property_eval:
                     xh = torch.cat([
                         x,

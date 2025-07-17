@@ -3,7 +3,7 @@ task_type: gradient_guidance # gg
 sampling_mode: "ddpm"
 num_generate: 100
 mol_size:  [0,0]
-target_values: [3,1.5] 
+target_values: [] 
 property_names: []
 batch_size: 1
 seed: 86
@@ -12,13 +12,13 @@ output_path: generated_mol
 condition_configs:
   cfg_scale: 0
   target_function:
-    _target_: scripts/gradient_guidance.sf_energy_score.SFEnergyScore
+    _target_: scripts.gradient_guidance.sf_energy_score.SFEnergyScore
     _partial_: true
     chkpt_directory: trained_models/egcl_guidance_s1t1.ckpt
   gg_scale: 1e-3
   max_norm: 1e-3
   scheduler:
-    _target_: scripts/gradient_guidance.scheduler.CosineAnnealingLR
+    _target_: scripts.gradient_guidance.scheduler.CosineAnnealing
     _partial_: true
     T_max: 1000
     eta_min: 0
