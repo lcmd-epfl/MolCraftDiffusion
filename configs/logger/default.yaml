@@ -1,5 +1,5 @@
 _target_: MolecularDiffusion.runmodes.train.Logger
-logger: logging # wandb, logging
+logger: wandb # wandb, logging
 log_interval: 2
 name_wandb: MolecularDiffusion
 project_wandb: MolecularDiffusion

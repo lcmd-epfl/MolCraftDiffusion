@@ -20,16 +20,16 @@ chkpt_path: null
 
 # specific to diffusion
 diffusion_steps : 900
-diffusion_noise_schedule : polynomial_2
+diffusion_noise_schedule : polynomial_2 # learned, cosine_x, polynomial_x, issnr_x, smld_x
 diffusion_noise_precision: 1e-5
 diffusion_loss_type: l2
 normalize_factors: [1,4,10]
 extra_norm_values: []
 augment_noise: False
 data_augmentation: False
-context_mask_rate: 0
-mask_value: 0
-normalize_condition: null # [None, "maxmin", "mad"]
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10 # [None, "maxmin", "mad"]
 sp_regularizer_deploy: False
 sp_regularizer_regularizer: hard
 sp_regularizer_lambda_: 0
@@ -38,8 +38,8 @@ sp_regularizer_lambda_update_value: 1
 sp_regularizer_lambda_update_step: 100
 sp_regularizer_polynomial_p: 1.1
 sp_regularizer_warm_up_steps: 100
-
+reference_indices: null # indices of core atoms for the outpainting objective
 # evaluator parameters
 metrics: "Validity Relax and connected" # Validity Relax and connected, Validity Strict and connected, Validity Strict, Validity Relax
-n_samples: 4
+n_samples: 24
 generative_analysis: True

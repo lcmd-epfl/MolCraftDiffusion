@@ -3,6 +3,12 @@ MolecularDiffusion
 ![workflow](./images/overview.png)
 A 3D Molecular Generation Framework for Data-driven Molecular Applications.
 
+
+[![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://www.arxiv.org/abs/XXXXXX)
+[![Code](https://img.shields.io/badge/Code-GitHub-red)](https://github.com/pregHosh/MolCraftDiffusion)
+[![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
+
+
 Installation
 -----------
 
@@ -37,11 +43,6 @@ For a more detailed installation, including setting up a conda environment and i
     # install the package
     pip install . --no-deps
 
-For development installation:
-
-
-    pip install -e ".[dev]"
-
 Usage
 -----
 
@@ -64,7 +65,8 @@ Command-line interface for generation
 
 where INTERFERENCE is one of the following: gen_cfg, gen_cfggg, gen_conditional, gen
 
-Command-line interface for prediction
+Command-line interface for prediction with trained guidance or regression model
+
 
     python scripts/predict.py
 
