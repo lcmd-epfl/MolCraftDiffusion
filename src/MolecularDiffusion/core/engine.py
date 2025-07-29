@@ -167,7 +167,7 @@ class Engine(core.Configurable):
         if self.device.type == "cuda" and task is not None:
             task = task.cuda(self.device)
 
-        if not(hasattr(task, 'device')):
+        if not(hasattr(task, 'device')) and task is not None:
             recursive_module_to_device(task, self.device)
             
         self.model = task
