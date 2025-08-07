@@ -11,7 +11,7 @@ from MolecularDiffusion.utils import (
 
 
 
-class  EGNN(nn.Module):
+class EGNN(nn.Module):
     """
     Equivariant Graph Neural Network (EGNN) module for processing graph-structured data with node features and coordinates.
 

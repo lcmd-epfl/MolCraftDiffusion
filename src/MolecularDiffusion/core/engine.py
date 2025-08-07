@@ -424,7 +424,7 @@ class Engine(core.Configurable):
             shuffle=False,
         )
 
-        model = self.model
+        model = self.ema_model if self.ema_decay > 0 else self.model
         model.split = split
         model.eval()
 
@@ -499,11 +499,11 @@ class Engine(core.Configurable):
         # EMA model setup
         if engine.ema_decay > 0:
             engine.ema_model = copy.deepcopy(engine.model)
+            if "ema_model" in state:
+                engine.ema_model.load_state_dict(state["ema_model"], strict=strict)
             engine.ema_model.eval()
             for param in engine.ema_model.parameters():
                 param.requires_grad = False
-        else:
-            engine.ema_model = engine.model
 
         # Scheduler state
         if "scheduler" in state and engine.scheduler is not None:
@@ -528,12 +528,14 @@ class Engine(core.Configurable):
         self.model.load_state_dict(state["model"], strict=strict)
 
         if self.ema_decay > 0:
-            self.ema_model = copy.deepcopy(self.model)
+            if "ema_model" in state:
+                self.ema_model.load_state_dict(state["ema_model"], strict=strict)
+            else:
+                self.ema_model = copy.deepcopy(self.model)
+
             self.ema_model.eval()
             for param in self.ema_model.parameters():
                 param.requires_grad = False
-        else:
-            self.ema_model = self.model
 
         if load_optimizer:
             self.optimizer.load_state_dict(state["optimizer"])
@@ -556,7 +558,8 @@ class Engine(core.Configurable):
         checkpoint = os.path.expanduser(checkpoint)
         if self.rank == 0:
             state = {
-                "model": self.ema_model.state_dict(),
+                "model": self.model.state_dict(),
+                "ema_model": self.ema_model.state_dict(),
                 "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
                 "hyperparameters": self.sanitized_config_dict(), # Save full config dictionary
             }

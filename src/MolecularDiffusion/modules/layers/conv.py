@@ -5,7 +5,7 @@ from torch.nn.modules.dropout import Dropout
 from torch.nn.modules.linear import Linear
 from torch.nn import init
 from torch.nn.modules.normalization import LayerNorm
-from torch.nn.modules.dropout import Dropout
+
 from MolecularDiffusion.utils import coord2diff, assert_correctly_masked, remove_mean_with_mask_v2
 import math
 

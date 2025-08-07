@@ -129,8 +129,9 @@ def evaluate(
         test_loss = torch.tensor(test_loss).mean().item()
         if kwargs.get("generative_analysis", False):
             path = os.path.join(output_generated_dir, f"gen_xyz_{epoch}")
+            model_to_eval = solver.ema_model if solver.ema_decay > 0 else solver.model
             performances = analyze_and_save(
-                                solver.model,
+                                model_to_eval,
                                 epoch,
                                 n_samples=kwargs.get("n_samples", 100),
                                 batch_size=1,

@@ -153,18 +153,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     :param cfg: DictConfig configuration composed by Hydra.
     :return: Optional[float] with optimized metric value.
     """
-
-
-    # train the model
-    metric, _ = generate(cfg)
-
-    
-    # metric_value = get_metric_value(
-    #     metric_dict=metric_dict, metric_name=cfg.get("optimized_metric")
-    # )
-
-    return metric
-
+    generate(cfg)
 
 if __name__ == "__main__":
     main()

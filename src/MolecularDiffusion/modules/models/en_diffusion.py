@@ -303,7 +303,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         return torch.cat([x, h_cat, h_int], dim=2)
     
     def sigma_and_alpha_t_given_s(
-        self, gamma_t: torch.Tensor, gamma_s: torch.Tensor, target_tensor: torch.Tensor
+        self,
+        gamma_t: torch.Tensor,
+        gamma_s: torch.Tensor,
+        target_tensor: torch.Tensor,
     ):
         """
         Computes sigma t given s, using gamma_t and gamma_s. Used during sampling.
@@ -345,7 +348,8 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Compute standard deviations (only batch axis for x-part, inflated for h-part).
         sigma_T_x = self.sigma(
-            gamma_T, mu_T_x
+            gamma_T,
+            mu_T_x,
         ).squeeze()  # Remove inflate, only keep batch dimension for x-part.
         sigma_T_h = self.sigma(gamma_T, mu_T_h)
 
@@ -568,7 +572,15 @@ class EnVariationalDiffusion(torch.nn.Module):
 
 
     def log_pxh_given_z0_without_constants(
-        self, x, h, z_t, t_int, eps, net_out, node_mask, reference_indices=None,  
+        self,
+        x,
+        h,
+        z_t,
+        t_int,
+        eps,
+        net_out,
+        node_mask,
+        reference_indices=None,
         epsilon=1e-10
     ):
         
@@ -641,7 +653,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         # N(mean=z_h_cat, stdev=sigma_0_cat)
         log_ph_cat_proportional = torch.log(
             cdf_standard_gaussian((centered_h_cat + 0.5) / sigma_0_cat.unsqueeze(-1))
-            - cdf_standard_gaussian((centered_h_cat - 0.5) / sigma_0_cat.unsqueeze(-1))
+        -
+            cdf_standard_gaussian((centered_h_cat - 0.5) / sigma_0_cat.unsqueeze(-1))
             + epsilon
         )
 
@@ -677,7 +690,8 @@ class EnVariationalDiffusion(torch.nn.Module):
             # N(mean=z_h_cat, stdev=sigma_0_cat)
             log_ph_extra = torch.log(
                 cdf_standard_gaussian((h_extra_centered + 0.5) / sigma_0_extra)
-                - cdf_standard_gaussian((h_extra_centered - 0.5) / sigma_0_extra)
+            -
+                cdf_standard_gaussian((h_extra_centered - 0.5) / sigma_0_extra)
                 + epsilon
             )
             log_ph_extra = sum_except_batch(log_ph_extra * node_mask)
@@ -754,8 +768,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         centered_i  = h_int_round - est_int           # (N_total,1)
         log_pi = torch.log(
             cdf_standard_gaussian((centered_i + 0.5) / sigma0_int)
-        - cdf_standard_gaussian((centered_i - 0.5) / sigma0_int)
-        + epsilon
+        -
+            cdf_standard_gaussian((centered_i - 0.5) / sigma0_int)
+        +
+            epsilon
         ).squeeze(-1)                                 # (N_total,)
         #TODO this is wrong
         if reference_indices is not None:
@@ -767,8 +783,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         centered_c  = est_cat - 1                     # (N_total, C)
         log_pc_prop = torch.log(
             cdf_standard_gaussian((centered_c + 0.5) / sigma0_cat)
-        - cdf_standard_gaussian((centered_c - 0.5) / sigma0_cat)
-        + epsilon
+        -
+            cdf_standard_gaussian((centered_c - 0.5) / sigma0_cat)
+        +
+            epsilon
         )                                             # (N_total, C)
         log_Z       = torch.logsumexp(log_pc_prop, dim=1, keepdim=True)
         log_pcat    = log_pc_prop - log_Z             # (N_total, C)
@@ -784,8 +802,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             centered_e = h_ex - est_ex                  # (N_total, E)
             log_pe     = torch.log(
                 cdf_standard_gaussian((centered_e + 0.5) / sigma0_extra)
-            - cdf_standard_gaussian((centered_e - 0.5) / sigma0_extra)
-            + epsilon
+            -
+                cdf_standard_gaussian((centered_e - 0.5) / sigma0_extra)
+            +
+            epsilon
             ).sum(dim=1)                                # → (N_total,)
         else:
             log_pe = torch.zeros(N_total, device=x.device)
@@ -885,7 +905,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 z_t[:, :, self.n_dims:]
             ], dim=2)
 
-        assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
+        assert_mean_zero_with_mask(z_t[:, :, : self.n_dims], node_mask)
 
         # ---------------------------------------------------------------------
         # 3. CONTEXT MASKING
@@ -1081,7 +1101,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             mol_graph_t["graph"].x = torch.cat([
                 z_t[:, self.n_dims: self.n_dims + self.in_node_nf - self.ndim_extra - 1],
                 z_t[:, self.n_dims + self.in_node_nf - self.ndim_extra - 1],
-                z_t[:, self.ndim_extra:],],
+                z_t[:, self.ndim_extra:],], 
                 dim=1)
             mol_graph_t["graph"].atomic_numbers = z_t[:, self.n_dims + self.in_node_nf - self.ndim_extra - 1]    
         else:
@@ -1092,13 +1112,13 @@ class EnVariationalDiffusion(torch.nn.Module):
         # TODO figure this out later
         # if reference_indices is not None:
         #     # # Freeze the reference atoms
-        #     xh_ref = xh[:, reference_indices, :]
-        #     z_t[:, reference_indices, :] = xh_ref[:, :, :]
-        #     eps[:, reference_indices, :] = 0
-        #     z_t = torch.cat([
-        #         remove_mean_with_mask(z_t[:, :, : self.n_dims], node_mask),
-        #         z_t[:, :, self.n_dims :],
-        #     ],dim=2)
+        #     # xh_ref = xh[:, reference_indices, :]
+        #     # z_t[:, reference_indices, :] = xh_ref[:, :, :]
+        #     # eps[:, reference_indices, :] = 0
+        #     # z_t = torch.cat([
+        #     #     remove_mean_with_mask(z_t[:, :, : self.n_dims], node_mask),
+        #     #     z_t[:, :, self.n_dims :],
+        #     # ],dim=2)
 
         # assert_mean_zero_with_mask(z_t[:, :, : self.n_dims], node_mask)
 
@@ -1128,8 +1148,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         if self.training and self.loss_type == "l2":
             SNR_weight = torch.ones_like(errors["pos"])
         else:
+            # Assume statics noise scheduler for now
             SNR_weight = (self.SNR(gamma_s - gamma_t) - 1).squeeze(1)
-
         loss_t_larger_than_zero = 0
         if self.training and self.loss_type == "l2":
             for i, component in enumerate(errors):
@@ -1180,7 +1200,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 mol_graph_0["graph"].x = torch.cat([
                     z_0[:, self.n_dims: self.n_dims + self.in_node_nf - self.ndim_extra - 1],
                     z_0[:, self.n_dims + self.in_node_nf - self.ndim_extra - 1],
-                    z_0[:, self.ndim_extra:],],
+                    z_0[:, self.ndim_extra:],], 
                     dim=1)
                 mol_graph_0["graph"].atomic_numbers = z_0[:, self.n_dims + self.in_node_nf - self.ndim_extra - 1]    
             else:
@@ -1280,6 +1300,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             xh = torch.cat([x, h["categorical"], h["extra"], h["integer"]], dim=2)
         else:
             xh = torch.cat([x, h["categorical"], h["integer"]], dim=2)
+
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         z_t = alpha_t * xh + sigma_t * eps
@@ -1447,7 +1468,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         return neg_log_pxh
 
     def sample_p_zs_given_zt(
-        self, s, t, zt, node_mask, edge_mask, context, fix_noise=False
+        self,
+        s,
+        t,
+        zt,
+        node_mask,
+        edge_mask,
+        context,
+        fix_noise=False,
     ):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         gamma_s = self.gamma(s)
@@ -1465,7 +1493,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         if torch.all(eps_t == 0):
             raise ValueError("NaN in eps_t, stop sampling.")
-
+        
         # Compute mu for p(zs | zt).
         assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
         assert_mean_zero_with_mask(eps_t[:, :, : self.n_dims], node_mask)
@@ -1491,7 +1519,15 @@ class EnVariationalDiffusion(torch.nn.Module):
         return zs
 
     def sample_p_zs_given_zt_around_xh_target(
-        self, s, t, zt, node_mask, edge_mask, context, xh_target, fix_noise=False
+        self,
+        s,
+        t,
+        zt,
+        node_mask,
+        edge_mask,
+        context,
+        xh_target,
+        fix_noise=False,
     ):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         gamma_s = self.gamma(s)
@@ -1544,7 +1580,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         zt,
         node_mask,
         edge_mask,
-        context,    
+        context,
         target_function,
         scale,
         fix_noise=False,
@@ -1710,15 +1746,17 @@ class EnVariationalDiffusion(torch.nn.Module):
             energy = target_function(z0, t).sum()
             grad = autograd.grad(energy, z0)[0]
 
+        opt_info["grad_norms"] = grad.norm(dim=[1, 2])
 
-        t_min = grad.min()
-        t_max = grad.max()
-        grad = 2*(grad - t_min) / (t_max - t_min) -1
+        grad_norm_x = grad[:, : , :self.n_dims].norm(dim=[1, 2])
+        grad_norm_h = grad[:, : , self.n_dims:].norm(dim=[1, 2])
+        grad_x = x_weight* D**(1/2)/t[0].item() * grad[:, : , :self.n_dims] / (grad_norm_x + 1e-6) * sigma_t
+        grad_h = h_weight* D**(1/2)/t[0].item() * grad[:, : , self.n_dims:] / (grad_norm_h + 1e-6) * sigma_t
 
         grad = torch.cat(
             [
-                remove_mean_with_mask(grad[:, :, : self.n_dims], node_mask),
-                grad[:, :, self.n_dims :],
+                remove_mean_with_mask(grad_x, node_mask),
+                grad_h,
             ],
             dim=2,
         )
@@ -1735,7 +1773,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             zs = zs.nan_to_num(0.0)
         
         opt_info["mu1_norm"] = mu.norm(dim=[1, 2])
-        opt_info["grad_norms"] = grad.norm(dim=[1, 2])
         opt_info["energies"] = target_function(zs,  t)
         opt_info["z_norm"] = zs.norm(dim=[1, 2])
     
@@ -1743,19 +1780,24 @@ class EnVariationalDiffusion(torch.nn.Module):
             with torch.enable_grad():
                 for i in range(n_backward):
                     zs = zs.requires_grad_()
-                    energy_r =  target_function(zs,  s).sum()
+                    energy_r = target_function(zs,  s).sum()
                     grad_r = autograd.grad(energy_r, zs)[0]      
                     grad_r = grad_r.nan_to_num(0.0)
-                    t_min = grad_r.min()
-                    t_max = grad_r.max()
-                    grad_r = 2*(grad_r - t_min) / (t_max - t_min) - 1
+                    
+                    
+                    grad_norm_x = grad_r[:, : , :self.n_dims].norm(dim=[1, 2])
+                    grad_norm_h = grad_r[:, : , self.n_dims:].norm(dim=[1, 2])
+                    grad_r_x = x_weight*D**(1/2)/t[0].item() * grad_r[:, : , :self.n_dims] / (grad_norm_x + 1e-6) * sigma_t
+                    grad_r_h = h_weight*D**(1/2)/t[0].item() * grad_r[:, : , self.n_dims:] / (grad_norm_h + 1e-6) * sigma_t
+
                     grad_r = torch.cat(
                         [
-                            remove_mean_with_mask(grad_r[:, :, : self.n_dims], node_mask),
-                            grad_r[:, :, self.n_dims :],
+                            remove_mean_with_mask(grad_r_x, node_mask),
+                            grad_r_h,
                         ],
                         dim=2,
                     )
+        
                     reverse_grad_zs_norm = grad_r.norm(dim=[1, 2])
                     clip_coef_reverse_zs = max_norm / (reverse_grad_zs_norm + 1e-6)
                     clip_coef_clamped_reverse_zs = torch.clamp(clip_coef_reverse_zs, max=1)
@@ -1783,7 +1825,7 @@ class EnVariationalDiffusion(torch.nn.Module):
     ):
         """
         Inspired by GeoGuide
-        ."""
+        """
         opt_info = {}
         
         
@@ -1886,7 +1928,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     zs = zs - scale * grad_r 
         
         return zs, opt_info
-    
+
     def sample_p_zs_given_zt_guidance_cfg(
         self,
         s,
@@ -2106,7 +2148,8 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         def noising_xh(xh_target, t_array):
             gamma_t = self.inflate_batch_array(
-                self.gamma(t_array), xh_target[:, :, : self.n_dims]
+                self.gamma(t_array),
+                xh_target[:, :, : self.n_dims],
             )
 
             # Compute alpha_t and sigma_t from gamma.
@@ -2250,13 +2293,13 @@ class EnVariationalDiffusion(torch.nn.Module):
         return zs_f
     
     def sample_p_zs_given_zt_ip(
-        self, 
-        s, 
-        t, 
+        self,
+        s,
+        t,
         zt,
-        node_mask, 
+        node_mask,
         edge_mask,
-        context, 
+        context,
         mask_node_index,
         connector_dicts,
         t_critical_1=0.8,
@@ -2266,7 +2309,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         all_frozen=False,
         use_covalent_radii=True,
         scale_factor=1.1,
-        fix_noise=False
+        fix_noise=False,
     ):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         
@@ -2287,7 +2330,6 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Neural net prediction.
         eps_t = self.phi(zt, t, node_mask, edge_mask, context)
-
         if torch.all(eps_t == 0):
             raise ValueError("NaN in eps_t, stop sampling.")
         
@@ -2621,7 +2663,15 @@ class EnVariationalDiffusion(torch.nn.Module):
         
     # NOTE assume just one node in the reference
     def sample_p_zs_given_zt_around_xh_target(
-        self, s, t, zt, node_mask, edge_mask, context, xh_target,fix_noise=False
+        self,
+        s,
+        t,
+        zt,
+        node_mask,
+        edge_mask,
+        context,
+        xh_target,
+        fix_noise=False,
     ):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         gamma_s = self.gamma(s)
@@ -2641,11 +2691,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
         assert_mean_zero_with_mask(eps_s[:, :, : self.n_dims], node_mask)
 
-        mu = (  
+        mu = (
             zt / alpha_t_given_s
             - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_s
         )
 
+        # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
 
         # Sample zs given the paramters derived from zt.
@@ -2668,7 +2719,11 @@ class EnVariationalDiffusion(torch.nn.Module):
         return zs
 
     def sample_combined_position_feature_noise(
-        self, n_samples, n_nodes, node_mask, std=1.0
+        self,
+        n_samples,
+        n_nodes,
+        node_mask,
+        std=1.0,
     ):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
@@ -2873,7 +2928,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     chain_retry = [torch.zeros((n_frames_retry+1,) + z_size, device=z.device) for _ in range(n_retrys)]
             if condition_alg == "inpaint":
                 s_saves = torch.linspace(0, int(denoising_strength * self.T), 
-                                         steps=n_frames, device=z.device).long()
+                                         steps=n_frames, device=z.device).long() 
             else:
                 s_saves = torch.linspace(0, self.T, 
                                          steps=n_frames, device=z.device).long() 
@@ -2950,7 +3005,7 @@ class EnVariationalDiffusion(torch.nn.Module):
        
                     zs_pos = z[:, :, : self.n_dims]
                     zs_pos = zs_pos.squeeze(0)  
-                    zs_new_pos = zs_pos[mask_node_bool_corr]           
+                    zs_new_pos = zs_pos[mask_node_bool_corr]
                     condition_pos = xh_unmasked[:, :, : self.n_dims].squeeze(0)
                     condition_charge = None
                     zs_charge = None
@@ -2965,7 +3020,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                                 z_ref=condition_charge,
                                 z_tgt=zs_charge,
                                 scale_factor=scale_factor
-                                )   
+                                )
 
                     z[:, mask_node_bool_corr, :self.n_dims] = zl_corr.unsqueeze(0) 
 
@@ -2985,7 +3040,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                         [
                             remove_mean_with_mask(z[:, :, : self.n_dims], node_mask[:, :condition_tensor.size(1), :]),
                             z[:, :, self.n_dims :],
-                        ],  
+                        ],
                         dim=2,
                     )
                     xh_unmasked = None
@@ -3024,8 +3079,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                         ],
                         dim=2,)
                 mask_node_bool_corr = []
-                connector_dicts = {}              
-            #-----------------------extended inpainting-----------------------------------#
+                connector_dicts = {}
+            #-----------------------extended inpainting-----------------------------------
             n_node_extend = n_nodes - n_node_cond
   
             if n_node_extend > 0:
@@ -3076,13 +3131,14 @@ class EnVariationalDiffusion(torch.nn.Module):
                             )  
                 z[:, -n_node_extend:, :self.n_dims] = zl_corr.unsqueeze(0)    
                 if mask_node_index.size(1) > 0:
-                    mask_node_bool_corr = torch.cat([mask_node_bool_corr,
+                    mask_node_bool_corr = torch.cat([mask_node_bool_corr, 
                                                      torch.ones(n_node_extend, device=z.device)]).bool() 
                     # connector_dicts = {key + n_node_extend: value for key, value in connector_dicts.items()}
             if mask_node_index.size(1) > 0:
                 self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
         
-        elif condition_alg in ["outpaint", "outpaintft"]:                
+        elif condition_alg in ["outpaint", "outpaintft"]:
+                        
             natom_ref = condition_tensor.size(1)
             
             if any(idx > natom_ref - 1 for idx in connector_dicts.keys()):
@@ -3133,7 +3189,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         to_inspect_chain = False        
         if n_retrys > 0:
-            snap_shot = {}     
+            snap_shot = {}
         write_index = 0
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         with tqdm(total=self.T, dynamic_ncols=True, unit="steps") as pbar:
@@ -3167,7 +3223,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                         z, 
                         node_mask, 
                         edge_mask, 
-                        context, 
+                        context,
                         condition_tensor,
                         condition_component,
                         fix_noise=fix_noise,
@@ -3206,15 +3262,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                             node_mask, edge_mask, 
                             context,
                             mask_node_bool_corr,
-                            connector_dicts,
-                            t_critical_1,
-                            t_critical_2,
-                            d_threshold_f,
-                            w_b,
-                            all_frozen,
-                            use_covalent_radii,
-                            scale_factor,
-                            fix_noise=fix_noise
+                            connector_dicts=connector_dicts,
+                            fix_noise=fix_noise,
+                            # t_critical=0.4
                             )
                     elif condition_alg == "outpaintft": 
                         z = self.sample_p_zs_given_zt_op_ft(
@@ -3229,7 +3279,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     else:
                         z = self.sample_p_zs_given_zt(
                         s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise
-                        )   
+                        )
                 except ValueError as e:
                     if s < self.T/100: # arbitary threshold
                         to_inspect_chain = True
@@ -3265,7 +3315,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 )
         except ValueError as e:
             to_inspect_chain = True       
-        # 2 ---------------------------------------------------------------------#
+        # 2 ---------------------------------------------------------------------
         # Address overshoot cases, there maybe a good xh already before 0    
         #TODO extra nf!
         if to_inspect_chain and n_frames > 0:
@@ -3320,7 +3370,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             )
             x = remove_mean_with_mask(x, node_mask)
 
-        # 3 ---------------------------------------------------------------------#
+        # 3 ---------------------------------------------------------------------
         try:
             is_connected, num_components, n_degrees = check_quality(x.squeeze(0), h["integer"].squeeze(0))
         except:
@@ -3329,7 +3379,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             num_components = 1000000
             n_degrees = [0]*x.size(1)
     
-        # 3.5 ---------------------------------------------------------------------#
+        # 3.5 ---------------------------------------------------------------------
         #TODO extra nf!
         # In the event EGNN fails at p(xh | z0), we retry the chain
         bad_xh = (num_components > N_COMPONENT_MAX) or any([n_degree > N_DEGREE_MAX for n_degree in n_degrees])
@@ -3363,10 +3413,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             chain = None
         
         
-        # 4 ---------------------------------------------------------------------#                     
+        # 4 ---------------------------------------------------------------------
         if to_retry and n_retrys > 0 and n_frames > 0:
             n_retry = 0
-            while (n_retry < n_retrys) and to_retry: 
+            while (n_retry < n_retrys) and to_retry:
                 closest_t = min(snap_shot.keys(), key=lambda x: abs(x - t_retry))
                 z = snap_shot[closest_t]["z"]
                 self.condition_tensor = snap_shot[closest_t]["condition_tensor"]
@@ -3414,7 +3464,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                                     )
                             elif condition_alg == "outpaintft": 
                                 z = self.sample_p_zs_given_zt_op_ft(
-                                    s_array, t_array, z, 
+                                    s_array,
+                                    t_array, 
+                                    z, 
                                     condition_tensor, 
                                     node_mask, edge_mask, 
                                     context,
@@ -3423,10 +3475,16 @@ class EnVariationalDiffusion(torch.nn.Module):
                             else:
                                 z = self.sample_p_zs_given_zt(
                                 s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise
-                                )   
+                                )
                         except ValueError as e:
                             if s < self.T/100: # arbitary threshold
                                 to_inspect_chain = True
+                            else:
+                                t_retry = int(self.T*0.9)
+                                if n_retrys > 0:
+                                    n_frames_retry = int(n_frames*t_retry/self.T)
+                                    chain_retry = [torch.zeros((n_frames_retry,) + z_size, device=z.device) for _ in range(n_retrys)]
+                                # raise e  or just fuck this
                             break
                                     
                         if n_frames > 0 and n_retrys > 0:
@@ -3521,7 +3579,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                         is_connected = False
                         num_components = 1000000
                         n_degrees = [0]*x.size(1)
-                        
+                
                 if condition_alg in ["outpaint", "inpaint"]:
                     match_n_degree_connector = True
                     for key, value in connector_dicts.items():
@@ -3540,14 +3598,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     )
                     x_retry = remove_mean_with_mask(x_retry, node_mask)
                     
-
-                if n_frames > 0: 
-                    xh_retry = torch.cat([x_retry, h_retry["categorical"], h_retry["integer"]], dim=2)
-                    chain_retry[n_retry][-1] = xh_retry                          
-                else:
-                    chain_flat = None
-                    chain = None
-                assert_mean_zero_with_mask(x, node_mask)
+                assert_mean_zero_with_mask(x_retry, node_mask)
   
                     
                 x = torch.cat([x, x_retry], dim=0)
@@ -3557,24 +3608,12 @@ class EnVariationalDiffusion(torch.nn.Module):
                 n_retry+=1
                 
 
-            if n_frames > 0:
-                chain_retry_filtered = [
-                    chain for chain in chain_retry if torch.any(chain != 0)
-                ]
-                n_chain = len(chain_retry_filtered)
-     
-                chain_retry_filtered = torch.stack(chain_retry_filtered, dim=0)
-                chain = chain.view(n_samples * n_frames, z.size(1), z.size(2)-len(self.extra_norm_values))  
-                
-                try:
-                    chain_retry_filtered = chain_retry_filtered.view(n_chain, int(n_frames*t_retry/self.T), z.size(1), z.size(2)-len(self.extra_norm_values))
-                except RuntimeError:
-                    chain_retry_filtered = chain_retry_filtered.view(n_chain, int(n_frames*t_retry/self.T)+1, z.size(1), z.size(2)-len(self.extra_norm_values))
-                chain_flat  = [chain, chain_retry_filtered] # [n_frame, n_node, n_dim] and [n_retry, n_frame*t_retry/T,  n_node, n_dim]        
+            if n_frames > 0: 
+                xh_retry = torch.cat([x_retry, h_retry["categorical"], h_retry["integer"]], dim=2)
+                chain_retry[n_retry][-1] = xh_retry                          
             else:
-                x = x_retry
-                h["categorical"] = h_retry["categorical"]
-                h["integer"] = h_retry["integer"]
+                chain_flat = None
+                chain = None
         else:
             if n_frames:
                 chain_flat = chain.view(n_samples * n_frames, z.size(1), z.size(2)-len(self.extra_norm_values)) 
@@ -3583,76 +3622,15 @@ class EnVariationalDiffusion(torch.nn.Module):
 
     
 
-
     @torch.no_grad()
-    def sample_around_xh(
+    def sample_chain(
         self,
         n_samples,
         n_nodes,
         node_mask,
         edge_mask,
         context,
-        xh_target,
-        fix_noise=False,
-    ):
-        """
-        Draw samples from the generative model.
-        xh_target: target xh: [batch size, n_atom, n_features]
-        """
-        if fix_noise:
-            # Noise is broadcasted over the batch axis, useful for visualizations.
-            z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-        else:
-            z = self.sample_combined_position_feature_noise(
-                n_samples, n_nodes, node_mask
-            )
-
-        n_atoms_target = xh_target.size(1)
-        z[:, 0:n_atoms_target] = xh_target
-        z[:, n_atoms_target:, : self.n_dims] = translate_to_origine(
-            z[:, n_atoms_target:, : self.n_dims], node_mask[:, n_atoms_target:, :]) 
-        z = torch.cat(
-            [
-                remove_mean_with_mask(z[:, :, : self.n_dims], node_mask),
-                z[:, :, self.n_dims :],
-            ],
-            dim=2,
-        )
-        assert_mean_zero_with_mask(z[:, :, : self.n_dims], node_mask)
-
-        # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        for s in tqdm(reversed(range(0, self.T)), desc="Sampling z_s given z_t", total=self.T):
-            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-            t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
-
-            
-            # z_target = noising_xh(xh_target, t_array)
-    
-            z = self.sample_p_zs_given_zt_around_xh_target(
-                s_array, t_array, z, node_mask, edge_mask, context, xh_target, fix_noise=fix_noise
-            )
-
-        x, h = self.sample_p_xh_given_z0(
-            z, node_mask, edge_mask, context, fix_noise=fix_noise
-        )
-
-        assert_mean_zero_with_mask(x, node_mask)
-
-        max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
-        if max_cog > 5e-2:
-            print(
-                f"Warning cog drift with error {max_cog:.3f}. Projecting "
-                f"the positions down."
-            )
-            x = remove_mean_with_mask(x, node_mask)
-
-        return x, h
-       
-    @torch.no_grad()
-    def sample_chain(
-        self, n_samples, n_nodes, node_mask, edge_mask, context, keep_frames=None
+        keep_frames=None,
     ):
         """
         Draw samples from the generative model, keep the intermediate states for visualization purposes.
@@ -3907,49 +3885,19 @@ class EnVariationalDiffusion(torch.nn.Module):
         return x, h
 
     @torch.no_grad()
-    def sample_chain_guidance(
+    def sample_chain(
         self,
         n_samples,
-        target_function,
+        n_nodes,
         node_mask,
         edge_mask,
-        scale=1,
-        max_norm=10,
-        fix_noise=False,
-        std=1.0,
-        scheduler=None,
-        guidance_at=0,
-        guidance_ver=1,
+        context,
         keep_frames=None,
     ):
         """
-        Guided sampling from the generative model. keep the intermediate states for visualization purposes.
-
-        Parameters:
-        - n_samples (int): Number of samples to generate.
-        - target_function (Callable[[Tensor], Tensor]): Target function for guidance. The higher the value, the better.
-        - node_mask (Tensor): Mask indicating valid nodes.
-        - edge_mask (Tensor): Mask indicating valid edges.
-        - scale (float): Scale factor for guidance. Default is 1.0.
-        - max_norm (float): Initial maximum norm for the gradients. Default is 10.0.
-        - fix_noise (bool): Fix noise for visualization purposes. Default is False.
-        - std (float): Standard deviation of the noise. Default is 1.0.
-        - scheduler (RateScheduler): Rate scheduler. Default is None.
-            The scheduler should have a step method that takes the energy and the current scale as input.
-        - guidance_at (int): The timestep at which to apply guidance [0-1]  0 = since beginning. Default is 0.
-        - guidance_ver (int): The version of the guidance. Default is 1.
-        - keep_frames (int): Number of frames to keep. Default is None.
-        Returns:
-        Tuple[Tensor, Tensor]: Sampled positions and features.
+        Draw samples from the generative model, keep the intermediate states for visualization purposes.
         """
-        n_nodes = node_mask.size(1)
-        if fix_noise:
-            # Noise is broadcasted over the batch axis, useful for visualizations.
-            z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask, std)
-        else:
-            z = self.sample_combined_position_feature_noise(
-                n_samples, n_nodes, node_mask, std
-            )
+        z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
 
         assert_mean_zero_with_mask(z[:, :, : self.n_dims], node_mask)
 
@@ -3959,48 +3907,26 @@ class EnVariationalDiffusion(torch.nn.Module):
             assert keep_frames <= self.T
         chain = torch.zeros((keep_frames,) + z.size(), device=z.device)
 
-        guidance_at = self.T - int(guidance_at * self.T)
-        if scheduler is not None:
-            LARGE_E = 1e15
-            scale = scheduler.step(LARGE_E, scale)
-
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        with tqdm(total=self.T, dynamic_ncols=True, unit="steps") as pbar:
-            for s in reversed(range(0, self.T)):
-                s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-                t_array = s_array + 1
-                s_array = s_array / self.T
-                t_array = t_array / self.T
+        for s in reversed(range(0, self.T)):
+            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
+            t_array = s_array + 1
+            s_array = s_array / self.T
+            t_array = t_array / self.T
 
-                if s > 260:
-                    scale_deploy = 0
-                else:
-                    scale_deploy = scale
+            z = self.sample_p_zs_given_zt(
+                s_array, t_array, z, node_mask, edge_mask, context
+            )
 
-                z, opt_info = self.sample_p_zs_given_zt_guidance(
-                    s_array,
-                    t_array,
-                    z,
-                    node_mask,
-                    edge_mask,
-                    target_function,
-                    scale_deploy,
-                    fix_noise=fix_noise,
-                    max_norm=max_norm,
-                )
-                if scheduler is not None and s < guidance_at:
-                    scale_deploy = scheduler.step(opt_info["energies"], scale_deploy)
+            assert_mean_zero_with_mask(z[:, :, : self.n_dims], node_mask)
 
-                pbar.update(1)
+            # Write to chain tensor.
+            write_index = (s * keep_frames) // self.T
+            chain[write_index] = self.unnormalize_z(z, node_mask)
 
-                # Write to chain tensor.
-                write_index = (s * keep_frames) // self.T
-                chain[write_index] = self.unnormalize_z(z, node_mask)
-                pbar.update(1)
         # Finally sample p(x, h | z_0).
-        x, h = self.sample_p_xh_given_z0(
-            z, node_mask, edge_mask, context=None, fix_noise=fix_noise
-        )
+        x, h = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context)
+
         assert_mean_zero_with_mask(x[:, :, : self.n_dims], node_mask)
 
         xh = torch.cat([x, h["categorical"], h["integer"]], dim=2)
@@ -4173,8 +4099,8 @@ class GammaNetwork(torch.nn.Module):
 
         # Normalize to [0, 1]
         normalized_gamma = (gamma_tilde_t - gamma_tilde_0) / (
-            gamma_tilde_1 - gamma_tilde_0
-        )
+                gamma_tilde_1 - gamma_tilde_0
+            )
 
         # Rescale to [gamma_0, gamma_1]
         gamma = self.gamma_0 + (self.gamma_1 - self.gamma_0) * normalized_gamma
@@ -4406,7 +4332,12 @@ class DistributionNodes:
 class DistributionProperty:
 
     def __init__(
-        self, num_atoms, props, property_names, num_bins=1000, normalizer=None
+        self,
+        num_atoms,
+        props,
+        property_names,
+        num_bins=1000,
+        normalizer=None,
     ):
         """Props and propety_names order must the same"""
 
