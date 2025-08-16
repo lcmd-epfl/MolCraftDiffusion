@@ -2,13 +2,13 @@ _target_: MolecularDiffusion.runmodes.train.ModelTaskFactory_EGCL
 task_type: guidance
 atom_vocab: ${data.atom_vocab}
 condition_names: []
-hidden_size: 192
+hidden_size: 512
 act_fn:
   _target_: torch.nn.SiLU
 num_layers: 1
 attention: True
 tanh: True
-num_sublayers: 9
+num_sublayers: 5
 sin_embedding: False
 aggregation_method: "sum"
 dropout: 0.0
@@ -19,7 +19,7 @@ normalization_factor: 1.0
 chkpt_path: null
 
 # specific to diffusion
-task_learn: [gap]
+task_learn: [S1_exc,T1_exc]
 criterion: mse
 metric: [mae]
 num_mlp_layer: 3

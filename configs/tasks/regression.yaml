@@ -19,7 +19,7 @@ normalization_factor: 1.0
 chkpt_path: None
 
 # specific to regression
-task_learn: [gap]
+task_learn: [S1_exc,T1_exc]
 criterion: mse
 metric: [mae]
 num_mlp_layer: 3

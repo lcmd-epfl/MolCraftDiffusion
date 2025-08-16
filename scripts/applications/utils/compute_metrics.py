@@ -24,8 +24,8 @@ def runner(args):
     
     xyz_dir = args.input
     recheck_topo = args.recheck_topo
-    check_strain = args.check_strain
-    check_postbuster = args.check_postbuster
+    # check_strain = args.check_strain # Kept as a separate flag
+    # check_postbuster = args.check_postbuster # Removed, controlled by --metrics
     skip_idx = args.skip_atoms
     
     if skip_idx is None:
@@ -47,100 +47,105 @@ def runner(args):
         "smiles": [],
     }
     
+    if args.metrics in ["all", "core"]:
+        for xyz in tqdm(xyzs, desc="Processing XYZ files", total=len(xyzs)):
 
-        
-    for xyz in tqdm(xyzs, desc="Processing XYZ files", total=len(xyzs)):
-
-        try:
-            cartesian_coordinates_tensor, atomic_numbers_tensor = read_xyz_file(xyz)
-            data = create_pyg_graph(cartesian_coordinates_tensor, 
-                                        atomic_numbers_tensor,
-                                        xyz_filename=xyz,
-                                        r=EDGE_THRESHOLD)
-            data = correct_edges(data, scale_factor=SCALE_FACTOR)           
-            (is_valid, percent_atom_valid, num_components, bad_atom_chem, bad_atom_distort) = \
-                check_validity_v1(data, score_threshold=SCORES_THRESHOLD, 
-                                  skip_indices=skip_idx,
-                                  verbose=False)
-
-        except Exception as e:
-            logging.error(f"Error processing {xyz}: {e}")
-            is_valid = False
-            percent_atom_valid = 0
-            num_components = 100
-            bad_atom_chem = torch.arange(0,data.num_nodes)
-            bad_atom_distort = torch.arange(0,data.num_nodes)
- 
-        try:
-            smiles_list, mol_list = smilify_openbabel(xyz)
-        except:
-            # logging.warning(f"fail to convert xyz to mol with openbabel, retry with cell2mol")
-            mol_list = None
-        
-        to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
-        
-        if mol_list is None and num_components < 3:
-            xyz2mol_fn = smilify_cell2mol
             try:
-                _, smiles_list, mol_list, _ = smilify_wrapper([xyz], xyz2mol_fn)
-                mol_list = mol_list[0]
-            except Exception as e:
-                # logging.warning(f"fail to convert xyz to mol with v0, skip and assign invalid")
-                to_recheck = False
-                is_valid = False   
+                cartesian_coordinates_tensor, atomic_numbers_tensor = read_xyz_file(xyz)
+                data = create_pyg_graph(cartesian_coordinates_tensor, 
+                                            atomic_numbers_tensor,
+                                            xyz_filename=xyz,
+                                            r=EDGE_THRESHOLD)
+                data = correct_edges(data, scale_factor=SCALE_FACTOR)           
+                (is_valid, percent_atom_valid, num_components, bad_atom_chem, bad_atom_distort) = \
+                    check_validity_v1(data, score_threshold=SCORES_THRESHOLD, 
+                                      skip_indices=skip_idx,
+                                      verbose=False)
 
-        if to_recheck:
-            try:
-                (natom_stability_dicts,
-                    _,
-                    _,
-                    _,
-                    bad_smiles_chem) = check_chem_validity([mol_list], skip_idx=skip_idx)
-                natom_stable = sum(natom_stability_dicts.values())
-                percent_atom_valid = natom_stable/cartesian_coordinates_tensor.size(0)
-    
-                if len(bad_smiles_chem) == 0:
-                
-                    is_valid = True
-                else:
-                    logging.warning("Detect bad smiles in ", xyz, bad_smiles_chem)
             except Exception as e:
-                logging.error(f"Fail to check on {xyz} due to {e}, asssign invalid")
+                logging.error(f"Error processing {xyz}: {e}")
                 is_valid = False
                 percent_atom_valid = 0
-                
-        if is_valid and num_components == 1:
-            is_valid_connected = True   
-        else:
-            is_valid_connected = False         
+                num_components = 100
+                bad_atom_chem = torch.arange(0,data.num_nodes)
+                bad_atom_distort = torch.arange(0,data.num_nodes)
+    
+            try:
+                smiles_list, mol_list = smilify_openbabel(xyz)
+            except:
+                # logging.warning(f"fail to convert xyz to mol with openbabel, retry with cell2mol")
+                mol_list = None
             
-        df_res_dict["smiles"].append(smiles_list[0] if len(smiles_list) == 1 else smiles_list)
-        df_res_dict["file"].append(xyz)
-        df_res_dict["percent_atom_valid"].append(percent_atom_valid)
-        df_res_dict["valid"].append(is_valid)
-        df_res_dict["valid_connected"].append(is_valid_connected)
-        df_res_dict["num_graphs"].append(num_components)
-        df_res_dict["bad_atom_distort"].append(bad_atom_distort)
-        df_res_dict["bad_atom_chem"].append(bad_atom_chem)
+            to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
+            
+            if mol_list is None and num_components < 3:
+                xyz2mol_fn = smilify_cell2mol
+                try:
+                    _, smiles_list, mol_list, _ = smilify_wrapper([xyz], xyz2mol_fn)
+                    mol_list = mol_list[0]
+                except Exception as e:
+                    # logging.warning(f"fail to convert xyz to mol with v0, skip and assign invalid")
+                    to_recheck = False
+                    is_valid = False   
 
-    df = pd.DataFrame(df_res_dict)
-    df = df.sort_values(by="file")
-    fully_connected = [1 if num == 1 else 0 for num in df_res_dict["num_graphs"]]
+            if to_recheck:
+                try:
+                    (natom_stability_dicts,
+                        _,
+                        _,
+                        _,
+                        bad_smiles_chem) = check_chem_validity([mol_list], skip_idx=skip_idx)
+                    natom_stable = sum(natom_stability_dicts.values())
+                    percent_atom_valid = natom_stable/cartesian_coordinates_tensor.size(0)
+        
+                    if len(bad_smiles_chem) == 0:
+                    
+                        is_valid = True
+                    else:
+                        logging.warning("Detect bad smiles in ", xyz, bad_smiles_chem)
+                except Exception as e:
+                    logging.error(f"Fail to check on {xyz} due to {e}, asssign invalid")
+                    is_valid = False
+                    percent_atom_valid = 0
+                    
+            if is_valid and num_components == 1:
+                is_valid_connected = True   
+            else:
+                is_valid_connected = False         
+                
+            df_res_dict["smiles"].append(smiles_list[0] if len(smiles_list) == 1 else smiles_list)
+            df_res_dict["file"].append(xyz)
+            df_res_dict["percent_atom_valid"].append(percent_atom_valid)
+            df_res_dict["valid"].append(is_valid)
+            df_res_dict["valid_connected"].append(is_valid_connected)
+            df_res_dict["num_graphs"].append(num_components)
+            df_res_dict["bad_atom_distort"].append(bad_atom_distort)
+            df_res_dict["bad_atom_chem"].append(bad_atom_chem)
 
-    logging.info(f"{df['percent_atom_valid'].mean() * 100:.2f}% of atoms are stable")
-    logging.info(f"{df['valid'].mean() * 100:.2f}% of 3D molecules are valid")
-    logging.info(f"{df['valid_connected'].mean() * 100:.2f}% of 3D molecules are valid and fully-connected")
-    logging.info(f"{sum(fully_connected) / len(fully_connected) * 100:.2f}% of 3D molecules are fully connected")
-    
-    if check_strain:
-        rmsd_mean = df["rmsd"].dropna().mean()
-        delta_energy_mean = df["delta_energy"].dropna().mean()
-        intact_topology = [1 if top else 0 for top in df_res_dict["same_topology"] if not pd.isna(top)]
-        logging.info(f"RMSD mean: {rmsd_mean:.2f}")
-        logging.info(f"Delta Energy mean: {delta_energy_mean:.2f}")
-        logging.info(f"{sum(intact_topology) / len(intact_topology) * 100:.2f}% of 3D molecules have intact topology after the optimization")
-    
-    if check_postbuster:
+        df = pd.DataFrame(df_res_dict)
+        df = df.sort_values(by="file")
+        fully_connected = [1 if num == 1 else 0 for num in df_res_dict["num_graphs"]]
+
+        logging.info(f"{df['percent_atom_valid'].mean() * 100:.2f}% of atoms are stable")
+        logging.info(f"{df['valid'].mean() * 100:.2f}% of 3D molecules are valid")
+        logging.info(f"{df['valid_connected'].mean() * 100:.2f}% of 3D molecules are valid and fully-connected")
+        logging.info(f"{sum(fully_connected) / len(fully_connected) * 100:.2f}% of 3D molecules are fully connected")
+        
+        if args.check_strain: # Only run check_strain if core metrics are computed, as it relies on 'df'
+            rmsd_mean = df["rmsd"].dropna().mean()
+            delta_energy_mean = df["delta_energy"].dropna().mean()
+            intact_topology = [1 if top else 0 for top in df_res_dict["same_topology"] if not pd.isna(top)]
+            logging.info(f"RMSD mean: {rmsd_mean:.2f}")
+            logging.info(f"Delta Energy mean: {delta_energy_mean:.2f}")
+            logging.info(f"{sum(intact_topology) / len(intact_topology) * 100:.2f}% of 3D molecules have intact topology after the optimization")
+        
+        if args.output is None:
+            output_path = f"{xyz_dir}/output_metrics.csv"
+        else:
+            output_path = args.output
+        df.to_csv(output_path, index=False)
+
+    if args.metrics in ["all", "posebuster"]:
         mols = load_molecules_from_xyz(xyz_dir)
         postbuster_results = run_postbuster(mols)
         if postbuster_results is not None:
@@ -162,11 +167,6 @@ def runner(args):
             logging.info(f"Double Bond Flatness: {postbuster_results['double_bond_flatness'].mean():.2f}")
             logging.info(f"Internal Energy: {postbuster_results['internal_energy'].mean():.2f}")
 
-    if args.output is None:
-        output_path = f"{xyz_dir}/output_metrics.csv"
-    else:
-        output_path = args.output
-    df.to_csv(output_path, index=False)
 
 if __name__ == "__main__":
     import argparse
@@ -175,7 +175,9 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", type=str, default=None, help="output csv file")
     parser.add_argument("--recheck_topo", action="store_true", help="recheck topology")
     parser.add_argument("--check_strain", action="store_true", help="check strain")
-    parser.add_argument("--check_postbuster", action="store_true", help="check postbuster metrics")
+    parser.add_argument("--metrics", type=str, default="all",
+                        choices=["all", "core", "posebuster"],
+                        help="Specify which metrics to compute: 'all', 'core' (validity, connectivity), or 'posebuster'.")
     parser.add_argument("--skip_atoms", type=int, nargs="+", default=None, help="skip atoms")
     args = parser.parse_args()
     runner(args)

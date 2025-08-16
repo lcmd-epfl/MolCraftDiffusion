@@ -8,7 +8,7 @@ act_fn:
 num_layers: 1
 attention: True
 tanh: True
-num_sublayers: 9
+num_sublayers: 12
 sin_embedding: False
 aggregation_method: "sum"
 dropout: 0.0
@@ -19,10 +19,10 @@ normalization_factor: 1.0
 chkpt_path: null
 
 # specific to diffusion
-diffusion_steps : 900
+diffusion_steps : 400
 diffusion_noise_schedule : polynomial_2 # learned, cosine_x, polynomial_x, issnr_x, smld_x
 diffusion_noise_precision: 1e-5
-diffusion_loss_type: l2
+diffusion_loss_type:  vlb
 normalize_factors: [1,4,10]
 extra_norm_values: []
 augment_noise: False
