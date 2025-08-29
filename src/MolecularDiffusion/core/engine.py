@@ -431,7 +431,14 @@ class Engine(core.Configurable):
         preds = []
         targets = []
 
-        for batch in dataloader:
+        progress_bar = tqdm(
+            dataloader,
+            desc=f"Evaluating on {split}",
+            total=len(dataloader),
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for batch in progress_bar:
             if len(batch) == 0 or batch is None:
                 continue
             if self.device.type == "cuda":
@@ -488,7 +495,7 @@ class Engine(core.Configurable):
         engine.model.to(engine.device)
 
         # Load weights
-        engine.model.load_state_dict(state["model"], strict=strict)
+        engine.model.load_state_dict(state["ema_model"], strict=strict)
 
         # Load optimizer
         if engine.optimizer is not None and optimizer_state is not None:

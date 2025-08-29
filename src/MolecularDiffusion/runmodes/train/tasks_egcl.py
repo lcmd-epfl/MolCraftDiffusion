@@ -270,6 +270,9 @@ class ModelTaskFactory:
                 chk_point = torch.load(self.chkpt_path)["model"]
                 print(f"Loading checkpoint from {self.chkpt_path}")
                 self.task.load_state_dict(chk_point, strict=False)
+                if "mean" in chk_point and "std" in chk_point:
+                    self.task.mean = chk_point["mean"]
+                    self.task.std = chk_point["std"]
             except FileNotFoundError:
                 print(f"Checkpoint not found at {self.chkpt_path}. Initializing model without loading.")
         

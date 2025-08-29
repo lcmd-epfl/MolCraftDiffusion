@@ -1,0 +1,33 @@
+# @package _global_
+
+# specify here default configuration
+# order of defaults determines the order in which configs override each other
+defaults:
+  - data: mol_dataset  
+  - tasks: diffusion
+  - logger: default # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
+  - trainer: default
+  - hydra: default
+  - _self_
+
+# add this section to configure logging levels
+hydra:
+  job_logging:
+    root:
+      level: INFO
+  hydra_logging:
+    root:
+      level: INFO
+
+# run name, eg. for wandb logging
+name: "ayanami"
+output_directory: "output_pred"
+
+# tags to help you identify your experiments
+# you can overwrite this in experiment configs
+# overwrite from command line with `python train.py tags="[first_tag, second_tag]"`
+tags: ["joint", "diffusion", "train"]
+
+# seed for random number generators in pytorch, numpy and python.random
+seed: 9
+

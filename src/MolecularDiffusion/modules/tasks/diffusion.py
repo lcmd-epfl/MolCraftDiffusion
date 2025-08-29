@@ -1100,8 +1100,12 @@ class GuidanceModelPrediction(Task, core.Configurable):
                         num_class.append(task_class + 1)
                 else:
                     num_class.append(1)
-            self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float))
-            self.register_buffer("std", torch.as_tensor(std, dtype=torch.float))
+            if not hasattr(self, "mean"):
+                print("mean and std not found, registering buffer")
+                self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float))
+
+            if not hasattr(self, "std"):
+                self.register_buffer("std", torch.as_tensor(std, dtype=torch.float))
             self.register_buffer("weight", torch.as_tensor(weight, dtype=torch.float))
             self.num_class = self.num_class or num_class
 

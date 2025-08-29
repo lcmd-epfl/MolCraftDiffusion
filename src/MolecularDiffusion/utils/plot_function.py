@@ -96,7 +96,7 @@ def plot_correlation_with_histograms(
     plt.tight_layout()
     if output_path:
         fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    # plt.show()
     plt.close()
     
 def plot_correlation_with_kde(
@@ -155,9 +155,10 @@ def plot_correlation_with_kde(
     # Save or show plot
     if output_path:
         plt.savefig(output_path, dpi=400)
-    plt.show()
+    # plt.show()
     plt.close()
-    
+  
+
 
 def plot_embedding(
     embedding: np.ndarray,
