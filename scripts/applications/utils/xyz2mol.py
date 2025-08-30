@@ -132,14 +132,21 @@ def _process_row(full_path: str, scale_factors: list[float], smilify_func, queue
         mol_list = None
         smiles_list = None
 
-        for sf in scale_factors:
-            ml, _, sl, _ = smilify_openbabel(symbols, coords, scale=sf)
-            if ml is not None:
-                mol_list, smiles_list = ml, sl
-                if verbose:
-                    logging.info(f"[{os.path.basename(full_path)}] Create {smiles_list} with scale factor {sf}")
-                break
-
+        # for sf in scale_factors:
+        #     ml, _, sl, _ = smilify_openbabel(symbols, coords, scale=sf)
+        #     if ml is not None:
+        #         mol_list, smiles_list = ml, sl
+        #         if verbose:
+        #             logging.info(f"[{os.path.basename(full_path)}] Create {smiles_list} with scale factor {sf}")
+        #         break
+        
+        sl, ml  = smilify_openbabel(full_path)
+        print(sl)
+  
+        if ml is not None:
+            mol_list, smiles_list = ml, sl
+            if verbose:
+                logging.info(f"[{os.path.basename(full_path)}] Create {smiles_list}")
         if mol_list is None:
             smiles, _ = smilify_func(full_path)
             if verbose:

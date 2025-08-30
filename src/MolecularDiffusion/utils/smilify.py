@@ -143,7 +143,7 @@ def smilify_cell2mol(filename, z=None, coordinates=None, timeout=30):
                 break
 
             except Exception as e:
-                # print("Attempt failed for factor", covalent_factor, "error:", e) # verb
+                print("Attempt failed for factor", covalent_factor, "error:", e) # verb
                 continue
     except TimeoutException:
         print(f"{filename}: timed out after {timeout} seconds")
@@ -319,9 +319,9 @@ def guess_bond_matrix(
                 adj[i, j] = adj[j, i] 
     return adj
 
-# def read_xyz(path: os.PathLike | str) -> Tuple[List[str], torch.Tensor]:
-#     atoms = ase_read(path)
-#     return atoms.get_chemical_symbols(), torch.tensor(atoms.get_positions(), dtype=torch.float)
+def read_xyz_ob(path: os.PathLike | str) -> Tuple[List[str], torch.Tensor]:
+    atoms = ase_read(path)
+    return atoms.get_chemical_symbols(), torch.tensor(atoms.get_positions(), dtype=torch.float)
 
 class Molecule:
     def __init__(
@@ -369,33 +369,32 @@ class Molecule:
 def smilify_openbabel(filename):
     
     SCALES = [1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
+    smiles_list: list[str] = []
     
     for scale in SCALES:
-        symbols, pos = read_xyz(filename)
+        symbols, pos = read_xyz_ob(filename)
         mol = Molecule(symbols, pos, scale=scale)
-        try:
-            frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
-            smiles_list: list[str] = []
-            for frag in frags:
-                Chem.SanitizeMol(frag)
-                smiles_list.append(Chem.MolToSmiles(frag))
-        
-        except (Chem.rdchem.AtomValenceException, Chem.rdchem.KekulizeException,
-            Chem.rdchem.AtomKekulizeException, ValueError):
-            continue
-        return smiles_list, mol.rdkit_mol
-        # if len(smiles_list) > 1:
-        #     # If multiple fragments, return the largest one
-        #     largest_mol = None
-        #     largest_smiles = None
-        #     for frag in frags:
-        #         if largest_mol is None or frag.GetNumAtoms() > largest_mol.GetNumAtoms():
-        #             largest_mol = frag
-        #             largest_smiles = Chem.MolToSmiles(frag)
-        #     return largest_smiles, largest_mol
-        # else:
-        #     return smiles_list[0], mol.rdkit_mol
-    return None, None
+        mol = mol._build_rdkit_mol()
+        frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+
+    for frag in frags:
+
+        Chem.SanitizeMol(frag)
+        smiles_list.append(Chem.MolToSmiles(frag))
+
+    return smiles_list, mol
+    #     # if len(smiles_list) > 1:
+    #     #     # If multiple fragments, return the largest one
+    #     #     largest_mol = None
+    #     #     largest_smiles = None
+    #     #     for frag in frags:
+    #     #         if largest_mol is None or frag.GetNumAtoms() > largest_mol.GetNumAtoms():
+    #     #             largest_mol = frag
+    #     #             largest_smiles = Chem.MolToSmiles(frag)
+    #     #     return largest_smiles, largest_mol
+    #     # else:
+    #     #     return smiles_list[0], mol.rdkit_mol
+    # return None, None
 
 #%% xTB
 
