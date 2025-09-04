@@ -1,0 +1,44 @@
+# example_diffusion_config.yaml
+# This is an example configuration file for training a diffusion model.
+
+# Inherit from the default configurations for data, tasks, logger, and trainer.
+# This keeps your configuration clean and avoids repeating boilerplate settings.
+defaults:
+  - data: mol_dataset
+  - tasks: diffusion
+  - logger: default
+  - trainer: default
+  - hydra: default
+  - _self_
+
+# --- Experiment Tracking ---
+# Give your experiment a unique name for logging purposes (e.g., for Weights & Biases).
+name: "my_first_diffusion_experiment"
+
+# Add tags to help you categorize and find your experiments later.
+tags: ["diffusion", "example", "baseline"]
+
+# Set a seed for reproducibility.
+seed: 42
+
+# --- Task-Specific Overrides ---
+# Override parameters for the diffusion model task.
+# These settings will take precedence over the ones in `configs/tasks/diffusion.yaml`.
+tasks:
+  diffusion_steps: 500      # Number of steps in the diffusion process.
+  num_layers: 8             # Number of layers in the neural network.
+  hidden_size: 256          # Dimension of the hidden layers.
+  dropout: 0.1              # Dropout rate for regularization.
+
+# --- Trainer Overrides ---
+# Override parameters for the trainer.
+# These settings will take precedence over the ones in `configs/trainer/default.yaml`.
+trainer:
+  num_epochs: 50            # Set a smaller number of epochs for a quick test run.
+  learning_rate: 0.0002     # Adjust the learning rate.
+  validation_interval: 10   # How often to run validation (in epochs).
+
+# --- Data Overrides ---
+# You can also override data parameters if needed.
+data:
+  batch_size: 64            # Change the batch size.

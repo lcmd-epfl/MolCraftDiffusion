@@ -23,13 +23,13 @@ For a more detailed installation, including setting up a conda environment and i
     # install pytorch according to instructions (use CUDA version for your system)
     # https://pytorch.org/get-started/
     conda install pytorch==2.5.1 torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-
+    conda install conda-forge::openbabel
     # install pytorch geometric (use CUDA version for your system)
     # https://pytorch-geometric.readthedocs.io/
     pip install torch_geometric
 
     # install other libraries
-    pip install decorator numpy==1.26.4 scipy rdkit-pypi networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus cosymlib morfeus-ml wandb torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
+    pip install decorator numpy==1.26.4 scipy rdkit-pypi posebusters networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus cosymlib morfeus-ml wandb torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
     pip install hydra-core==1.* hydra-colorlog rootutils
 
@@ -40,33 +40,66 @@ For a more detailed installation, including setting up a conda environment and i
     cd ..
     rm -rf cell2mol
 
-    # install the package
-    pip install . --no-deps
+    # Install the package. Use editable mode (-e) to make the MolCraftDiff CLI tool available.
+    pip install -e .
 
 Usage
 -----
 
-Basic usage:
+There are two ways to run experiments: using the `MolCraftDiff` command-line tool (recommended) or by executing the Python scripts directly.
 
+### `MolCraftDiff` CLI (Recommended)
 
-    import MolecularDiffusion
-    
-    # Your code here
+Make sure you have installed the package in editable mode as described above, and that you run the commands from the root of the project directory.
 
-Command-line interface for training
+**Commands:**
+*   `train`: Run a training job.
+*   `generate`: Run a molecule generation job.
+*   `predict`: Run prediction with a trained model.
+*   `eval_predict`: Evaluate predictions.
+
+**Command Syntax:**
+
+    MolCraftDiff [COMMAND] [CONFIG_NAME]
+
+*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval_predict`.
+*   `[CONFIG_NAME]`: The name of the configuration file from the `configs/` directory (e.g., `train`, `example_diffusion_config`).
+
+**Examples:**
+
+    # Train a model using the 'example_diffusion_config.yaml' configuration
+    MolCraftDiff train example_diffusion_config
+
+    # Generate molecules using the 'my_generation_config.yaml' configuration
+    MolCraftDiff generate my_generation_config
+
+**Getting Help:**
+
+To see the main help message and a list of all commands:
+
+    MolCraftDiff --help
+
+To get help for a specific command:
+
+    MolCraftDiff train --help
+
+### Direct Script Execution
+
+You can also execute the scripts in the `scripts/` directory directly.
+
+**Training:**
 
     python scripts/train.py tasks=[TASK]
 
-where TASK is one of the following: diffusion, guidance, regression
+where TASK is one of the following: `diffusion`, `guidance`, `regression`.
 
-Command-line interface for generation
+**Generation:**
 
     python scripts/generate.py interference=[INTERFERENCE]
 
-where INTERFERENCE is one of the following: gen_cfg, gen_cfggg, gen_conditional, gen
+where INTERFERENCE is one of the following: `gen_cfg`, `gen_cfggg`, `gen_conditional`, `gen`.
 
-Command-line interface for prediction with trained guidance or regression model
-
+**Prediction:**
 
     python scripts/predict.py
 

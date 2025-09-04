@@ -4,7 +4,7 @@ atom_vocab: ${data.atom_vocab}
 condition_names: []
 hidden_size: 512
 act_fn:
-  _target_: torch.nn.SiLU
+  _target_: torch.nn.ReLU
 num_layers: 1
 attention: True
 tanh: True
@@ -16,7 +16,7 @@ normalization: False
 include_cosine: True
 norm_constant: 1.0
 normalization_factor: 1.0
-chkpt_path: null
+chkpt_path: trained_models/egcl_guidance_formed_s1t1_a1/guidance-epoch=195-metric=0.1975.pkl
 
 # specific to diffusion
 task_learn: [S1_exc,T1_exc]
