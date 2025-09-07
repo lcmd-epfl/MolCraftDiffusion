@@ -1,5 +1,6 @@
 _target_: MolecularDiffusion.runmodes.train.tasks_egt.ModelTaskFactory
 task_type: diffusion
+model_class: GraphTransformer
 atom_vocab: ${data.atom_vocab}
 condition_names: []
 hidden_dims:

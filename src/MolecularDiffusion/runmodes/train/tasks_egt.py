@@ -14,6 +14,7 @@ class ModelTaskFactory:
             atom_vocab (list): List of atom vocabulary used for encoding.
             task_names (list): List of conditional labels (e.g., properties for guidance).
             condition_names (list): List of condition names for conditional generation.
+            model_class (str): The model class to use. Defaults to "GraphTransformer".
             num_layers (int): Number of transformer layers.
             hidden_mlp_dims (dict): Dictionary of hidden MLP dimensions for the model.
             hidden_dims (dict): Dictionary of hidden dimensions for the model.
@@ -70,6 +71,7 @@ class ModelTaskFactory:
         task_names,
         condition_names: list = [],
         # Common model arguments
+        model_class: str = "GraphTransformer",
         num_layers: int = 6,
         hidden_mlp_dims: dict = {},
         hidden_dims: dict = {},
@@ -83,6 +85,7 @@ class ModelTaskFactory:
         self.atom_vocab = atom_vocab
         self.task_names = task_names
         self.condition_names = condition_names
+        self.model_class = model_class
         # Common model hyperparameters
         self.num_layers = num_layers
         self.hidden_mlp_dims = hidden_mlp_dims
@@ -118,7 +121,8 @@ class ModelTaskFactory:
             hidden_dims=self.hidden_dims,
             context_node_nf=self.context_node_nf,
             n_dims=3,
-            condition_time=True
+            condition_time=True,
+            model=self.model_class,
         )
         
 

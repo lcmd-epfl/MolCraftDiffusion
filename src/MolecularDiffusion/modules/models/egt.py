@@ -147,13 +147,145 @@ class GraphTransformer(nn.Module):
         )
 
 
+class GraphDiffTransformer(nn.Module):
+    """
+    Args:
+        in_node_nf (int): Number of input node features.
+        in_edge_nf (int): Number of input edge features.
+        in_global_nf (int): Number of input global features.
+        n_layers (int): Number of transformer layers.
+        hidden_mlp_dims (dict): Dictionary specifying hidden dimensions for MLPs for 'X' (node), 'E' (edge), 'y' (global), and 'pos' (position) features.
+        hidden_dims (dict): Dictionary specifying hidden dimensions for the transformer layers, including 'dx', 'de', 'dy', 'n_head', 'dim_ffX', and 'dim_ffE'.
+        out_node_nf (int, optional): Number of output node features. Defaults to `in_node_nf`.
+        out_edge_nf (int, optional): Number of output edge features. Defaults to `in_edge_nf`.
+        dropout (float): Dropout probability. Defaults to 0.0.
+        act_fn_in (nn.Module): Activation function for input MLPs. Defaults to `nn.SiLU()`.
+        act_fn_out (nn.Module): Activation function for output MLPs. Defaults to `nn.SiLU()`.
+    """
+
+    def __init__(
+        self,
+        in_node_nf: int,
+        in_edge_nf: int,
+        in_global_nf: int,
+        n_layers: int,
+        hidden_mlp_dims: dict,
+        hidden_dims: dict,
+        out_node_nf: int = None,
+        out_edge_nf: int = None,
+        dropout: float = 0.0,
+        act_fn_in: nn.Module = nn.SiLU(),
+        act_fn_out: nn.Module = nn.SiLU(),
+    ):
+        super().__init__()
+        self.n_layers = n_layers
+        self.in_node_nf = in_node_nf
+        self.in_edge_nf = in_edge_nf
+        if out_node_nf is None:
+            self.out_dim_X = in_node_nf
+        else:
+            self.out_dim_X = out_node_nf
+
+        if out_edge_nf is None:
+            self.out_dim_E = in_edge_nf
+        else:
+            self.out_dim_E = out_edge_nf
+        self.out_dim_y = in_global_nf
+        self.out_dim_charges = 1
+
+        self.mlp_in_X = nn.Sequential(
+            nn.Linear(in_node_nf, hidden_mlp_dims["X"]),
+            act_fn_in,
+            nn.Linear(hidden_mlp_dims["X"], hidden_dims["dx"]),
+            act_fn_in,
+        )
+        self.mlp_in_E = nn.Sequential(
+            nn.Linear(in_edge_nf, hidden_mlp_dims["E"]),
+            act_fn_in,
+            nn.Linear(hidden_mlp_dims["E"], hidden_dims["de"]),
+            act_fn_in,
+        )
+
+        self.mlp_in_y = nn.Sequential(
+            nn.Linear(in_global_nf, hidden_mlp_dims["y"]),
+            act_fn_in,
+            nn.Linear(hidden_mlp_dims["y"], hidden_dims["dy"]),
+            act_fn_in,
+        )
+        self.mlp_in_pos = PositionsMLP(hidden_mlp_dims["pos"])
+
+        self.tf_layers = nn.ModuleList(
+            [
+                XEyTransformerLayer(
+                    dx=hidden_dims["dx"],
+                    de=hidden_dims["de"],
+                    dy=hidden_dims["dy"],
+                    n_head=hidden_dims["n_head"],
+                    dim_ffX=hidden_dims["dim_ffX"],
+                    dim_ffE=hidden_dims["dim_ffE"],
+                    dropout=dropout,
+                    last_layer=False,
+                )
+                for i in range(n_layers)
+            ]
+        )
+
+        self.mlp_out_X = nn.Sequential(
+            nn.Linear(hidden_dims["dx"], hidden_mlp_dims["X"]),
+            act_fn_out,
+            nn.Linear(hidden_mlp_dims["X"], self.out_dim_X),
+        )
+        self.mlp_out_E = nn.Sequential(
+            nn.Linear(hidden_dims["de"], hidden_mlp_dims["E"]),
+            act_fn_out,
+            nn.Linear(hidden_mlp_dims["E"], self.out_dim_E),
+        )
+        self.mlp_out_pos = PositionsMLP(hidden_mlp_dims["pos"])
+
+    def forward(self, X, E, y, pos, node_mask, get_emd=False):
+        """
+        X: node features (bs, n, in_node_nf)
+        E: adjacncy matrixs (bs, n, n, edge features dim)
+        y: global features (bs, n, global features dim)
+        pos: positions (bs, n, 3)
+        node_mask: node mask (bs, n)
+        """
+
+        bs, n = X.shape[0], X.shape[1]
+        if y.dtype != torch.float32:
+            y = y.float()
+
+        diag_mask = ~torch.eye(n, device=X.device, dtype=torch.bool)
+        diag_mask = diag_mask.unsqueeze(0).unsqueeze(-1).expand(bs, -1, -1, -1)
+
+        new_E = self.mlp_in_E(E.float())
+        new_E = (new_E + new_E.transpose(1, 2)) / 2
+
+        X = self.mlp_in_X(X)
+        E = new_E
+        y = self.mlp_in_y(y)
+        pos = self.mlp_in_pos(pos, node_mask)
+
+        for i, layer in enumerate(self.tf_layers):
+            X, E, y, pos, node_mask = layer(X, E, y, pos, node_mask, i)
+
+        if not get_emd:
+            X = self.mlp_out_X(X)
+            E = self.mlp_out_E(E)
+            pos = self.mlp_out_pos(pos, node_mask)
+
+            E = 1 / 2 * (E + torch.transpose(E, 1, 2))
+
+        return (
+            X,
+            E,
+            y,
+            pos,
+        )
+
 class EGT_dynamics(nn.Module):
     """
-    Dynamics model using the GraphTransformer for equivariant graph-based time evolution.
-
-    This class wraps a GraphTransformer to model the time evolution of node features and coordinates, supporting context and time conditioning.
-    It is suitable for molecular dynamics, generative modeling, and other tasks requiring equivariant dynamics on graphs.
-
+    The dynamic function for EGT-based diffusion models.
     Args:
         in_node_nf (int): Number of input node features per node.
         in_edge_nf (int): Number of input edge features per edge.
@@ -165,6 +297,7 @@ class EGT_dynamics(nn.Module):
         dropout (float): Dropout probability.
         n_dims (int): Number of spatial dimensions (e.g., 3 for 3D coordinates).
         condition_time (bool): Whether to condition on time.
+        model (str): The name of the EGNN model to use ('GraphTransformer' or 'GraphDiffTransformer').
     """
 
     def __init__(
@@ -179,10 +312,18 @@ class EGT_dynamics(nn.Module):
         dropout: float = 0.0,
         n_dims: int = 3,
         condition_time=True,
+        model: str = "GraphTransformer",
     ):
         super().__init__()
 
-        self.egnn = GraphTransformer(
+        if model == "GraphTransformer":
+            model_class = GraphTransformer
+        elif model == "GraphDiffTransformer":
+            model_class = GraphDiffTransformer
+        else:
+            raise ValueError(f"Unknown model: {model}")
+
+        self.egnn = model_class(
             in_node_nf=in_node_nf,
             in_edge_nf=in_edge_nf,
             in_global_nf=in_global_nf,
@@ -211,6 +352,19 @@ class EGT_dynamics(nn.Module):
         return self._forward
 
     def _forward(self, t, xh, node_mask, edge_mask, context):
+        """
+        Performs a single forward pass of the dynamics model.
+
+        Args:
+            t (torch.Tensor): A tensor representing time, shape (bs,) or a single value.
+            xh (torch.Tensor): The state tensor, containing node positions and features, shape (bs, n_nodes, dims).
+            node_mask (torch.Tensor): A boolean mask for nodes, shape (bs, n_nodes).
+            edge_mask (torch.Tensor): A boolean mask for edges, shape (bs, n_nodes, n_nodes, 1).
+            context (torch.Tensor, optional): Context information to condition on. Defaults to None.
+
+        Returns:
+            torch.Tensor: The change in state (velocities and feature changes), shape (bs, n_nodes, dims).
+        """
         bs, n_nodes, dims = xh.shape
         h_dims = dims - self.n_dims
 

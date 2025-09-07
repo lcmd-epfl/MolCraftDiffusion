@@ -3,9 +3,9 @@
 # specify here default configuration
 # order of defaults determines the order in which configs override each other
 defaults:
-  - data: mol_dataset  # joint / qm9_only / mp20_only
+  - data: mol_dataset  
   - tasks: diffusion
-  - logger: default # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
+  - logger: default
   - trainer: default
   - hydra: default
   - _self_
