@@ -42,16 +42,15 @@ For a more detailed installation, including setting up a conda environment and i
 
     # Install the package. Use editable mode (-e) to make the MolCraftDiff CLI tool available.
     pip install -e .
-    
-    
-    Pre-trained Models
-    ------------------
-    
-    Pre-trained diffusion models are available at [Hugging Face](https://huggingface.co/pregH/MolecularDiffusion) or in the `models/edm_pretrained/` directory. These can be used as a starting point for downstream applications.
-    
-    
-    Usage
-    -----
+
+
+Usage
+-----
+
+### Pre-trained Models
+
+Pre-trained diffusion models are available at [Hugging Face](https://huggingface.co/pregHosh/MolecularDiffusion) or in the `models/edm_pretrained/` directory. We suggest to start from this model for downstream application.
+
 There are two ways to run experiments: using the `MolCraftDiff` command-line tool (recommended) or by executing the Python scripts directly.
 
 ### `MolCraftDiff` CLI (Recommended)
