@@ -2,8 +2,8 @@
 
 import torch
 from torch import nn
-
-from MolecularDiffusion import data # TODO
+import torch.nn.init as init
+from MolecularDiffusion import data 
 import os
 import numpy as np
 import random
@@ -185,3 +185,34 @@ def get_vram_size():
         return vram_gb
     else:
         return None
+    
+    
+def adjust_weights(param, new_shape):
+    old_shape = param.shape
+    if new_shape[1] > old_shape[1]:  # Expanding feature dimension
+        pad_size = new_shape[1] - old_shape[1]
+        pad = torch.zeros((old_shape[0], pad_size), device=param.device, dtype=param.dtype)
+        init.xavier_uniform_(pad)  # Xavier initialization for new weights
+        param = torch.cat([param, pad], dim=1)
+    elif new_shape[1] < old_shape[1]:  # Truncating feature dimension
+        param = param[:, :new_shape[1]]
+
+    if new_shape[0] > old_shape[0]:  # Expanding output dimension
+        pad_size = new_shape[0] - old_shape[0]
+        pad = torch.zeros((pad_size, param.shape[1]), device=param.device, dtype=param.dtype)
+        init.xavier_uniform_(pad)  # Xavier initialization for new weights
+        param = torch.cat([param, pad], dim=0)
+    elif new_shape[0] < old_shape[0]:  # Truncating output dimension
+        param = param[:new_shape[0], :]
+    
+    return param
+
+
+def adjust_bias(param, new_shape):
+    old_shape = param.shape
+    if new_shape[0] > old_shape[0]:
+        pad = torch.zeros((new_shape[0] - old_shape[0]), device=param.device, dtype=param.dtype)
+        param = torch.cat([param, pad])
+    elif new_shape[0] < old_shape[0]:
+        param = param[:new_shape[0]]
+    return param

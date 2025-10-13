@@ -1,7 +1,9 @@
 from MolecularDiffusion.callbacks.train_helper import SP_regularizer
 from MolecularDiffusion.modules.tasks import ProperyPrediction, GuidanceModelPrediction, GeomMolecularGenerative
 from MolecularDiffusion.modules.models import EGNN, EGNN_dynamics, NoiseModel, EnVariationalDiffusion
+from MolecularDiffusion.utils import adjust_weights, adjust_bias
 import torch
+
 
 class ModelTaskFactory:
     """
@@ -269,7 +271,26 @@ class ModelTaskFactory:
             try:
                 chk_point = torch.load(self.chkpt_path)["model"]
                 print(f"Loading checkpoint from {self.chkpt_path}")
-                self.task.load_state_dict(chk_point, strict=False)
+                
+                try:
+                    self.task.load_state_dict(chk_point, strict=False)
+                except RuntimeError as e:
+                    print("Adding new condition(s) to the diffusion model...")
+                    if len(self.condition_names) > 0 and self.task_type == "diffusion":
+                        chk_point["model.dynamics.egnn.embedding.layers.0.weight"] = adjust_weights(
+                            chk_point["model.dynamics.egnn.embedding.layers.0.weight"], (self.hidden_size, 
+                                                                                        self.dynamics_in_node_nf + len(self.condition_names))
+                        )
+
+                        chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"] = adjust_weights(
+                            chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"], (self.dynamics_in_node_nf + len(self.condition_names), 
+                                                                                            self.hidden_size)
+                        )
+                        chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"] = adjust_bias(
+                        chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"], (self.dynamics_in_node_nf + len(self.condition_names),)
+                        )                        
+                        
+                        
                 if "mean" in chk_point and "std" in chk_point:
                     self.task.mean = chk_point["mean"]
                     self.task.std = chk_point["std"]
@@ -279,3 +300,4 @@ class ModelTaskFactory:
         self.task.atom_vocab = self.atom_vocab
             
         return self.task
+
