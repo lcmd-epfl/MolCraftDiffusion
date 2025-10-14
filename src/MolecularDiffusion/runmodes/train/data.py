@@ -75,7 +75,7 @@ class DataModule:
         
         self.batch_size = batch_size
         self.num_workers = num_workers
-        
+        self.root_path = os.path.join(root, f"processed_{dataset_name}.pt")
         if self.data_type == "pyg":
             self.collate_fn = graph_collate
         else:
@@ -89,11 +89,21 @@ class DataModule:
         """
         Load dataset (from pickle if available), optionally save pickle, then split into train/valid/test.
         """
-        # load from pickle if specified and exists
-        if self.load_pkl and os.path.exists(self.load_pkl):     
-            dataset = PointCloudDataset()
+        if self.load_pkl and os.path.exists(self.root_path):
+            if self.data_type == "pointcloud" :
+                dataset = pointcloud_dataset(
+                    root=self.root,
+                    dataset_name=self.dataset_name,
+                    max_atom=self.max_atom,
+                )
+            elif self.data_type == "pyg":
+                dataset = pointcloud_dataset_pyG(
+                    root=self.root,
+                    dataset_name=self.dataset_name,
+                    max_atom=self.max_atom,
+                )
+
             dataset.max_atom = self.max_atom
-            dataset.load_pickle(self.filename)
             dataset.atom_vocab = self.atom_vocab
 
             class Config:
@@ -167,9 +177,6 @@ class DataModule:
             else:
                 raise ValueError(f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'regression', or 'guidance'.")
 
-            # save to pickle if requested
-            if self.save_pkl:
-                dataset.save_pickle(self.save_pkl)
 
         # split
         total = len(dataset)

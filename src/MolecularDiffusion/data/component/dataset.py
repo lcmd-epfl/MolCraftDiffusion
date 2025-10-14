@@ -324,10 +324,67 @@ class GraphDataset(torch_data.Dataset):
             
          
     def load_pickle(self, pkl_file, verbose=0):
-        pass
-    
+        """
+        Load the dataset from a pickle file.
+
+        Parameters:
+            pkl_file (str): file name
+            verbose (int, optional): output verbose level
+        """
+        self.transform = None
+
+        with utils.smart_open(pkl_file, "rb") as fin:
+            num_sample, tasks = pickle.load(fin)
+
+            self.graph_data_list = []
+            self.targets = defaultdict(list)
+            self.n_atoms = []
+
+            for task in tasks:
+                self.targets[task] = []
+            indexes = range(num_sample)
+            if verbose:
+                indexes = tqdm(indexes, "Loading %s" % pkl_file)
+            for i in indexes:
+                graph_data, values = pickle.load(fin)
+                self.graph_data_list.append(graph_data)
+                self.n_atoms.append(graph_data.natoms)
+                for task, value in zip(tasks, values):
+                    self.targets[task].append(value)
+            self.atom_vocab, self.with_hydrogen = pickle.load(fin)
+
     def save_pickle(self, pkl_file, verbose=0):
-        pass
+        """
+        Save the dataset to a pickle file.
+
+        Parameters:
+            pkl_file (str): file name
+            verbose (int, optional): output verbose level
+        """
+        with utils.smart_open(pkl_file, "wb") as fout:
+            num_sample = len(self.graph_data_list)
+            tasks = list(self.targets.keys())
+            pickle.dump((num_sample, tasks), fout)
+
+            indexes = range(num_sample)
+            if verbose:
+                indexes = tqdm(indexes, "Dumping to %s" % pkl_file)
+            for i in indexes:
+                values = [v[i] for v in self.targets.values()]
+                pickle.dump(
+                    (
+                        self.graph_data_list[i],
+                        values,
+                    ),
+                    fout,
+                )
+            pickle.dump(
+                (
+                    self.atom_vocab,
+                    self.with_hydrogen,
+                ),
+                fout,
+            )
     
     def _standarize_index(self, index, count):
         if isinstance(index, slice):
