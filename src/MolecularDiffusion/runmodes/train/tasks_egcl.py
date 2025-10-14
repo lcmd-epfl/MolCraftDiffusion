@@ -3,6 +3,9 @@ from MolecularDiffusion.modules.tasks import ProperyPrediction, GuidanceModelPre
 from MolecularDiffusion.modules.models import EGNN, EGNN_dynamics, NoiseModel, EnVariationalDiffusion
 from MolecularDiffusion.utils import adjust_weights, adjust_bias
 import torch
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ModelTaskFactory:
@@ -265,17 +268,17 @@ class ModelTaskFactory:
             raise ValueError(f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'regression', or 'guidance'.")
 
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad) # type: ignore
-        print(f"\n{'='*50}\nNumber of parameters: {n_params}\n{'='*50}\n")
+        logger.info(f"Number of parameters: {n_params}")
         
         if self.chkpt_path:    
             try:
                 chk_point = torch.load(self.chkpt_path)["model"]
-                print(f"Loading checkpoint from {self.chkpt_path}")
+                logger.info(f"Loading checkpoint from {self.chkpt_path}")
                 
                 try:
                     self.task.load_state_dict(chk_point, strict=False)
                 except RuntimeError as e:
-                    print("Adding new condition(s) to the diffusion model...")
+                    logger.info("Adding new condition(s) to the diffusion model...")
                     if len(self.condition_names) > 0 and self.task_type == "diffusion":
                         chk_point["model.dynamics.egnn.embedding.layers.0.weight"] = adjust_weights(
                             chk_point["model.dynamics.egnn.embedding.layers.0.weight"], (self.hidden_size, 
@@ -295,7 +298,7 @@ class ModelTaskFactory:
                     self.task.mean = chk_point["mean"]
                     self.task.std = chk_point["std"]
             except FileNotFoundError:
-                print(f"Checkpoint not found at {self.chkpt_path}. Initializing model without loading.")
+                logger.warning(f"Checkpoint not found at {self.chkpt_path}. Initializing model without loading.")
         
         self.task.atom_vocab = self.atom_vocab
             

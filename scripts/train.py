@@ -126,6 +126,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     :param cfg: A DictConfig configuration composed by Hydra.
     :return: A tuple with metrics and dict with all instantiated objects.
     """
+    
+    # Create the output directory
+    output_path = cfg.trainer.output_path
+    if not os.path.exists(output_path):
+        os.makedirs(output_path, exist_ok=True)
+    
     # set seed for random number generators in pytorch, numpy and python.random
     if cfg.get("seed"):
         seed_everything(cfg.seed, workers=True)

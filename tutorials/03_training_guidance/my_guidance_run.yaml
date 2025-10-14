@@ -21,6 +21,11 @@ logger:
 data:
   data_type: "pyg" # Set data type for guidance
   batch_size: 128
+  root: data # where the data is stored
+  filename: molecule.csv
+  xyz_dir: xyz_files
+  load_pkl: true # to reload the processed data if it exists
+
 
 tasks:
   task_learn: ["S1_exc", "T1_exc"]

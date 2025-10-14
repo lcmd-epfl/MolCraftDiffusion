@@ -14,7 +14,9 @@ from torch_geometric.data import Batch
 #%% sf energy score
 def distance_to_line(point, line_start, line_end):
     """Calculate the perpendicular distance from a point to a line segment."""
-    cross = torch.cross(line_end - line_start, line_start - point, dim=0)
+    v1 = torch.cat([line_end - line_start, torch.zeros(1, device=line_end.device, dtype=line_end.dtype)])
+    v2 = torch.cat([line_start - point, torch.zeros(1, device=line_end.device, dtype=line_end.dtype)])
+    cross = torch.cross(v1, v2, dim=0)
     return torch.norm(cross) / torch.norm(line_end - line_start)
 
 def is_within_triangle(x, y, T1_cutoff, S1_cutoff):
@@ -168,11 +170,12 @@ def pointTriangleDistance(TRI, P):
                                       t * (b * s + c * t + 2.0 * e) + f
 
     if sqrdistance < 0.0:
-        sqrdistance = 0.0
-
+        sqrdistance = torch.tensor(0.0, device=det.device, dtype=det.dtype)
+    
     dist = torch.sqrt(sqrdistance)
     PP0 = B + s * E0 + t * E1
     return dist, PP0
+
 
 
 def energy_score(x, y, S1_cutoff=3.8, scaling_S1=1 / 3.0, T1_cutoff=1.5):
@@ -223,7 +226,9 @@ class SFEnergyScore:
         self.atom_vocab = atom_vocab if atom_vocab is not None else ["H", "C", "N", "O", "F"]
         self.norm_factor = norm_factor
         self.solver = self._load_model(self.chkpt_directory)
-        self.norm_factor = self.solver.model.norm_values
+        
+        # self.norm_factor = self.solver.model.norm_values
+        self.norm_factor =  getattr(self.solver.model, 'norm_values', [1,1,1])
         self.node_feature = node_feature 
 
         self.n_dim = 3  # 3D coordinates

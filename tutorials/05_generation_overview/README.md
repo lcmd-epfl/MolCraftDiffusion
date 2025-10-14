@@ -2,6 +2,8 @@
 
 This tutorial provides an overview of the different ways you can generate molecules using a trained model. The generation process is controlled via the `MolCraftDiff generate` command, which relies on a configuration file to specify the desired behavior.
 
+**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
+
 There are three primary modes for generating molecules:
 
 1.  **Unconditional Generation**: Generating novel molecules without any specific constraints or guidance. This is the simplest form of generation and is the focus of this tutorial.
@@ -70,5 +72,3 @@ Use the `MolCraftDiff generate` command with the config file:
 ```bash
 MolCraftDiff generate [config_file]
 ```
-
----

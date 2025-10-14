@@ -1,5 +1,5 @@
 defaults:
-  - data: my_new_dataset # Use your new dataset configuration
+  - data: mol_dataset # Use your new dataset configuration
   - tasks: diffusion_pretrained
   - logger: wandb
   - trainer: default
@@ -7,6 +7,16 @@ defaults:
 
 name: "finetune_on_new_data"
 seed: 42
+
+data:
+  # Assuming default data paths are correct for this example
+  batch_size: 128
+  max_atom: 80
+  root: data
+  filename: data.csv
+  xyz_dir: xyz_path/
+  load_pkl: false
+
 
 trainer:
   output_path: "training_outputs/finetuned_new_data"

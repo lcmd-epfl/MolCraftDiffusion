@@ -187,8 +187,12 @@ class Engine(core.Configurable):
         self.test_set = test_set
         self.optimizer = optimizer
         self.scheduler = scheduler
-
+        
+        if train_set is None or optimizer is None:
+            logger = "logging" # this is the interference mode
+            
         if isinstance(logger, str):
+            
             if logger == "logging":
                 logger = core.LoggingLogger()
             elif logger == "wandb":

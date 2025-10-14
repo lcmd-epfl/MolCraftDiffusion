@@ -25,4 +25,4 @@ interference:
   visualize_trajectory: False
   output_path: generated_mol
   condition_configs:
-    cfg_scale: 1
+    cfg_scale: 

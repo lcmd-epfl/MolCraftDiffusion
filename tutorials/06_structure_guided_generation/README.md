@@ -11,6 +11,8 @@ This tutorial explains how to guide molecule generation using structural constra
 
 ## 1. Introduction
 
+**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
+
 Structure-guided generation allows you to influence the output of the diffusion model by providing a starting molecular structure. This is useful for tasks like:
 
 *   **Inpainting**: Completing a molecule where a part is missing.
@@ -64,8 +66,6 @@ interference:
     denoising_strength: 0.8
 ```
 
-
-
 ### Running Inpainting
 
 Use the `MolCraftDiff generate` command with your configuration file:
@@ -78,8 +78,8 @@ MolCraftDiff generate my_inpaint.yaml
 
 Outpainting is the process of growing a molecule from a given fragment. You provide a starting fragment, and the model will add new atoms to it.
 
-
 ### Key Outpainting Parameters
+
 | Parameter | Description |
 | :--- | :--- |
 | `reference_structure_path` | **CRITICAL:** Path to your own XYZ file containing the fragment you want to grow from. |
@@ -90,11 +90,8 @@ Outpainting is the process of growing a molecule from a given fragment. You prov
 
 Here is an example of a complete configuration file for outpainting, which you can name `my_outpaint.yaml`:
 
-
-
-
-
 ### Example `my_outpaint.yaml`
+
 ```yaml
 # This file represents the combined configuration for outpainting generation.
 # In the actual project, this is composed from `configs/generate.yaml` and `configs/interference/my_outpaint.yaml`.
@@ -115,7 +112,7 @@ interference:
   task_type: outpaint
   sampling_mode: "ddpm"
   num_generate: 50
-  mol_size: [30, 40] # Target size of the generated molecule
+  mol_.size: [30, 40] # Target size of the generated molecule
   output_path: "results/my_outpainting_run"
   condition_configs:
     reference_structure_path: "assets/BINOLCp.xyz"
@@ -125,7 +122,6 @@ interference:
       2: [3]
       3: [3]
 ```
-
 
 ### Running Outpainting
 

@@ -4,10 +4,11 @@
 defaults:
   - tasks: diffusion
   - interference: gen_gg
+  - logger: default
   - _self_
 
-name: "akatsuki"
-chkpt_directory: "models/edm_formed_s1t1/"
+name: "asahi"
+chkpt_directory: "models/edm_pretrained/"
 atom_vocab: [H,B,C,N,O,F,Al,Si,P,S,Cl,As,Se,Br,I,Hg,Bi]
 diffusion_steps: 600
 seed: 9
@@ -29,15 +30,15 @@ interference:
     target_function:
       _target_: scripts.gradient_guidance.sf_energy_score.SFEnergyScore
       _partial_: true
-      chkpt_directory: trained_models/egcl_guidance_s1t1.ckpt
-    gg_scale: 1e-3
-    max_norm: 1e-3
-    scheduler:
-      _target_: scripts.gradient_guidance.scheduler.CosineAnnealing
-      _partial_: true
-      T_max: 1000
-      eta_min: 0
+      chkpt_directory: models/egcl_guidance_s1t1.ckpt
+    gg_scale: 2e-3
+    max_norm: 10
+    scheduler: null
+      # _target_: scripts.gradient_guidance.scheduler.CosineAnnealing
+      # _partial_: true
+      # T_max: 1000
+      # eta_min: 0
     guidance_ver: 2
     guidance_at: 1
     guidance_stop: 0
-    n_backwards: 0
+    n_backwards: 2

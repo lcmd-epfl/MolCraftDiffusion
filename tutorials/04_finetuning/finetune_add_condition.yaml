@@ -1,5 +1,5 @@
 defaults:
-  - data: my_conditional_dataset # A dataset with property labels
+  - data: mol_dataset # A dataset with property labels
   - tasks: diffusion_pretrained
   - logger: wandb
   - trainer: default
@@ -8,6 +8,15 @@ defaults:
 name: "finetune_for_cfg"
 seed: 42
 
+data:
+  # Assuming default data paths are correct for this example
+  batch_size: 128
+  max_atom: 80
+  root: data
+  filename: data.csv
+  xyz_dir: xyz_path/
+  load_pkl: false
+
 trainer:
   output_path: "training_outputs/finetuned_cfg_model"
   num_epochs: 50
@@ -15,8 +24,9 @@ trainer:
 
 tasks:
   # CRITICAL: Path to the pre-trained unconditional model
-  chkpt_path: "path/to/downloaded_unconditional_model.ckpt"
+  chkpt_path: "models/edm_pretrained/edm_chem.pkl"
   
   # KEY CHANGE: Add the conditions to learn
   condition_names: ["S1_exc", "T1_exc"]
   context_mask_rate: 0.1 # Make it CFG-ready
+  mask_value: -10 # null value for unconditional mode

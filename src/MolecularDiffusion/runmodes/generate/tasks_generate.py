@@ -221,8 +221,10 @@ class GenerativeFactory:
 
         target_function.norm_factor = self.task.model.norm_values
         target_function = target_function()
-        scheduler = self.condition_configs.get("scheduler", None)()
-
+        scheduler = self.condition_configs.get("scheduler", None)
+        if scheduler is not None:
+            scheduler = scheduler()
+            
         fail_count = 0
         progress_bar = tqdm(range(self.num_generate), desc="Sampling molecules", leave=True)
         
@@ -280,6 +282,20 @@ class GenerativeFactory:
                         guidance_stop=self.condition_configs.get("guidance_stop",0),
                         n_backwards=self.condition_configs.get("n_backwards",1)
                     )   
+                    
+                save_xyz_file(
+                    self.output_path,
+                    one_hot,
+                    x,
+                    atom_decoder=self.task.atom_vocab,
+                )
+
+                path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
+                shutil.move(
+                    path_xyz,
+                    os.path.join(self.output_path, f"molecule_{str(i+1).zfill(4)}.xyz"),
+                )
+                
                 if property_eval:
                     xh = torch.cat([
                         x,

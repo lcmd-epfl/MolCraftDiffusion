@@ -8,6 +8,8 @@ This process makes the model "time-aware," meaning it learns to predict properti
 
 We will follow the same workflow as before, using a single configuration file to set up the experiment.
 
+**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
+
 ### Step 1: Create Your Experiment File
 
 ```bash
@@ -39,9 +41,21 @@ Most settings are identical to the regressor setup. The main difference is the a
 | Parameter | Example Override | Description |
 | :--- | :--- | :--- |
 | `trainer.output_path` | `trainer: {output_path: "results/my_guidance"}` | **CRITICAL:** Where your trained guidance model is saved. |
-| `data.root` | `data: {root: "/path/to/my/dataset"}` | The root directory of your dataset. |
 | `data.filename` | `data: {filename: "molecules.csv"}` | The CSV file with molecule information. |
 | `data.xyz_dir` | `data: {xyz_dir: "xyz_files/"}` | The directory containing `.xyz` geometry files. |
+
+#### Data Processing and Caching
+
+The first time you run a training job, the script processes your raw dataset (`.xyz` files, etc.) into a format suitable for training. This processed data is saved as a `.pkl` (pickle) file inside the directory specified by `data.root`.
+
+| Parameter | Example Override | Description |
+| :--- | :--- | :--- |
+| `data.root` | `data: {root: "data/processed"}` | The directory where processed dataset files (`.pkl`) are stored. |
+| `data.load_pkl` | `data: {load_pkl: True}` | If `True`, the script will try to load a pre-processed `.pkl` file from `data.root`. If `False` or if the file doesn't exist, the data will be re-processed from scratch. |
+
+**Best Practice:**
+- On your first run, `data.load_pkl` can be `False` (or omitted) to ensure your data is processed correctly.
+- For all subsequent runs using the same dataset, set `data.load_pkl: True` to save time by loading the cached, processed data directly.
 
 #### **Data Settings**
 | Parameter | Example Override | Notes / Recommendations |

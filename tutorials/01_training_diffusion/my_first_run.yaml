@@ -2,7 +2,7 @@
 defaults:
   - data: mol_dataset
   - tasks: diffusion
-  - logger: wandb
+  - logger: wandb # `default` for logging
   - trainer: default
   - _self_
 
@@ -21,11 +21,14 @@ logger:
 
 data:
   batch_size: 64
+  root: data # where the data is stored
   filename: molecule.csv
   xyz_dir: xyz_files
+  load_pkl: true # to reload the processed data if it exists
+
 
 tasks:
-  condition_names: ["S1_exc", "T1_exc"] # Specify properties from our dataset
-  context_mask_rate: 0.1 # Enable CFG training
+  condition_names: [] # Specify properties from our dataset
+  context_mask_rate: 0.0 # > 0.0 to enable CFG training
   hidden_size: 256
   sp_regularizer_deploy: False # toggle to deploy SPL
