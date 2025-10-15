@@ -1,0 +1,31 @@
+the installation can be made easier by having the dependencies that are straightforward installed through the pyproject. 
+
+these two command do not run if you follow the readme 
+# Train a model using the 'example_diffusion_config.yaml' configuration
+    MolCraftDiff train example_diffusion_config
+
+    # Generate molecules using the 'my_generation_config.yaml' configuration
+    MolCraftDiff generate my_generation_config
+
+Not sure why the help opens a text file using vim
+
+add commands to downlaod the files/ models from huggingface
+something like : 
+
+from huggingface_hub import snapshot_download
+
+snapshot_download(repo_id="pregH/MolecularDiffusion",local_dir="/media/mohammed/Work/MolCraftDiffusion/data")
+
+
+got this error : 
+  File "/media/mohammed/Work/MolCraftDiffusion/src/MolecularDiffusion/core/engine.py", line 498, in load_from_checkpoint
+    engine.model.load_state_dict(state["ema_model"], strict=strict)
+KeyError: 'ema_model'
+
+Set the environment variable 
+
+
+Changed line 495 in engine.py to this :         engine.model.load_state_dict(state["model"], strict=strict)
+for it to work.
+
+I can generate molecules, but for the other part, it is not clear how to modify the config files for any specific application. 

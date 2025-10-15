@@ -10,7 +10,7 @@ defaults:
 
 # run name, eg. for wandb logging
 name: "akatsuki"
-chkpt_directory: "/home/pregabalin/RF/MolecularDiffusion/trained_models/edm_pretrained/"
+chkpt_directory: "/media/mohammed/Work/MolCraftDiffusion/data/models/diffusion_models/edm_pretrained"
 atom_vocab: [H,B,C,N,O,F,Al,Si,P,S,Cl,As,Se,Br,I,Hg,Bi]
 diffusion_steps: 600
 

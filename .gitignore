@@ -22,3 +22,6 @@ lightning_logs/
 trained_models/
 
 logs/
+*.tar*
+*.gz*
+*.ckpt*

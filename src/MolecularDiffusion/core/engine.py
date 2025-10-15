@@ -493,9 +493,9 @@ class Engine(core.Configurable):
 
         # Move model to device
         engine.model.to(engine.device)
-
-        # Load weights
-        engine.model.load_state_dict(state["ema_model"], strict=strict)
+        #print(f"state keys: {state.keys()}")
+        ### Load weights
+        engine.model.load_state_dict(state["model"], strict=strict)
 
         # Load optimizer
         if engine.optimizer is not None and optimizer_state is not None:

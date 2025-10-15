@@ -1,0 +1,121 @@
+data:
+  _target_: MolecularDiffusion.runmodes.train.DataModule
+  root: /home/pregabalin/RF/blue_edm/data/qm9
+  filename: /home/pregabalin/RF/blue_edm/data/qm9/dsgdb9nsd_ready.csv
+  atom_vocab:
+  - H
+  - B
+  - C
+  - 'N'
+  - O
+  - F
+  - Al
+  - Si
+  - P
+  - S
+  - Cl
+  - As
+  - Se
+  - Br
+  - I
+  - Hg
+  - Bi
+  dataset_name: qm9
+  with_hydrogen: true
+  node_feature: null
+  max_atom: 29
+  xyz_dir: /home/pregabalin/RF/blue_edm/data/qm9/dsgdb9nsd/
+  coord_file: null
+  natoms_file: null
+  forbidden_atom: []
+  data_efficient_collator: true
+  train_ratio: 0.8
+  load_pkl: null
+  save_pkl: data/test.pkl
+  data_type: pointcloud
+  batch_size: 64
+  num_workers: 0
+tasks:
+  _target_: MolecularDiffusion.runmodes.train.ModelTaskFactory_EGCL
+  task_type: diffusion
+  atom_vocab: ${data.atom_vocab}
+  condition_names: []
+  hidden_size: 256
+  act_fn:
+    _target_: torch.nn.SiLU
+  num_layers: 8
+  attention: true
+  tanh: true
+  num_sublayers: 12
+  sin_embedding: false
+  aggregation_method: sum
+  dropout: 0.1
+  normalization: false
+  include_cosine: true
+  norm_constant: 1.0
+  normalization_factor: 1.0
+  chkpt_path: null
+  diffusion_steps: 500
+  diffusion_noise_schedule: polynomial_2
+  diffusion_noise_precision: 1.0e-05
+  diffusion_loss_type: vlb
+  normalize_factors:
+  - 1
+  - 4
+  - 10
+  extra_norm_values: []
+  augment_noise: false
+  data_augmentation: false
+  context_mask_rate: 0.2
+  mask_value: 5
+  normalize_condition: value_10
+  sp_regularizer_deploy: false
+  sp_regularizer_regularizer: hard
+  sp_regularizer_lambda_: 0
+  sp_regularizer_lambda_2: 1000
+  sp_regularizer_lambda_update_value: 1
+  sp_regularizer_lambda_update_step: 100
+  sp_regularizer_polynomial_p: 1.1
+  sp_regularizer_warm_up_steps: 100
+  reference_indices: null
+  metrics: Validity Relax and connected
+  n_samples: 24
+  generative_analysis: true
+logger:
+  _target_: MolecularDiffusion.runmodes.train.Logger
+  logger: wandb
+  log_interval: 2
+  name_wandb: MolecularDiffusion
+  project_wandb: MolecularDiffusion
+  dir_wandb: ${trainer.output_path}
+trainer:
+  _target_: MolecularDiffusion.runmodes.train.OptimSchedulerFactory
+  optimizer_choice: adamw
+  lr: 0.0002
+  eps: 1.0e-08
+  weight_decay: 1.0e-12
+  betas:
+  - 0.9
+  - 0.999
+  foreach: false
+  num_epochs: 50
+  scheduler: cosineannealing
+  scheduler_kwargs:
+    T_max: ${trainer.num_epochs}
+    eta_min: 1.0e-06
+  validation_interval: 3
+  batch_size: ${data.batch_size}
+  queue_size: 100
+  init_grad_norm: 300
+  ema_decay: 0.9999
+  gradient_clip_mode: value
+  grad_clip_value: 1.0
+  chkpt_path: null
+  output_path: edm_test
+  precision: 32
+name: my_first_diffusion_experiment
+tags:
+- diffusion
+- example
+- baseline
+seed: 42
