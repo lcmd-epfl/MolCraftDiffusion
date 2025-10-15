@@ -13,6 +13,8 @@ This tutorial covers advanced generation techniques that steer the process towar
 
 ## 1. Introduction
 
+**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
+
 Property-directed generation allows you to guide the diffusion model to generate molecules with specific desired properties. This is achieved by providing an additional signal to the model during the sampling process. This tutorial covers three main techniques for property-directed generation.
 
 ## 2. Classifier-Free Guidance (CFG)
@@ -78,7 +80,7 @@ The configuration for GG is in `configs/interference/gen_gg.yaml`.
 | Parameter | Description |
 | :--- | :--- |
 | `task_type` | Must be set to `gradient_guidance`. |
-| `target_function` | A dictionary that specifies the pre-trained guidance model to use. |
+| `target_function` | Specifies the guidance model to use. This is configured using Hydra's instantiation syntax. `_target_` points to a callable class that will be instantiated to guide the generation. This class should accept the concatenated cartesian coordinates/atomic nodes and the current diffusion timestep to predict a score. The data representation must match the diffusion model. In the example, `chkpt_directory` is an argument passed to the `SFEnergyScore` class constructor, specifying the path to the pre-trained guidance model. |
 | `gg_scale` | A scaling factor for the gradient. |
 | `max_norm` | The maximum norm of the gradient to prevent exploding gradients. |
 | `scheduler` | A learning rate scheduler for the guidance. |

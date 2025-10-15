@@ -21,16 +21,16 @@ This tutorial covers three common fine-tuning scenarios.
 
 ### Data Configuration for Fine-Tuning
 
-The first time you run a training job, the script processes your raw dataset (`.xyz` files, etc.) into a format suitable for training. This processed data is saved as a `.pkl` (pickle) file inside the directory specified by `data.root`.
+The first time you use a dataset for a training job, the script processes the raw data (e.g., `.xyz` files) into an optimized format for faster loading. This processed data is saved as a file named `processed_data_{dataset_name}.pt` inside the directory specified by `data.root`. On subsequent runs, if this file exists, it will be loaded directly, saving significant time.
 
 | Parameter | Example Override | Description |
 | :--- | :--- | :--- |
-| `data.root` | `data: {root: "data/processed"}` | The directory where processed dataset files (`.pkl`) are stored. |
-| `data.load_pkl` | `data: {load_pkl: True}` | If `True`, the script will try to load a pre-processed `.pkl` file from `data.root`. If `False` or if the file doesn't exist, the data will be re-processed from scratch. |
+| `data.root` | `data: {root: "data/processed"}` | The directory where processed dataset files are stored. |
+| `data.dataset_name` | `data: {dataset_name: "my_molecule_set"}` | A unique name for your processed dataset. This becomes part of the saved filename (`processed_data_my_molecule_set.pt`). This is crucial for preventing conflicts when you work with multiple datasets. |
 
 **Best Practice:**
-- On your first run, `data.load_pkl` can be `False` (or omitted) to ensure your data is processed correctly.
-- For all subsequent runs using the same dataset, set `data.load_pkl: True` to save time by loading the cached, processed data directly.
+- Always assign a unique and descriptive `dataset_name` for each distinct dataset you use in your experiments.
+- This practice ensures that you can easily manage and reuse your processed data without accidentally overwriting or loading the wrong file, which is especially important when switching between different fine-tuning tasks.
 
 ---
 
