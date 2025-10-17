@@ -39,6 +39,8 @@ class DataModule:
         with_hydrogen: bool,
         node_feature: str,
         max_atom: int,
+        node_feature_choice: list = None,
+        consider_global_attributes: bool = True,
         xyz_dir: str = None,
         coord_file: str = None,
         natoms_file: str = None,
@@ -69,9 +71,10 @@ class DataModule:
         self.load_pkl = load_pkl
         self.save_pkl = save_pkl
         self.data_type = data_type.lower()
-        self.dataset_name = dataset_name    
-        self.ase_db_path = ase_db_path  
-        
+        self.dataset_name = dataset_name
+        self.ase_db_path = ase_db_path
+        self.node_feature_choice = node_feature_choice
+        self.consider_global_attributes = consider_global_attributes
         self.train_set = None
         self.valid_set = None
         self.test_set = None
@@ -139,6 +142,8 @@ class DataModule:
                         ase_db_path=self.ase_db_path,
                         max_atom=self.max_atom,
                         node_feature=self.node_feature,
+                        node_feature_choice=self.node_feature_choice,
+                        consider_global_attributes=self.consider_global_attributes,
                         atom_vocab=self.atom_vocab,
                         with_hydrogen=self.with_hydrogen,
                         forbidden_atoms=self.forbidden_atom,
@@ -156,6 +161,8 @@ class DataModule:
                         ase_db_path=self.ase_db_path,
                         max_atom=self.max_atom,
                         node_feature=self.node_feature,
+                        node_feature_choice=self.node_feature_choice,
+                        consider_global_attributes=self.consider_global_attributes,
                         atom_vocab=self.atom_vocab,
                         with_hydrogen=self.with_hydrogen,
                         forbidden_atoms=self.forbidden_atom,
@@ -173,6 +180,8 @@ class DataModule:
                     ase_db_path=self.ase_db_path,
                     max_atom=self.max_atom,
                     node_feature=self.node_feature,
+                    node_feature_choice=self.node_feature_choice,
+                    consider_global_attributes=self.consider_global_attributes,
                     atom_vocab=self.atom_vocab,
                     with_hydrogen=self.with_hydrogen,
                     forbidden_atoms=self.forbidden_atom,

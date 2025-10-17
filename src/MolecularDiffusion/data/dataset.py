@@ -33,6 +33,7 @@ class pointcloud_dataset(data.PointCloudDataset):
         verbose=1,
         node_feature=None,
         node_feature_choice=None,
+        consider_global_attributes: bool = True,
         target_fields=None,
         pad_data=False,
         dataset_name="suisei",
@@ -57,6 +58,7 @@ class pointcloud_dataset(data.PointCloudDataset):
                     max_atom=self.max_atom,
                     with_hydrogen=with_hydrogen,
                     forbidden_atoms=forbidden_atoms,
+                    consider_global_attributes=consider_global_attributes,
                     pad_data=pad_data,
                     verbose=verbose,
                     **kwargs,
@@ -145,6 +147,7 @@ class pointcloud_dataset_pyG(data.GraphDataset):
         verbose=1,
         node_feature=None,
         node_feature_choice=None,
+        consider_global_attributes: bool = True,
         target_fields=None,
         pad_data=False,
         dataset_name="suisei",
@@ -176,6 +179,7 @@ class pointcloud_dataset_pyG(data.GraphDataset):
                     edge_type=edge_type,
                     radius=radius,
                     n_neigh=n_neigh,
+                    consider_global_attributes=consider_global_attributes,
                     **kwargs,
                 )
             elif df_path:

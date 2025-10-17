@@ -823,7 +823,7 @@ class PointCloudDataset(torch_data.Dataset):
                     if verbose > 0:
                         print(f"Skipping {xyz} due to NaN values in coordinates or node features")
                     continue
-
+                
                 self.coords_list.append(coords)
                 self.n_atoms.append(n_nodes)
                 self.node_mask_list.append(node_mask)
@@ -1276,7 +1276,6 @@ class PointCloudDataset(torch_data.Dataset):
                 coords = torch.from_numpy(mol_ase.get_positions()).to(torch.float32)
                 charges = torch.from_numpy(mol_ase.get_atomic_numbers()).to(torch.long)
                 n_nodes = len(mol_ase)
-                self.n_atoms.append(n_nodes)
 
                 atomic_symbols = mol_ase.get_chemical_symbols()
                 node_features = [onehot(atom, atom_vocab, allow_unknown=False) for atom in atomic_symbols]
@@ -1319,6 +1318,42 @@ class PointCloudDataset(torch_data.Dataset):
                     
                     node_features = torch.cat((node_features, node_features_extra), dim=1)
 
+                node_mask = torch.ones(n_nodes, dtype=torch.int8)
+
+                if pad_data:
+                    coords_full = torch.zeros(max_atom, 3, dtype=torch.float32)
+                    charges_mask = torch.zeros(max_atom, dtype=torch.long)
+                    node_mask = torch.zeros(max_atom, dtype=torch.int8)
+                    coords_full[:n_nodes] = coords
+                    node_mask[:n_nodes] = 1
+                    node_feat_full = torch.zeros(max_atom, node_features.size(1), dtype=torch.float32)
+                    node_feat_full[:n_nodes] = node_features
+                    charges_mask[:n_nodes] = charges
+                    coords = coords_full
+                    node_features = node_feat_full
+                    charges = charges_mask
+                    edge_mask = node_mask.unsqueeze(0) * node_mask.unsqueeze(1)
+                    diag_mask = ~torch.eye(max_atom, dtype=torch.bool)
+                    edge_mask *= diag_mask
+                else:
+                    edge_mask = node_mask.unsqueeze(0) * node_mask.unsqueeze(1)
+                    diag_mask = ~torch.eye(n_nodes, dtype=torch.bool)
+                    edge_mask *= diag_mask
+
+                if torch.isnan(coords).any() or torch.isnan(node_features).any():
+                    if verbose > 0:
+                        print(f"Skipping entry {i} due to NaN values in coordinates or node features")
+                    continue
+
+                self.coords_list.append(coords)
+                self.node_mask_list.append(node_mask)
+                self.edge_mask_list.append(edge_mask)
+                self.node_feature_list.append(node_features)
+                self.charges_list.append(charges)
+                self.xyzs.append(f"db_entry_{i}")
+                self.n_atoms.append(n_nodes)
+                
+        
                 if target_fields:
                     for field in target_fields:
                         value = row.data.get(field, math.nan)
@@ -1354,40 +1389,7 @@ class PointCloudDataset(torch_data.Dataset):
                     smiles = Chem.MolToSmiles(mol_rdkit) if mol_rdkit else None
                     self.smiles_list.append(smiles)
 
-                node_mask = torch.ones(n_nodes, dtype=torch.int8)
 
-                if pad_data:
-                    coords_full = torch.zeros(max_atom, 3, dtype=torch.float32)
-                    charges_mask = torch.zeros(max_atom, dtype=torch.long)
-                    node_mask = torch.zeros(max_atom, dtype=torch.int8)
-                    coords_full[:n_nodes] = coords
-                    node_mask[:n_nodes] = 1
-                    node_feat_full = torch.zeros(max_atom, node_features.size(1), dtype=torch.float32)
-                    node_feat_full[:n_nodes] = node_features
-                    charges_mask[:n_nodes] = charges
-                    coords = coords_full
-                    node_features = node_feat_full
-                    charges = charges_mask
-                    edge_mask = node_mask.unsqueeze(0) * node_mask.unsqueeze(1)
-                    diag_mask = ~torch.eye(max_atom, dtype=torch.bool)
-                    edge_mask *= diag_mask
-                else:
-                    edge_mask = node_mask.unsqueeze(0) * node_mask.unsqueeze(1)
-                    diag_mask = ~torch.eye(n_nodes, dtype=torch.bool)
-                    edge_mask *= diag_mask
-
-                if torch.isnan(coords).any() or torch.isnan(node_features).any():
-                    if verbose > 0:
-                        print(f"Skipping entry {i} due to NaN values in coordinates or node features")
-                    continue
-
-                self.coords_list.append(coords)
-                self.node_mask_list.append(node_mask)
-                self.edge_mask_list.append(edge_mask)
-                self.node_feature_list.append(node_features)
-                self.charges_list.append(charges)
-                self.xyzs.append(f"db_entry_{i}")
-    
             except Exception as e:
                 logging.error(f"Error in loading db entry {i}: {e}")
                 continue
