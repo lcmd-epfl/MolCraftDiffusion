@@ -15,10 +15,8 @@ from torch_geometric.nn import radius_graph
 from MolecularDiffusion.data.component.pointcloud import PointCloud_Mol
 from MolecularDiffusion.data.component.feature import onehot
 from ase.data import atomic_numbers
-logging.basicConfig(
-    level=logging.INFO,  # Change to DEBUG, WARNING, ERROR, or CRITICAL as needed
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+
+logger = logging.getLogger(__name__)
 
 class GenerativeFactory:
     def __init__(self,
@@ -35,15 +33,24 @@ class GenerativeFactory:
                  output_path: str = "generated_mol",
                  condition_configs={},
     ):
+
         self.task = task
         self.task_type = task_type
         self.num_generate = num_generate
+        self.max_atom = max(task.n_node_dist.keys())
         self.mol_size = mol_size
+
+        if self.mol_size[-1] > self.max_atom:
+            logger.info(
+                "Specified molecular size is larger than the largest molecules in the training data, reset...")
+            self.mol_size[-1] = self.max_atom
+
         self.target_values = target_values
         self.property_names = property_names
         
+        
         if len(self.target_values) != len(self.property_names):
-            logging.warning("Number of target values must match with number of property names")
+            logger.warning("Number of target values must match with number of property names")
             self.property_names = ["a"]*len(self.target_values)
         
         self.batch_size = batch_size
@@ -56,7 +63,7 @@ class GenerativeFactory:
         self.condition_configs = condition_configs
 
         if self.task.node_dist_model is None:
-            logging.warning("Number of atoms distribution is not available, specify the size of molecules to generate")
+            logger.warning("Number of atoms distribution is not available, specify the size of molecules to generate")
             import random
             if len(self.mol_size) == 2:
                 if self.mol_size[0] == 0 and self.mol_size[1] == 0:
@@ -93,7 +100,7 @@ class GenerativeFactory:
                         nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
 
-                if self.task.prop_dist_model and len(target_value) == 0:
+                if self.task.prop_dist_model and len(self.target_values) == 0:
                     size = nodesxsample.item()
                     target_value = self.task.prop_dist_model.sample(size)
                     one_hot, _, x, _ = self.task.sample_conditonal(
@@ -143,7 +150,7 @@ class GenerativeFactory:
                 df_dict[prop_name] = []
             df_dict["size"] = []           
         else:
-            logging.warning("Property model is not available, skip evaluation.")
+            logger.warning("Property model is not available, skip evaluation.")
             property_eval = False        
         
         fail_count = 0
@@ -196,7 +203,7 @@ class GenerativeFactory:
                     ])
                     preds = self.property_prediction(xh, t=0)
                     for prop_name in self.property_names:
-                        logging.info(f"{prop_name}: {preds[prop_name]}")
+                        logger.info(f"{prop_name}: {preds[prop_name]}")
                         df_dict[prop_name].append(preds[prop_name])
                     df_dict["filename"].append(f"molecule_{str(i+1).zfill(4)}.xyz")
                     df_dict["size"].append(nodesxsample.item())
@@ -237,7 +244,7 @@ class GenerativeFactory:
                 df_dict[prop_name] = []
             df_dict["size"] = []           
         else:
-            logging.warning("Property model is not available, skip evaluation.")
+            logger.warning("Property model is not available, skip evaluation.")
             property_eval = False
              
         for i in progress_bar:
@@ -304,7 +311,7 @@ class GenerativeFactory:
                     ])
                     preds = self.property_prediction(xh, t=0)
                     for prop_name in self.property_names:
-                        logging.info(f"{prop_name}: {preds[prop_name]}")
+                        logger.info(f"{prop_name}: {preds[prop_name]}")
                         df_dict[prop_name].append(preds[prop_name])
                     df_dict["filename"].append(f"molecule_{str(i+1).zfill(4)}.xyz")
                     df_dict["size"].append(nodesxsample.item())    
@@ -330,7 +337,7 @@ class GenerativeFactory:
         n_retrys = self.condition_configs.get("n_retrys")
         n_frames = self.condition_configs.get("n_frames")
         if n_retrys > 0 and n_frames == 0:
-            logging.info("No frames saved, set n_retrys = 0")
+            logger.info("No frames saved, set n_retrys = 0")
             n_retrys = 0
         
         # process condition values

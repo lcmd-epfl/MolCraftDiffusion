@@ -26,7 +26,8 @@ from MolecularDiffusion.utils import (
     sample_center_gravity_zero_gaussian_with_mask,
     sample_gaussian_with_mask
 )
-
+import logging
+logger = logging.getLogger(__name__)
 
 class EnVariationalDiffusion(torch.nn.Module):
     """
@@ -1213,10 +1214,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 t_zeros, eps_0, net_out, 
                 reference_indices=None, natom=n_atoms
             )
-            # print(kl_prior.size(), estimator_loss_terms.shape, neg_log_constants.shape, loss_term_0.shape)
-            # assert kl_prior.size() == estimator_loss_terms.size()
-            # assert kl_prior.size() == neg_log_constants.size()
-            # assert kl_prior.size() == loss_term_0.size()
+
 
             loss =  estimator_loss_terms + neg_log_constants + loss_term_0
 
@@ -1231,7 +1229,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             t_is_zero = t_is_zero.squeeze(-1)
             t_is_not_zero = 1 - t_is_zero
             
-            # print(loss_term_0.shape, t_is_zero.shape, t_is_not_zero.shape, loss_t_larger_than_zero.shape)
             loss_t = (loss_term_0 * t_is_zero
                 + t_is_not_zero * loss_t_larger_than_zero
             )
@@ -2656,7 +2653,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             dim=2,
         )  
         self.condition_tensor = zs[:, ~mask_bools, :]
-        # print(self.condition_tensor[:,:, :3])
         return zs
         
         
@@ -3334,10 +3330,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             for i in range(N_check):
                 try:
                     is_connected, num_components, n_degrees = check_quality(x_chain[-1-i], charges_chain[-1-i])
-                    # print(f"checking chain at {i}") 
-                    # print(f"is_connected: {is_connected}")
-                    # print(f"num_components: {num_components}")
-                    # print(f"n_degrees: {n_degrees}")
                 except Exception as e:
                     # assume errors with check_quality is associated with bad mols
                     is_connected = False
@@ -3351,7 +3343,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     h["integer"] = charges_chain[-1-i].unsqueeze(0)
                     h["integer"] = h["integer"].unsqueeze(-1)
                     h["categorical"] = one_hot_chain[-1-i].unsqueeze(0)
-                    print(f"good chain found at {i}")
+
                     break
             # cannot find a good xh, last resort
             if not(good_chain):
@@ -3515,10 +3507,6 @@ class EnVariationalDiffusion(torch.nn.Module):
                     for i in range(N_check):
                         try:
                             is_connected, num_components, n_degrees = check_quality(x_chain[-1-i], charges_chain[-1-i])
-                            print(f"checking chain at {i}") 
-                            print(f"is_connected: {is_connected}")
-                            print(f"num_components: {num_components}")
-                            print(f"n_degrees: {n_degrees}")
                         except Exception as e:
                             # assume errors with check_quality is associated with bad mols
                             is_connected = False
@@ -3531,7 +3519,6 @@ class EnVariationalDiffusion(torch.nn.Module):
                             x_retry  = x_chain[-1-i].unsqueeze(0)
                             h_retry["integer"] = charges_chain[-1-i].unsqueeze(0)
                             h_retry["categorical"] = one_hot_chain[-1-i].unsqueeze(0)
-                            print(f"good chain found at {i}")
                             break
                     # cannot find a good xh, last resort
                     if not(good_chain):
@@ -3760,14 +3747,14 @@ class EnVariationalDiffusion(torch.nn.Module):
                 t_array = t_array / self.T
                 if s > guidance_at or s < guidance_stop:
                     if s == guidance_stop:
-                        print("Guidance stops at ", s)
+                        logger.info("Guidance stops at ", s)
                     z = self.sample_p_zs_given_zt(
                         s_array, t_array, z, node_mask, edge_mask, context=context, fix_noise=fix_noise
                     )
 
                 else:
                     if s == guidance_at:
-                        print("Guidance starts at ", s)
+                        logger.info("Guidance starts at ", s)
                     if guidance_ver == 0:
                         z, opt_info = self.sample_p_zs_given_zt_guidance_v0(
                             s_array,
@@ -4046,7 +4033,6 @@ class PredefinedNoiseSchedule(torch.nn.Module):
                 f"Unknown noise schedule {noise_schedule}. Supported: polynomial, issnr, cosine."
             )
 
-        # print("alphas2", alphas2)
 
         sigmas2 = 1 - alphas2
 
@@ -4055,7 +4041,6 @@ class PredefinedNoiseSchedule(torch.nn.Module):
 
         log_alphas2_to_sigmas2 = log_alphas2 - log_sigmas2
 
-        # print("gamma", -log_alphas2_to_sigmas2)
 
         self.gamma = torch.nn.Parameter(
             torch.from_numpy(-log_alphas2_to_sigmas2).float(), requires_grad=False
@@ -4078,7 +4063,7 @@ class GammaNetwork(torch.nn.Module):
 
         self.gamma_0 = torch.nn.Parameter(torch.tensor([-5.0]))
         self.gamma_1 = torch.nn.Parameter(torch.tensor([10.0]))
-        self.show_schedule()
+        # self.show_schedule()
 
     def show_schedule(self, num_steps=50):
         t = torch.linspace(0, 1, num_steps).view(num_steps, 1)
@@ -4393,7 +4378,42 @@ class DistributionProperty:
     def sample(self, n_nodes=19):
         vals = []
         for prop in self.property_names:
-            dist = self.distributions[prop][n_nodes]
+                
+            try:
+                dist = self.distributions[prop][n_nodes]
+                
+            except KeyError:
+                logger.info(f"No exact distribution for n_nodes={n_nodes}, property='{prop}'. Interpolating...")
+        
+                available_nodes = sorted(self.distributions[prop].keys())
+                
+                if not available_nodes:
+                    raise ValueError(f"No distributions available for property '{prop}'")
+                if n_nodes < available_nodes[0]:
+                    # If requested n_nodes is smaller than any available, use the smallest.
+                    closest_node = available_nodes[0]
+                    dist = self.distributions[prop][closest_node]
+                elif n_nodes > available_nodes[-1]:
+                    closest_node = available_nodes[-1]
+                    dist = self.distributions[prop][closest_node]
+                else:
+                    lower_node = max(k for k in available_nodes if k < n_nodes)
+                    upper_node = min(k for k in available_nodes if k > n_nodes)
+                
+                    lower_dist = self.distributions[prop][lower_node]
+                    upper_dist = self.distributions[prop][upper_node]
+                    
+                    lower_probs_tensor = lower_dist['probs'].probs
+                    upper_probs_tensor = upper_dist['probs'].probs
+                    avg_probs = (lower_probs_tensor + upper_probs_tensor) / 2.0
+                    
+                    avg_params = [(p1 + p2) / 2.0 for p1, p2 in zip(lower_dist['params'], upper_dist['params'])]
+                    
+                    dist = {
+                        'probs': Categorical(probs=avg_probs),
+                        'params': avg_params
+                    }
+
             idx = dist["probs"].sample((1,))
             val = self._idx2value(idx, dist["params"], len(dist["probs"].probs))
             # val = self.normalize_tensor(val, prop) # Disable Normalize the value for now

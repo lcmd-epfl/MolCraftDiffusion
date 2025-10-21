@@ -148,6 +148,8 @@ def evaluate(
                     metric_value=metrics, epoch=epoch, solver=solver, output_path=output_path,
                     best_checkpoints=best_checkpoints, task_name="edm-gen", top_k=3, higher_is_better=True
                 )
+            else:
+                print(f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m")
 
         else:
             metrics = test_loss
@@ -159,6 +161,8 @@ def evaluate(
                     metric_value=metrics, epoch=epoch, solver=solver, output_path=output_path,
                     best_checkpoints=best_checkpoints, task_name="edm-loss", top_k=3, higher_is_better=False
                 )
+            else:
+                print(f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m")
         
 
     elif task in ("regression", "guidance"):
@@ -185,6 +189,8 @@ def evaluate(
                 os.path.join(output_path, f"y_trues_{epoch}.npy"),
                 y_trues.detach().cpu().numpy(),
             )
+        else:
+            print(f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m")
             
     return current_best_metric, best_checkpoints 
     
