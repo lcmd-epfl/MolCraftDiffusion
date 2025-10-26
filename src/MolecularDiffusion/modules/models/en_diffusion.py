@@ -1936,6 +1936,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         context,
         scale,
         fix_noise=False,
+        context_negative=None
     ):
         """
         Classical CFG guidance.
@@ -1956,22 +1957,29 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Neural net prediction.
         with torch.no_grad():
-            eps_t_cond = self.phi(zt, t, node_mask, edge_mask, context=context,)
+            eps_t_cond_positive = self.phi(zt, t, node_mask, edge_mask, context=context,)
             
             if self.dynamics.use_adapter_module:
                 context_null = None
             else:
-                context_null = torch.zeros_like(context, device=eps_t_cond.device) + self.mask_value   
+                context_null = torch.zeros_like(context, device=eps_t_cond_positive.device) + self.mask_value   
             eps_t_uncond = self.phi(zt, t, node_mask, edge_mask, context=context_null)
 
-            if torch.any(torch.isnan(eps_t_cond)):
+            if torch.any(torch.isnan(eps_t_cond_positive)):
                 print("eps_t_cond is nan, setting to 0")  
-                eps_t_cond = context_null.nan_to_num(0.0)
+                eps_t_cond_positive = eps_t_cond_positive.nan_to_num(0.0)
             if torch.any(torch.isnan(eps_t_uncond)):
                 print("eps_t_uncond is nan, setting to 0") 
                 eps_t_uncond = eps_t_uncond.nan_to_num(0.0)
 
-            eps_t =  (1 + scale) * eps_t_cond - scale * eps_t_uncond
+            if context_negative is not None:
+                eps_t_cond_negative = self.phi(zt, t, node_mask, edge_mask, context=context_negative)
+                if torch.any(torch.isnan(eps_t_cond_negative)):
+                    print("eps_t_cond_negative is nan, setting to 0")
+                    eps_t_cond_negative = eps_t_cond_negative.nan_to_num(0.0)
+                eps_t = (1 + scale) * eps_t_cond_positive - scale * eps_t_cond_negative
+            else:
+                eps_t =  (1 + scale) * eps_t_cond_positive - scale * eps_t_uncond
         mu = (
             zt / alpha_t_given_s
             - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
@@ -3669,6 +3677,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         node_mask,
         edge_mask,
         context=None,
+        context_negative=None,
         gg_scale=1,
         cfg_scale=1,
         max_norm=10,
@@ -3692,6 +3701,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         - node_mask (Tensor): Mask indicating valid nodes.
         - edge_mask (Tensor): Mask indicating valid edges.
         - context (Tensor): Conditonal properties. Default is None.   
+        - context_negative (Tensor): Conditonal properties. Default is None.
         - gg_scale (float): Scale factor for gradient guidance. Default is 1.0.
         - cfg_scale (float): Scale factor for classifier-free guidance. Default is 1.0.
         - max_norm (float): Initial maximum norm for the gradients. Default is 10.0.
@@ -3807,6 +3817,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                             context,
                             cfg_scale,
                             fix_noise=fix_noise,
+                            context_negative=context_negative
                         )
                     elif guidance_ver == "cfg_gg":
                         z = self.sample_p_zs_given_zt_guidance_cfg_gg(

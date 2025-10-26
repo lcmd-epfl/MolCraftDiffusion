@@ -40,6 +40,35 @@ SCALE_FACTOR = 1.2
 
 
 #%%
+def check_neutrality(filename):
+    
+    neutral_mol = True
+    execution = ["xtb", filename, "--ptb"]
+    try:
+        with open("xtb.log", "w") as f:
+            sp.call(execution, stdout=f, stderr=sp.STDOUT, timeout=60)
+    except sp.TimeoutExpired:           
+        print("xTB calculation timed out.")
+    
+    if os.path.exists("xtb.log"):
+        with open("xtb.log", "r") as f:
+            lines = f.readlines()
+    
+    for line in lines:
+        if "Number of electrons and spin multiplicity do not match" in line:
+            neutral_mol = False
+            break
+    
+    if os.path.exists("wbo"):
+        os.remove("wbo")
+    if os.path.exists("charges"):
+        os.remove("charges")
+    if os.path.exists("xtb.log"):
+        os.remove("xtb.log")
+
+    return neutral_mol
+
+
 def compare_graph_topology(graph1, graph2):
     """
     Compare the topology of two PyG graphs by checking their edge indices.
@@ -459,6 +488,7 @@ def load_molecules_from_xyz(xyz_dir):
     """Converts all XYZ files in a directory to RDKit Mol objects."""
     xyz_files = glob.glob(os.path.join(xyz_dir, "*.xyz"))
     valid_molecules = []
+    pass_xyz_files = []
 
     for xyz_file in xyz_files:
         try:
@@ -467,6 +497,8 @@ def load_molecules_from_xyz(xyz_dir):
             mol = Chem.MolFromPDBFile(pdb_file, removeHs=False)
             if mol is not None:
                 valid_molecules.append(mol)
+                pass_xyz_files.append(xyz_file)
+
         except Exception as e:
             logger.warning(f"Skipping {xyz_file} due to error: {e}")
 
@@ -476,7 +508,7 @@ def load_molecules_from_xyz(xyz_dir):
 
     logger.info(f"Successfully converted {success} out of {total} XYZ files ({percent:.2f}%).")
 
-    return valid_molecules
+    return valid_molecules, pass_xyz_files
 
 
 import multiprocessing

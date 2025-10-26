@@ -27,6 +27,7 @@ class GenerativeFactory:
                  mol_size: List[int] = [0,0],
                  target_values: List[float] = [],
                  property_names: List[str] = [],
+                 negative_target_values: List[float] = [],
                  batch_size: int = 1,
                  seed: int = 86,
                  visualize_trajectory: bool = False,
@@ -40,13 +41,15 @@ class GenerativeFactory:
         self.max_atom = max(task.n_node_dist.keys())
         self.mol_size = mol_size
 
-        if self.mol_size[-1] > self.max_atom:
-            logger.info(
-                "Specified molecular size is larger than the largest molecules in the training data, reset...")
-            self.mol_size[-1] = self.max_atom
+        if self.mol_size is not None and len(self.mol_size) > 0:
+            if self.mol_size[-1] > self.max_atom:
+                logger.info(
+                    "Specified molecular size is larger than the largest molecules in the training data, reset...")
+                self.mol_size[-1] = self.max_atom
 
         self.target_values = target_values
         self.property_names = property_names
+        self.negative_target_values = negative_target_values
         
         
         if len(self.target_values) != len(self.property_names):
@@ -169,15 +172,16 @@ class GenerativeFactory:
                         nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                 
-                if self.sampling_mode == "ddpm":
+                if self.task_type == "conditional":
                     one_hot, charges, x, _ = self.task.sample_conditonal(
                             nodesxsample=nodesxsample, 
                             target_value=self.target_values
                         )
-                elif self.sampling_mode == "cfg":
+                elif self.task_type == "cfg":
                     one_hot, charges, x, _ = self.task.sample_guidance_conitional(
                             target_function=None,
                             target_value=self.target_values,
+                            negative_target_value=self.negative_target_values,
                             nodesxsample=nodesxsample, 
                             cfg_scale=self.condition_configs.get("cfg_scale",1),
                             guidance_ver="cfg"
@@ -278,6 +282,7 @@ class GenerativeFactory:
                     one_hot, charges, x, _  = self.task.sample_guidance_conitional(
                         target_function=target_function,
                         target_value=self.target_values,
+                        negative_target_value=self.negative_target_values,
                         nodesxsample=nodesxsample,
                         gg_scale=self.condition_configs.get("gg_scale",1),
                         cfg_scale=self.condition_configs.get("cfg_scale",1),

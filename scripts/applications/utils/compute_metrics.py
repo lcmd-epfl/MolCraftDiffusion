@@ -4,7 +4,12 @@ import torch
 import pandas as pd
 from tqdm import tqdm
 from MolecularDiffusion.utils.geom_utils import read_xyz_file, create_pyg_graph, correct_edges
-from MolecularDiffusion.utils.geom_metrics import check_validity_v1, check_chem_validity, run_postbuster, smilify_wrapper, load_molecules_from_xyz
+from MolecularDiffusion.utils.geom_metrics import (check_validity_v1, 
+                                                   check_chem_validity, 
+                                                   run_postbuster, 
+                                                   smilify_wrapper, 
+                                                   load_molecules_from_xyz,
+                                                   check_neutrality)
 from MolecularDiffusion.utils import smilify_cell2mol, smilify_openbabel
 
 import logging
@@ -44,6 +49,7 @@ def runner(args):
         "num_graphs": [],
         "bad_atom_distort": [],
         "bad_atom_chem": [],
+        "neutral_molecule": [],
         "smiles": [],
     }
     
@@ -77,7 +83,7 @@ def runner(args):
                 mol_list = None
             
             to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
-            
+            neutral_mol = check_neutrality(xyz)
             if mol_list is None and num_components < 3:
                 xyz2mol_fn = smilify_cell2mol
                 try:
@@ -118,6 +124,7 @@ def runner(args):
             df_res_dict["percent_atom_valid"].append(percent_atom_valid)
             df_res_dict["valid"].append(is_valid)
             df_res_dict["valid_connected"].append(is_valid_connected)
+            df_res_dict["neutral_molecule"].append(neutral_mol)
             df_res_dict["num_graphs"].append(num_components)
             df_res_dict["bad_atom_distort"].append(bad_atom_distort)
             df_res_dict["bad_atom_chem"].append(bad_atom_chem)
@@ -146,14 +153,28 @@ def runner(args):
         df.to_csv(output_path, index=False)
 
     if args.metrics in ["all", "posebuster"]:
-        mols = load_molecules_from_xyz(xyz_dir)
+        mols, xyz_passed = load_molecules_from_xyz(xyz_dir)
+        
+        neutral_mols = []
+        for xyz in tqdm(xyz_passed, desc="Checking neutrality of molecules", total=len(xyz_passed)):
+            neutral_mols.append(check_neutrality(xyz))
+      
         postbuster_results = run_postbuster(mols)
         if postbuster_results is not None:
+            posebuster_checks = [
+                'bond_lengths', 'bond_angles', 'internal_steric_clash',
+                'aromatic_ring_flatness', 'non-aromatic_ring_non-flatness',
+                'double_bond_flatness', 'internal_energy'
+            ]
+            postbuster_results['valid_posebuster'] = postbuster_results[posebuster_checks].all(axis=1)
+
             if args.output is None:
                 postbuster_output_path = f"{xyz_dir}/postbuster_metrics.csv"
             else:
                 base, ext = os.path.splitext(args.output)
                 postbuster_output_path = f"{base}_postbuster{ext}"
+                
+            postbuster_results['neutral_molecule'] = neutral_mols
             postbuster_results.to_csv(postbuster_output_path, index=False)
 
             logging.info(f"Sanitization: {postbuster_results['sanitization'].mean() * 100:.2f}%")
@@ -166,6 +187,9 @@ def runner(args):
             logging.info(f"Non-Aromatic Ring Non-Flatness: {postbuster_results['non-aromatic_ring_non-flatness'].mean():.2f}")
             logging.info(f"Double Bond Flatness: {postbuster_results['double_bond_flatness'].mean():.2f}")
             logging.info(f"Internal Energy: {postbuster_results['internal_energy'].mean():.2f}")
+            logging.info(f"Valid Posebuster: {postbuster_results['valid_posebuster'].mean() * 100:.2f}%")
+            logging.info(f"Neutral Molecule: {sum(neutral_mols) / len(neutral_mols) * 100:.2f}%")
+
 
 
 if __name__ == "__main__":

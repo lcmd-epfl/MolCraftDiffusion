@@ -747,6 +747,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self,
         target_function,
         target_value=[0],
+        negative_target_value=[],
         nodesxsample=torch.tensor([10]),
         gg_scale=1,
         cfg_scale=1,
@@ -841,6 +842,42 @@ class GeomMolecularGenerative(Task, core.Configurable):
 
         context = torch.cat(context, dim=1).float().to(self.device)
         context = context.repeat(1, n_node, 1)
+
+        if negative_target_value:
+            context_negative = []
+            for i, key in enumerate(self.prop_dist_model.distributions):
+                if i < len(negative_target_value):
+                    if self.normalize_condition is not None:
+                        if self.normalize_condition == "mad":
+                            mean, mad = (
+                                self.prop_dist_model.normalizer[key]["mean"],
+                                self.prop_dist_model.normalizer[key]["mad"],
+                            )
+                            val = (negative_target_value[i] - mean) / (mad)
+                        elif self.normalize_condition == "maxmin":   
+                            mean, min, max = (
+                                self.prop_dist_model.normalizer[key]["mean"],
+                                self.prop_dist_model.normalizer[key]["min"],
+                                self.prop_dist_model.normalizer[key]["max"],
+                            )
+                            val = 2 * (negative_target_value[i] - min) / (max - min) - 1   
+
+                        elif "value" in self.normalize_condition: # "value_n where n is the value to normalize"
+                            value = float(self.normalize_condition.split("_")[1])
+                            val = negative_target_value[i] / value    
+                        else:
+                            raise ValueError(f"Unknown normalization method: {self.normalize_condition}")    
+                    else:
+                        val = negative_target_value[i]
+                    context_row = torch.tensor(
+                         [val]
+                    ).unsqueeze(1)
+                    context_negative.append(context_row)
+            context_negative = torch.cat(context_negative, dim=1).float().to(self.device)
+            context_negative = context_negative.repeat(1, n_node, 1)
+        else:
+            context_negative = None
+
         # sample from the EDM model
         x, h = self.model.sample_guidance(
             batch_size,
@@ -848,9 +885,10 @@ class GeomMolecularGenerative(Task, core.Configurable):
             node_mask,
             edge_mask,
             context,
-            gg_scale,
-            cfg_scale,
-            max_norm,
+            context_negative=context_negative,
+            gg_scale=gg_scale,
+            cfg_scale=cfg_scale,
+            max_norm=max_norm,
             fix_noise=fix_noise,
             std=std,
             scheduler=scheduler,
