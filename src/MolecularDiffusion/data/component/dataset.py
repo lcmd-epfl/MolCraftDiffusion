@@ -6,6 +6,8 @@ from typing import Callable, Dict, List, Optional, Union, Any
 import os
 import pickle
 from collections import defaultdict
+import itertools
+from glob import glob
 
 import numpy as np
 import torch
@@ -382,10 +384,25 @@ class GraphDataset(torch_data.Dataset):
         self.graph_data_list = []
         self.n_atoms = []
         
-        db = connect(db_path)
-        iterator = db.select()
+        db_files = []
+        if os.path.isdir(db_path):
+            db_files.extend(glob(os.path.join(db_path, "*.db")))
+        elif os.path.isfile(db_path):
+            db_files.append(db_path)
+        else:
+            raise ValueError(
+                f"Invalid db_path: {db_path}. It must be a .db file or a directory containing .db files."
+            )
+
+        if not db_files:
+            raise FileNotFoundError(f"No .db files found in {db_path}")
+
+        dbs = [connect(f) for f in db_files]
+        total_len = sum(len(db) for db in dbs)
+        iterator = itertools.chain.from_iterable(db.select() for db in dbs)
+
         if verbose:
-            iterator = tqdm(iterator, "Processing ASE db files", total=len(db))
+            iterator = tqdm(iterator, "Processing ASE db files", total=total_len)
 
         for i, row in enumerate(iterator):
             try:
@@ -1252,12 +1269,30 @@ class PointCloudDataset(torch_data.Dataset):
         self.n_atoms = []
         self.atom_vocab = atom_vocab
 
-        db = connect(db_path)
+        db_files = []
+        if os.path.isdir(db_path):
+            db_files.extend(glob(os.path.join(db_path, "*.db")))
+        elif os.path.isfile(db_path):
+            db_files.append(db_path)
+        else:
+            raise ValueError(
+                f"Invalid db_path: {db_path}. It must be a .db file or a directory containing .db files."
+            )
 
+        if not db_files:
+            raise FileNotFoundError(f"No .db files found in {db_path}")
 
-        iterator = db.select()
         if verbose:
-            iterator = tqdm(iterator, "Processing ASE db files", total=len(db))
+            logger.info(f"Found {len(db_files)} .db files to load:")
+            for f_path in db_files:
+                logger.info(f"  - {f_path}")
+
+        dbs = [connect(f) for f in db_files]
+        total_len = sum(len(db) for db in dbs)
+        iterator = itertools.chain.from_iterable(db.select() for db in dbs)
+
+        if verbose:
+            iterator = tqdm(iterator, "Processing ASE db files", total=total_len)
 
         for i, row in enumerate(iterator):
             try:
