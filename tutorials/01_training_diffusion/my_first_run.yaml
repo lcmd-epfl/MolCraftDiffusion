@@ -22,8 +22,9 @@ logger:
 data:
   batch_size: 64
   root: data # where the data is stored
-  filename: molecule.csv
-  xyz_dir: xyz_files
+  # filename: molecule.csv # Use this for CSV/XYZ data
+  # xyz_dir: xyz_files # Directory for XYZ files if using CSV
+  ase_db_path: data/qm9.db # Path to an ASE database file or directory containing .db files
   load_pkl: true # to reload the processed data if it exists
 
 

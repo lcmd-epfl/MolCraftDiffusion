@@ -5,10 +5,10 @@ condition_names: []
 hidden_size: 192
 act_fn:
   _target_: torch.nn.SiLU
-num_layers: 1
+num_layers: 9
 attention: True
 tanh: True
-num_sublayers: 9
+num_sublayers: 1
 sin_embedding: False
 aggregation_method: "sum"
 dropout: 0.0
@@ -27,8 +27,8 @@ normalize_factors: [1,4,10]
 extra_norm_values: []
 augment_noise: False
 data_augmentation: False
-context_mask_rate: 0.0
-mask_value: null
+context_mask_rate: 0.2
+mask_value: 5
 normalize_condition: value_10 # [None, "maxmin", "mad"]
 sp_regularizer_deploy: False
 sp_regularizer_regularizer: hard
@@ -40,6 +40,7 @@ sp_regularizer_polynomial_p: 1.1
 sp_regularizer_warm_up_steps: 100
 reference_indices: null # indices of core atoms for the outpainting objective
 # evaluator parameters
-metrics: "Validity Relax and connected" # Validity Relax and connected, Validity Strict and connected, Validity Strict, Validity Relax
+use_posebuster: True
+metrics: valid_posebuster # use_posebuster must be true
 n_samples: 24
 generative_analysis: True

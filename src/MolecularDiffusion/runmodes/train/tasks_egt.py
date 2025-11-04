@@ -285,7 +285,7 @@ class ModelTaskFactory:
                     self.task.std = chk_point["std"]                           
             except FileNotFoundError:
                 logger.warning(f"Checkpoint not found at {self.chkpt_path}. Initializing model without loading.")      
-           
+                raise FileNotFoundError(f"Checkpoint not found at {self.chkpt_path}.")
         self.task.atom_vocab = self.atom_vocab
             
         return self.task

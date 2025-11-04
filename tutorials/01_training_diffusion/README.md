@@ -44,6 +44,7 @@ This is the most important step. You will override the default parameters to con
 | `trainer.output_path` | `trainer: {output_path: "results/my_run"}` | **CRITICAL:** Where all logs and checkpoints are saved. |
 | `data.filename` | `data: {filename: "molecules.csv"}` | The CSV file with molecule information. |
 | `data.xyz_dir` | `data: {xyz_dir: "xyz_files/"}` | The directory containing `.xyz` geometry files. |
+| `data.ase_db_path` | `data: {ase_db_path: "data/qm9.db"}` | Path to an ASE database file (`.db`) or a directory containing `.db` files. This is an alternative to `data.filename` and `data.xyz_dir`. |
 
 #### Data Processing and Caching
 

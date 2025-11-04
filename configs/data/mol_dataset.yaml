@@ -1,6 +1,6 @@
 _target_: MolecularDiffusion.runmodes.train.DataModule
 root: /home/pregabalin/RF/blue_edm/data/qm9
-filename: /home/pregabalin/RF/blue_edm/data/qm9/dsgdb9nsd_ready.csv # 4k or ready
+filename: /home/pregabalin/RF/blue_edm/data/qm9/dsgdb9nsd_4k.csv # 4k or ready
 atom_vocab: [H,B,C,N,O,F,Al,Si,P,S,Cl,As,Se,Br,I,Hg,Bi]
 dataset_name: qm9
 with_hydrogen: True
@@ -17,3 +17,4 @@ save_pkl: data/test.pkl
 data_type: pointcloud # pyg or pointcloud
 batch_size: 48
 num_workers: 0
+consider_global_attributes: False

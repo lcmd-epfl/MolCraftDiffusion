@@ -14,6 +14,9 @@ Fine-tuning is a powerful technique where you take a pre-trained model and conti
 >
 > If the architectures do not match, PyTorch will be unable to load the weights from the checkpoint, and the fine-tuning process will fail. Always ensure your model configuration YAML file matches the settings of the pre-trained model.
 
+If you are adapting from our pre-trained diffusion model, please use the config file `configs/tasks/diffusion_pretrained.yaml` for the tasks
+
+
 ## The Core Concepts of Fine-Tuning
 
 **Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
@@ -91,7 +94,7 @@ tasks:
 | `tasks.condition_names`| `["S1_exc", "T1_exc"]` | A list of property names from your dataset that the model should learn to associate with the molecules. |
 | `tasks.context_mask_rate`| `0.1` | The probability of hiding the condition during training. A value greater than 0 is required to enable Classifier-Free Guidance (CFG) during generation. A common value is 0.1 (10% of the time). |
 | `tasks.mask_value`| `[0, 0]` | The value to use when a condition is masked. This should be a list with the same length as `condition_names`. Typically, this is `0` or the mean value of the property in the dataset. |
-
+| `tasks.normalization_method` | `"maxmin"` | The method to normalize conditional properties. Options are: `"maxmin"` (scales to [-1, 1]), `"mad"` (mean absolute deviation), `"value_N"` (divides by a specific value N), or `null` for no normalization. |
 **Example `finetune_add_condition.yaml`:**
 
 ```yaml
@@ -117,6 +120,7 @@ tasks:
   # KEY CHANGE: Add the conditions to learn
   condition_names: ["S1_exc", "T1_exc"]
   context_mask_rate: 0.1 # Make it CFG-ready
+  normalization_method: value_10
 ```
 
 ---
