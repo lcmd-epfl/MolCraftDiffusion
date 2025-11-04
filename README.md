@@ -1,12 +1,26 @@
 MolecularDiffusion
 ==================
+
+The unified generative‑AI framework that streamline training the 3D molecular diffusion models to their deployment in data-driven computational chemistry pipelines
+
 ![workflow](./images/overview.png)
-A 3D Molecular Generation Framework for Data-driven Molecular Applications.
+
+## Key Features
+
+*   **End-to-End 3D Molecular Generation Workflow:** Support training diffusion model, and preditive models, and utilize them for various molecular generation tasks, all within a unified framework.
+*   **Curriculum learning:** Efficient way for training and fine-tuning 3D molecular diffusion models
+*   **Guidance Tools:** Generate molecules with specific characteristics:
+    *   **Property-Targeted Generation:** Generate molecules with a target physicochemical or electronic properties (e.g., excitation energy, dipole moment)
+    *   **Inpainting:** Systematically explore structural variants around reference molecules
+    *   **Outpainting:** Extend a molecule by generating new parts.
+*   **Command-Line Interface:** A user-friendly CLI for training, generation, and prediction.
 
 
 [![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://www.arxiv.org/abs/XXXXXX)
 [![Code](https://img.shields.io/badge/Code-GitHub-red)](https://github.com/pregHosh/MolCraftDiffusion)
 [![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
+[![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
+
 
 
 Installation
@@ -53,7 +67,7 @@ Pre-trained diffusion models are available at [Hugging Face](https://huggingface
 
 There are two ways to run experiments: using the `MolCraftDiff` command-line tool (recommended) or by executing the Python scripts directly.
 
-### `MolCraftDiff` CLI (Recommended)
+### 1. `MolCraftDiff` CLI (Recommended)
 
 Make sure you have installed the package in editable mode as described above, and that you run the commands from the root of the project directory.
 
@@ -88,7 +102,7 @@ To get help for a specific command:
 
     MolCraftDiff train --help
 
-### Direct Script Execution
+### 2. Direct Script Execution
 
 You can also execute the scripts in the `scripts/` directory directly.
 
@@ -109,13 +123,13 @@ where INTERFERENCE is one of the following: `gen_cfg`, `gen_cfggg`, `gen_conditi
     python scripts/predict.py
 
 
-We also have scripts in `scripts/applications/utils/` for tasks such as xtb optimization, converting xyz to rdkit mol, assess the quality of 3D geomtry, etc.
-
-
-Tutorials
----------
-
-A comprehensive set of tutorials is available in the [`tutorials/`](./tutorials/) directory, covering topics from basic model training to advanced generation techniques.
+### 3. Post-processing the Generated 3D Molecules                                                                                      
+ The `scripts/applications/utils/` directory contains various utilities for post-processing generated 3D molecules, including:                                      
+*   **XTB Optimization:** Optimize molecular geometries using the GFN-xTB method (`xtb_optimization.py`).                                                         
+ *   **XYZ to RDKit Conversion:** Convert XYZ coordinate files to RDKit molecular objects (`xyz2mol.py`).                                                           
+*   **Metric Computation:** Compute various quality and diversity metrics for generated molecules (`compute_metrics.py`).                                          
+*   **RMSD Calculation:** Calculate Root Mean Square Deviation (RMSD) for structural comparison (`compute_rmsd.py`).                                               
+*   **Molecular Similarity:** Assess molecular similarity using different algorithms (`compute_similarity.py`).   
 
 
 Visualization
@@ -123,11 +137,14 @@ Visualization
 
 Generated 3D molecules and their properties can be visualized using the [3DMolViewer](https://github.com/pregHosh/3DMolViewer) package.
 
+We also recommend our in-house and lightweight X11 molecular viewer [V](https://github.com/briling/v) package.
 
-Documentation
-------------
 
-For more information, visit: https://moleculardiffusion.readthedocs.io
+Tutorials
+---------
+
+A comprehensive set of tutorials is available in the [`tutorials/`](./tutorials/) directory, covering topics from basic model training to advanced generation techniques.
+
 
 
 Project Structure
@@ -176,77 +193,79 @@ Project Structure
 │   └── gradient_guidance
 │       ├── scheduler.py
 │       └── sf_energy_score.py
-├── src
-│   └── MolecularDiffusion
-│       ├── __init__.py
-│       ├── _version.py
-│       ├── cli.py
-│       ├── callbacks
-│       │   ├── __init__.py
-│       │   └── train_helper.py
-│       ├── core
-│       │   ├── __init__.py
-│       │   ├── core.py
-│       │   ├── engine.py
-│       │   ├── logger.py
-│       │   └── meter.py
-│       ├── data
-│       │   ├── __init__.py
-│       │   ├── dataloader.py
-│       │   ├── dataset.py
-│       │   └── component
-│       │       ├── __init__.py
-│       │       ├── dataset.py
-│       │       ├── feature.py
-│       │       └── pointcloud.py
-│       ├── modules
-│       │   ├── layers
-│       │   │   ├── common.py
-│       │   │   ├── conv.py
-│       │   │   └── functional.py
-│       │   ├── models
-│       │   │   ├── __init__.py
-│       │   │   ├── egcl.py
-│       │   │   ├── egt.py
-│       │   │   ├── en_diffusion.py
-│       │   │   └── noisemodel.py
-│       │   └── tasks
-│       │       ├── __init__.py
-│       │       ├── diffusion.py
-│       │       ├── metrics.py
-│       │       ├── regression.py
-│       │       └── task.py
-│       ├── runmodes
-│       │   ├── __init__.py
-│       │   ├── handler.py
-│       │   ├── generate
-│       │   │   ├── __init__.py
-│       │   │   └── tasks_generate.py
-│       │   └── train
-│       │       ├── __init__.py
-│       │       ├── data.py
-│       │       ├── eval.py
-│       │       ├── logger.py
-│       │       ├── tasks_egcl.py
-│       │       ├── tasks_egt.py
-│       │       └── trainer.py
-│       └── utils
-│           ├── __init__.py
-│           ├── comm.py
-│           ├── diffusion_utils.py
-│           ├── file.py
-│           ├── geom_analyzer.py
-│           ├── geom_constant.py
-│           ├── geom_constraint.py
-│           ├── geom_metrics.py
-│           ├── geom_utils.py
-│           ├── io.py
-│           ├── molgraph_utils.py
-│           ├── plot_function.py
-│           ├── pretty.py
-│           ├── sascore.py
-│           ├── smilify.py
-│           └── torch.py
+└── src
+    └── MolecularDiffusion
+       ├── __init__.py
+       ├── _version.py
+       ├── cli.py
+       ├── molcraftdiff.py
+       ├── callbacks
+       │   ├── __init__.py
+       │   └── train_helper.py
+       ├── core
+       │   ├── __init__.py
+       │   ├── core.py
+       │   ├── engine.py
+       │   ├── logger.py
+       │   └── meter.py
+       ├── data
+       │   ├── __init__.py
+       │   ├── dataloader.py
+       │   ├── dataset.py
+       │   └── component
+       │       ├── __init__.py
+       │       ├── dataset.py
+       │       ├── feature.py
+       │       └── pointcloud.py
+       ├── modules
+       │   ├── __init__.py
+       │   ├── layers
+       │   │   ├── __init__.py
+       │   │   ├── common.py
+       │   │   ├── conv.py
+       │   │   └── functional.py
+       │   ├── models
+       │   │   ├── __init__.py
+       │   │   ├── egcl.py
+       │   │   ├── egt.py
+       │   │   ├── en_diffusion.py
+       │   │   └── noisemodel.py
+       │   └── tasks
+       │       ├── __init__.py
+       │       ├── diffusion.py
+       │       ├── metrics.py
+       │       ├── regression.py
+       │       └── task.py
+       ├── runmodes
+       │   ├── __init__.py
+       │   ├── generate
+       │   │   ├── __init__.py
+       │   │   └── tasks_generate.py
+       │   └── train
+       │       ├── __init__.py
+       │       ├── data.py
+       │       ├── eval.py
+       │       ├── logger.py
+       │       ├── tasks_egcl.py
+       │       ├── tasks_egt.py
+       │       └── trainer.py
+       └── utils
+           ├── __init__.py
+           ├── comm.py
+           ├── diffusion_utils.py
+           ├── file.py
+           ├── geom_analyzer.py
+           ├── geom_constant.py
+           ├── geom_constraint.py
+           ├── geom_metrics.py
+           ├── geom_utils.py
+           ├── io.py
+           ├── molgraph_utils.py
+           ├── plot_function.py
+           ├── pretty.py
+           ├── sascore.py
+           ├── smilify.py
+           └── torch.py
 ```
 
 
