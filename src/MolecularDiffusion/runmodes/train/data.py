@@ -39,6 +39,7 @@ class DataModule:
         with_hydrogen: bool,
         node_feature: str,
         max_atom: int,
+        target_fields: list = None,
         node_feature_choice: list = None,
         consider_global_attributes: bool = True,
         xyz_dir: str = None,
@@ -75,6 +76,7 @@ class DataModule:
         self.ase_db_path = ase_db_path
         self.node_feature_choice = node_feature_choice
         self.consider_global_attributes = consider_global_attributes
+        self.target_fields = target_fields
         self.train_set = None
         self.valid_set = None
         self.test_set = None
@@ -149,6 +151,7 @@ class DataModule:
                         forbidden_atoms=self.forbidden_atom,
                         pad_data=not self.data_efficient_collator,
                         dataset_name=self.dataset_name,
+                        target_fields=self.target_fields,
                         verbose=1,
                     )
                 else:
@@ -168,6 +171,7 @@ class DataModule:
                         forbidden_atoms=self.forbidden_atom,
                         pad_data=not self.data_efficient_collator,
                         dataset_name=self.dataset_name,
+                        target_fields=self.target_fields,
                         verbose=1,
                     )
             elif self.task_type in ("regression", "guidance"):
@@ -187,6 +191,7 @@ class DataModule:
                     forbidden_atoms=self.forbidden_atom,
                     pad_data=not self.data_efficient_collator,
                     dataset_name=self.dataset_name,
+                    target_fields=self.target_fields,
                     verbose=1,
                 )
             else:

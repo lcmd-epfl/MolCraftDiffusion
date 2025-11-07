@@ -67,6 +67,7 @@ BASE_ATOM_VOCAB = [
     "I",
 ]
 
+#TODO this does not appear to handle NaN in the data
 class GraphDataset(torch_data.Dataset):
     
     def load_smiles(self):
@@ -328,7 +329,7 @@ class GraphDataset(torch_data.Dataset):
                         )
                 self.graph_data_list.append(graph_data)
                 for field in targets:
-                    self.targets[field].append(targets[field][i])
+                    self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
                 logging.error(f"Error in loading {xyz}: {e}")
@@ -339,7 +340,7 @@ class GraphDataset(torch_data.Dataset):
         db_path: str,
         atom_vocab: List[str] = [],
         node_feature_choice: Optional[List[str]] = None,
-        consider_global_attributes: bool = True,
+        # consider_global_attributes: bool = True, # deprecated
         target_fields: Optional[List[str]] = None,
         transform: Optional[Callable] = None,
         max_atom: int = 200,
@@ -367,6 +368,7 @@ class GraphDataset(torch_data.Dataset):
             radius (float, optional): radius to construct the graph (default: 4.0)
             n_neigh (int, optional): number of neighbors to consider (default: 5)
             verbose (int, optional): output verbose level
+            null_value (float, optional): null value for missing context data
             **kwargs
         """
         if Chem is None and node_feature_choice is not None:
@@ -497,10 +499,18 @@ class GraphDataset(torch_data.Dataset):
                 
                 self.graph_data_list.append(graph_data)
                 self.n_atoms.append(n_nodes)
-
                 if target_fields:
                     for field in target_fields:
-                        value = row.data.get(field, math.nan)
+                        value = row.data.get(field, "")
+                        if value == "":
+                            default_values = {
+                                "total_charge": 0,
+                                "num_graph": 1,
+                                "distortion_d": 0,
+                                "sascore": -1,
+                                "SCScore": -1,
+                            }
+                            value = default_values.get(field, value)
                         try:
                             value = utils.literal_eval(str(value))
                         except (ValueError, SyntaxError):
@@ -508,26 +518,28 @@ class GraphDataset(torch_data.Dataset):
                                 value = value.tolist()
                         if value == "":
                             value = math.nan
-                        self.targets[field].append(value)
+                        self.targets[field].append(float(value))
                 
-                if consider_global_attributes:
-                    self.targets['total_charge'].append(row.data.get('total_charge', 0))
-                    self.targets['num_graph'].append(row.data.get('num_graph', 1))
-                    self.targets['distortion_d'].append(row.data.get('distortion_d', 0))
-
-                    sascore_value = 0
-                    if mol_rdkit is not None:
-                        if 'sascore' in row.data:
-                            sascore_value = row.data.get('sascore', 0)
-                        else:
-                            try:
-                                mol_withoutH = Chem.RemoveHs(mol_rdkit)
-                                mol_clean = Chem.MolFromSmiles(Chem.MolToSmiles(mol_withoutH))
-                                sascore_value = sascore.calculateScore(mol_clean)
-                            except Exception:
-                                sascore_value = 0
-                    self.targets['sascore'].append(sascore_value)
-
+                
+                # if consider_global_attributes:
+                #     self.targets['total_charge'].append(row.data.get('total_charge', 0))
+                #     self.targets['num_graph'].append(row.data.get('num_graph', 1))
+                #     self.targets['distortion_d'].append(row.data.get('distortion_d', 0))
+                #     if 'sascore' in row.data:
+                #         self.targets['sascore'].append(float(row.data.get('sascore', 0)))
+                #     else:
+                #         if mol_rdkit is not None:
+                #             try:
+                #                 mol_withoutH = Chem.RemoveHs(mol_rdkit)
+                #                 mol_clean = Chem.MolFromSmiles(Chem.MolToSmiles(mol_withoutH))
+                #                 sascore_value = sascore.calculateScore(mol_clean)
+                #             except ImportError:
+                #                 sascore_value = 0
+                #         else:
+                #             sascore_value = 0
+                #         self.targets['sascore'].append(float(sascore_value))
+                #     if "SCScore" in row.data:
+                #         self.targets['SCScore'].append(float(row.data.get('SCScore', 0)))
             except Exception as e:
                 logging.error(f"Error in loading db entry {i}: {e}")
                 continue
@@ -723,6 +735,7 @@ class PointCloudDataset(torch_data.Dataset):
 
         self.atom_vocab = atom_vocab
 
+
         for i, xyz in enumerate(xyz_list):
             try:
                 if os.path.exists(xyz):
@@ -850,7 +863,7 @@ class PointCloudDataset(torch_data.Dataset):
                 self.smiles_list.append(smiles)
                 self.xyzs.append(xyz)
                 for field in targets:
-                    self.targets[field].append(targets[field][i])
+                    self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
                 logging.error(f"Error in loading {xyz}: {e}")
@@ -1010,7 +1023,6 @@ class PointCloudDataset(torch_data.Dataset):
                     raise ValueError(
                         "Unknown node feature type, not yet installed dependency (cell2mol or libarvo)"
                     )
-                print(feature_function, node_feature)
                 node_features = torch.cat(
                     [torch.tensor(node_features), node_features_extra],
                     dim=1,
@@ -1057,7 +1069,7 @@ class PointCloudDataset(torch_data.Dataset):
             self.charges_list.append(charges)
             self.xyzs.append(i)
             for field in targets:
-                self.targets[field].append(targets[field][i])
+                self.targets[field].append(float(targets[field][i]))
 
     def load_csv(
         self,
@@ -1069,6 +1081,7 @@ class PointCloudDataset(torch_data.Dataset):
         atom_vocab=[],
         node_feature=None,
         forbidden_atoms=[],
+        null_value=math.nan,
         verbose=0,
         **kwargs,
     ):
@@ -1086,9 +1099,11 @@ class PointCloudDataset(torch_data.Dataset):
             atom_vocab (list of str, optional): atom types
             node_feature (bool, optional): atom features to extract [rdkit, rdkit_oh, geom]
             forbidden_atoms (list of str, optional): forbidden atoms
+            null_value (str, optional): null value for missing targets
             verbose (int, optional): output verbose level
             **kwargs
         """
+        self.null_value = null_value
         if target_fields is not None:
             target_fields = set(target_fields)
 
@@ -1124,7 +1139,7 @@ class PointCloudDataset(torch_data.Dataset):
                     elif target_fields is None or field in target_fields:
                         value = utils.literal_eval(value)
                         if value == "":
-                            value = math.nan
+                            value = self.null_value
                         targets[field].append(value)
         assert len(xyzs) > 0, "No XYZ files found"
         # TODO to deal with when xyz but absence smiles and vice versa, skip it for now
@@ -1149,6 +1164,7 @@ class PointCloudDataset(torch_data.Dataset):
         atom_vocab=[],
         node_feature=None,
         forbidden_atoms=[],
+        null_value=math.nan,
         verbose=0,
         **kwargs,
     ):
@@ -1166,6 +1182,7 @@ class PointCloudDataset(torch_data.Dataset):
             atom_vocab (list of str, optional): atom types
             node_feature (bool, optional): atom features to extract [rdkit, rdkit_oh, geom]
             forbidden_atoms (list of str, optional): forbidden atoms
+            null_value (float, optional): null value for missing context data
             verbose (int, optional): output verbose level
             **kwargs
         """
@@ -1173,6 +1190,7 @@ class PointCloudDataset(torch_data.Dataset):
         coords = torch.tensor(coords, dtype=torch.float32)
         natoms = np.load(natoms_file)
         natoms = torch.tensor(natoms, dtype=torch.long)
+        self.null_value = null_value
 
         if target_fields is not None:
             target_fields = set(target_fields)
@@ -1222,7 +1240,7 @@ class PointCloudDataset(torch_data.Dataset):
         db_path: str,
         atom_vocab: List[str] = [],
         node_feature_choice: Optional[List[str]] = None,
-        consider_global_attributes: bool = True,
+        # consider_global_attributes: bool = True,
         target_fields: Optional[List[str]] = None,
         transform: Optional[Callable] = None,
         max_atom: int = 200,
@@ -1230,6 +1248,7 @@ class PointCloudDataset(torch_data.Dataset):
         forbidden_atoms: List[str] = [],
         pad_data: bool = False,
         verbose: int = 0,
+        null_value=math.nan,
         **kwargs: Any,
     ):
         """
@@ -1246,6 +1265,7 @@ class PointCloudDataset(torch_data.Dataset):
             forbidden_atoms (list of str, optional): forbidden atoms
             pad_data (bool, optional): whether to pad data to max_atom)
             verbose (int, optional): output verbose level
+            null_value (float, optional): null value for missing context data
             **kwargs
         """
         if Chem is None and node_feature_choice is not None:
@@ -1268,6 +1288,8 @@ class PointCloudDataset(torch_data.Dataset):
         self.targets = defaultdict(list)
         self.n_atoms = []
         self.atom_vocab = atom_vocab
+        self.null_value = null_value
+
 
         db_files = []
         if os.path.isdir(db_path):
@@ -1388,11 +1410,18 @@ class PointCloudDataset(torch_data.Dataset):
                 self.charges_list.append(charges)
                 self.xyzs.append(f"db_entry_{i}")
                 self.n_atoms.append(n_nodes)
-                
-        
                 if target_fields:
                     for field in target_fields:
-                        value = row.data.get(field, math.nan)
+                        value = row.data.get(field, "")
+                        if value == "":
+                            default_values = {
+                                "total_charge": 0,
+                                "num_graph": 1,
+                                "distortion_d": 0,
+                                "sascore": -1,
+                                "SCScore": -1,
+                            }
+                            value = default_values.get(field, value)
                         try:
                             value = utils.literal_eval(str(value))
                         except (ValueError, SyntaxError):
@@ -1400,28 +1429,32 @@ class PointCloudDataset(torch_data.Dataset):
                                 value = value.tolist()
                         if value == "":
                             value = math.nan
-                        self.targets[field].append(value)
+                        self.targets[field].append(float(value))
                 
                 #TODO too hard coded
                 # consider global attributes of molecules
                 # total_charge, num_graph, sascore, distortion_d
-                if consider_global_attributes:
-                    self.targets['total_charge'].append(row.data.get('total_charge', 0))
-                    self.targets['num_graph'].append(row.data.get('num_graph', 1))
-                    self.targets['distortion_d'].append(row.data.get('distortion_d', 0))
+                # if consider_global_attributes:
+                #     self.targets['total_charge'].append(row.data.get('total_charge', 0))
+                #     self.targets['num_graph'].append(row.data.get('num_graph', 1))
+                #     self.targets['distortion_d'].append(row.data.get('distortion_d', 0))
+                #     if 'sascore' in row.data:
+                #         self.targets['sascore'].append(float(row.data.get('sascore', 0)))
+                #     else:
+                #         if mol_rdkit is not None:
+                #             try:
+                #                 mol_withoutH = Chem.RemoveHs(mol_rdkit)
+                #                 mol_clean = Chem.MolFromSmiles(Chem.MolToSmiles(mol_withoutH))
+                #                 sascore_value = sascore.calculateScore(mol_clean)
+                #             except ImportError:
+                #                 sascore_value = 0
+                #         else:
+                #             sascore_value = 0
+                #         self.targets['sascore'].append(float(sascore_value))
 
-                    if mol_rdkit is not None:
-                        if 'sascore' in row.data:
-                            self.targets['sascore'].append(row.data.get('sascore', 0))
-                        else:
-                            try:
-                                mol_withoutH = Chem.RemoveHs(mol_rdkit)
-                                mol_clean = Chem.MolFromSmiles(Chem.MolToSmiles(mol_withoutH))
-                                sascore_value = sascore.calculateScore(mol_clean)
-                            except ImportError:
-                                sascore_value = 0
-                            self.targets['sascore'].append(sascore_value)
-                    
+                #     if "SCScore" in row.data:
+                #         self.targets['SCScore'].append(float(row.data.get('SCScore', 0)))
+                        
                 if mol_rdkit is not None:
                     smiles = Chem.MolToSmiles(mol_rdkit) if mol_rdkit else None
                     self.smiles_list.append(smiles)

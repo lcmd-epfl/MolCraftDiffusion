@@ -149,18 +149,13 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     # The EGT factory requires the train_set, which is not in the config.
     # We add it to the instantiation call as an override.
     overrides = {}
-    GLOBAL_TASK_NAMES = ["total_charge", "num_graph", "distortion_d", "sascore"]
+    
     if "tasks_egt" in factory_cfg._target_:
         overrides["train_set"] = data_module.train_set
         # The EGT factory uses 'task_names', but for consistency in configs we might have 'condition_names'
         # This allows using 'condition_names' in the yaml and it will be passed as 'task_names'
         if "condition_names" in factory_cfg:
             overrides["task_names"] = factory_cfg.condition_names
-    if cfg.data.get("consider_global_attributes", True):
-        overrides["task_names"] = factory_cfg.condition_names
-        if overrides["task_names"] is None:
-            overrides["task_names"] = []
-        overrides["task_names"].extend(GLOBAL_TASK_NAMES)
         
     
     task_module = hydra.utils.instantiate(factory_cfg, **overrides)
