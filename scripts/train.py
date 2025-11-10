@@ -164,7 +164,9 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if "condition_names" in factory_cfg:
             overrides["task_names"] = factory_cfg.condition_names
         
-    
+    if cfg.data.get("allow_unknown", False):
+        overrides["atom_vocab"].append("Suisei") # add an extra token for unknown atoms
+        
     task_module = hydra.utils.instantiate(factory_cfg, **overrides)
     task_module.build()
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")

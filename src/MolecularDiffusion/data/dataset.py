@@ -36,6 +36,7 @@ class pointcloud_dataset(data.PointCloudDataset):
         target_fields=None,
         pad_data=False,
         dataset_name="suisei",
+        allow_unknown=False,
         **kwargs,
     ):
         self._processed_file = os.path.join(root, f"processed_data_{dataset_name}.pt")
@@ -59,6 +60,7 @@ class pointcloud_dataset(data.PointCloudDataset):
                     forbidden_atoms=forbidden_atoms,
                     pad_data=pad_data,
                     verbose=verbose,
+                    allow_unknown=allow_unknown,
                     **kwargs,
                 )
             elif df_path:
@@ -106,6 +108,7 @@ class pointcloud_dataset(data.PointCloudDataset):
                         forbidden_atoms=forbidden_atoms,
                         node_feature=node_feature,
                         pad_data=pad_data,
+                        allow_unknown=allow_unknown,
                         **kwargs,
                     )
                 else:
@@ -122,6 +125,7 @@ class pointcloud_dataset(data.PointCloudDataset):
                         forbidden_atoms=forbidden_atoms,
                         node_feature=node_feature,
                         pad_data=pad_data,
+                        allow_unknown=allow_unknown,
                         **kwargs,
                     )
             else:
@@ -151,6 +155,7 @@ class pointcloud_dataset_pyG(data.GraphDataset):
         edge_type="fully_connected",
         radius=4.0,
         n_neigh=5,
+        allow_unknown=False,
         **kwargs,
     ):
         self._processed_file = os.path.join(root, f"processed_data_{dataset_name}.pt")
@@ -176,6 +181,7 @@ class pointcloud_dataset_pyG(data.GraphDataset):
                     edge_type=edge_type,
                     radius=radius,
                     n_neigh=n_neigh,
+                    allow_unknown=allow_unknown,
                     **kwargs,
                 )
             elif df_path:
@@ -224,6 +230,7 @@ class pointcloud_dataset_pyG(data.GraphDataset):
                     edge_type=edge_type,
                     radius=radius,
                     n_neigh=n_neigh,
+                    allow_unknown=allow_unknown,
                     **kwargs,
                 )
             else:

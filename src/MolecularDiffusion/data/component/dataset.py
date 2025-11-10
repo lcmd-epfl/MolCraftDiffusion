@@ -84,6 +84,7 @@ class GraphDataset(torch_data.Dataset):
         node_feature: Optional[str] = None,
         forbidden_atoms: List[str] = [],
         verbose: int = 0,
+        allow_unknown: bool = False,
         **kwargs,
     ):
         """
@@ -150,6 +151,7 @@ class GraphDataset(torch_data.Dataset):
             forbidden_atoms=forbidden_atoms,
             node_feature=node_feature,
             verbose=verbose,
+            allow_unknown=allow_unknown,
             **kwargs,
         )
     
@@ -168,6 +170,7 @@ class GraphDataset(torch_data.Dataset):
         radius: float = 4.0,
         n_neigh: int = 5,
         verbose: int = 0,
+        allow_unknown: bool = False,
         **kwargs: Any,
     ):
         """
@@ -252,7 +255,7 @@ class GraphDataset(torch_data.Dataset):
                 node_features = []
                 for atom in mol_xyz.atoms:
                     node_features.append(onehot(
-                        atom.element, atom_vocab, allow_unknown=False
+                        atom.element, atom_vocab, allow_unknown=allow_unknown
                     ))
                 charges = [atomic_numbers[atom.element]
                            for atom in mol_xyz.atoms
@@ -350,6 +353,7 @@ class GraphDataset(torch_data.Dataset):
         radius: float = 4.0,
         n_neigh: int = 5,
         verbose: int = 0,
+        allow_unknown: bool = False,
         **kwargs: Any,
     ):
         """
@@ -425,7 +429,7 @@ class GraphDataset(torch_data.Dataset):
                 n_nodes = len(mol_ase)
 
                 atomic_symbols = mol_ase.get_chemical_symbols()
-                node_features = [onehot(atom, atom_vocab, allow_unknown=False) for atom in atomic_symbols]
+                node_features = [onehot(atom, atom_vocab, allow_unknown=allow_unknown) for atom in atomic_symbols]
                 node_features = torch.tensor(node_features, dtype=torch.float32)
 
                 mol_rdkit = None
@@ -686,6 +690,7 @@ class PointCloudDataset(torch_data.Dataset):
         forbidden_atoms: List[str] = [],
         pad_data: bool = False,
         verbose: int = 0,
+        allow_unknown: bool = False,
         **kwargs: Any,
     ):
         """
@@ -777,7 +782,7 @@ class PointCloudDataset(torch_data.Dataset):
                 for atom in mol_xyz.atoms:
                     node_features.append(
                         onehot(
-                            atom.element, atom_vocab, allow_unknown=False
+                            atom.element, atom_vocab, allow_unknown=allow_unknown
                         ))
                 charges = [atomic_numbers[atom.element]
                            for atom in mol_xyz.atoms
@@ -883,6 +888,7 @@ class PointCloudDataset(torch_data.Dataset):
         forbidden_atoms: List[str] = [],
         pad_data: bool = False,
         verbose: int = 0,
+        allow_unknown: bool = False,
         **kwargs: Any,
     ):
         """
@@ -979,7 +985,7 @@ class PointCloudDataset(torch_data.Dataset):
             node_features = []
             for atom in mol_xyz.atoms:
                 node_features.append(
-                    onehot(atom.element, atom_vocab, allow_unknown=False)
+                    onehot(atom.element, atom_vocab, allow_unknown=allow_unknown)
                 )
             charges = [atomic_numbers[atom.element]
                        for atom in mol_xyz.atoms
@@ -1083,6 +1089,7 @@ class PointCloudDataset(torch_data.Dataset):
         forbidden_atoms=[],
         null_value=math.nan,
         verbose=0,
+        allow_unknown=False,
         **kwargs,
     ):
         """
@@ -1151,6 +1158,7 @@ class PointCloudDataset(torch_data.Dataset):
             forbidden_atoms=forbidden_atoms,
             node_feature=node_feature,
             verbose=verbose,
+            allow_unknown=allow_unknown,
             **kwargs,
         )
 
@@ -1166,6 +1174,7 @@ class PointCloudDataset(torch_data.Dataset):
         forbidden_atoms=[],
         null_value=math.nan,
         verbose=0,
+        allow_unknown=False,
         **kwargs,
     ):
         """
@@ -1232,6 +1241,7 @@ class PointCloudDataset(torch_data.Dataset):
             forbidden_atoms=forbidden_atoms,
             node_feature=node_feature,
             verbose=verbose,
+            allow_unknown=allow_unknown,
             **kwargs,
         )
 
@@ -1249,6 +1259,7 @@ class PointCloudDataset(torch_data.Dataset):
         pad_data: bool = False,
         verbose: int = 0,
         null_value=math.nan,
+        allow_unknown: bool = False,
         **kwargs: Any,
     ):
         """
@@ -1335,7 +1346,7 @@ class PointCloudDataset(torch_data.Dataset):
                 n_nodes = len(mol_ase)
 
                 atomic_symbols = mol_ase.get_chemical_symbols()
-                node_features = [onehot(atom, atom_vocab, allow_unknown=False) for atom in atomic_symbols]
+                node_features = [onehot(atom, atom_vocab, allow_unknown=allow_unknown) for atom in atomic_symbols]
                 node_features = torch.tensor(node_features, dtype=torch.float32)
 
                 mol_rdkit = None

@@ -52,6 +52,7 @@ class DataModule:
         load_pkl: str = None,
         save_pkl: str = None,
         data_type: str = "pointcloud",
+        allow_unknown: bool = False,
         batch_size: int = 32,
         num_workers: int = 0,
         dataset_name: str = "suisei",
@@ -77,6 +78,7 @@ class DataModule:
         self.node_feature_choice = node_feature_choice
         self.consider_global_attributes = consider_global_attributes
         self.target_fields = target_fields
+        self.allow_unknown = allow_unknown
         self.train_set = None
         self.valid_set = None
         self.test_set = None
@@ -103,12 +105,14 @@ class DataModule:
                     root=self.root,
                     dataset_name=self.dataset_name,
                     max_atom=self.max_atom,
+                    allow_unknown=self.allow_unknown,
                 )
             elif self.data_type == "pyg":
                 dataset = pointcloud_dataset_pyG(
                     root=self.root,
                     dataset_name=self.dataset_name,
                     max_atom=self.max_atom,
+                    allow_unknown=self.allow_unknown,
                 )
 
             dataset.max_atom = self.max_atom
@@ -152,6 +156,7 @@ class DataModule:
                         pad_data=not self.data_efficient_collator,
                         dataset_name=self.dataset_name,
                         target_fields=self.target_fields,
+                        allow_unknown=self.allow_unknown,
                         verbose=1,
                     )
                 else:
@@ -172,6 +177,7 @@ class DataModule:
                         pad_data=not self.data_efficient_collator,
                         dataset_name=self.dataset_name,
                         target_fields=self.target_fields,
+                        allow_unknown=self.allow_unknown,
                         verbose=1,
                     )
             elif self.task_type in ("regression", "guidance"):
@@ -192,6 +198,7 @@ class DataModule:
                     pad_data=not self.data_efficient_collator,
                     dataset_name=self.dataset_name,
                     target_fields=self.target_fields,
+                    allow_unknown=self.allow_unknown,
                     verbose=1,
                 )
             else:
