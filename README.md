@@ -16,7 +16,7 @@ The unified generative‑AI framework that streamline training the 3D molecular 
 *   **Command-Line Interface:** A user-friendly CLI for training, generation, and prediction.
 
 
-[![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://www.arxiv.org/abs/XXXXXX)
+[![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
 [![Code](https://img.shields.io/badge/Code-GitHub-red)](https://github.com/pregHosh/MolCraftDiffusion)
 [![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
 [![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
@@ -43,7 +43,7 @@ For a more detailed installation, including setting up a conda environment and i
     pip install torch_geometric
 
     # install other libraries
-    pip install fire decorator numpy==1.26.4 scipy rdkit-pypi posebusters networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus cosymlib morfeus-ml wandb torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
+    pip install fire seaborn decorator numpy==1.26.4 scipy rdkit-pypi posebusters networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus cosymlib morfeus-ml wandb torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
     pip install hydra-core==1.* hydra-colorlog rootutils
 
@@ -278,10 +278,12 @@ This project is licensed under the MIT License.
 Citation
 --------
 
+If you use MolecularDiffusion in your research, please cite the following:
 
+[ChemRxiv: MolecularDiffusion: A Unified Generative-AI Framework for 3D Molecular Design](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
 
-ArXiv link: [*XXXXXX*](XXXXX)
-
-```
-
-```
+<!-- ```bibtex
+@article{hosh2025moleculardiffusion,
+to be filled
+}
+``` -->
