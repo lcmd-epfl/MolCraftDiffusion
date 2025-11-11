@@ -279,7 +279,8 @@ class Engine(core.Configurable):
                 desc=f"Training Epoch [{epoch + 1}]",
                 leave=True,
                 dynamic_ncols=True,
-                total=batch_per_epoch
+                total=batch_per_epoch,
+                disable=self.rank != 0
             )
 
             for batch_id, batch in progress_bar:
@@ -441,6 +442,7 @@ class Engine(core.Configurable):
             total=len(dataloader),
             leave=False,
             dynamic_ncols=True,
+            disable=self.rank != 0,
         )
         for batch in progress_bar:
             if len(batch) == 0 or batch is None:
