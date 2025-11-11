@@ -17,8 +17,6 @@ maintainers = [
 ]
 
 dependencies = [
-    # "pytorch-cuda=12.1", # Conda-specific package
-    "openbabel",
     "fire",
     "decorator",
     "numpy==1.26.4",
@@ -33,8 +31,6 @@ dependencies = [
     "pyyaml",
     "omegaconf",
     "ase",
-    "morfeus",
-    "cosymlib",
     "morfeus-ml",
     "wandb",
     "hydra-colorlog",

@@ -658,7 +658,6 @@ class GeomMolecularGenerative(Task, core.Configurable):
         one_hot, charges, x, node_mask = self.sample(nodesxsample, context, fix_noise, mode=mode)
         return one_hot, charges, x, node_mask
 
-    #TODO batch
     def sample_guidance(
         self,
         target_function,
@@ -708,8 +707,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
         # )
         batch_size = nodesxsample.size(0)
         if batch_size > 1:
-            node_mask = torch.zeros(batch_size, self.max_n_nodes)
-            nnode = self.max_n_nodes
+            nnode = int(nodesxsample[0])
+            node_mask = torch.zeros(batch_size,nnode)
         else:
             nnode = int(nodesxsample[0])
             node_mask = torch.zeros(batch_size, nnode)
@@ -752,6 +751,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         one_hot = h["categorical"]
         charges = h["integer"]
         return one_hot, charges, x, node_mask
+
 
     def sample_guidance_conitional(
         self,
@@ -803,10 +803,11 @@ class GeomMolecularGenerative(Task, core.Configurable):
         # nodesxsample = torch.where(
         #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
         # )
-        batch_size = len(nodesxsample)
+        batch_size = nodesxsample.size(0)
+
         if batch_size > 1:
-            node_mask = torch.zeros(batch_size, self.max_n_nodes)
-            nnode = self.max_n_nodes
+            nnode = int(nodesxsample[0])
+            node_mask = torch.zeros(batch_size,nnode)
         else:
             nnode = int(nodesxsample[0])
             node_mask = torch.zeros(batch_size, nnode)
@@ -917,7 +918,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         charges = h["integer"]
         return one_hot, charges, x, node_mask
 
-    #TODO batch
+
     def sample_hybrid_guidance(
         self,
         target_function,
@@ -982,14 +983,14 @@ class GeomMolecularGenerative(Task, core.Configurable):
         # nodesxsample = torch.where(
         #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
         # )
-        batch_size = len(nodesxsample)
+        batch_size = nodesxsample.size(0)
         if batch_size > 1:
-            node_mask = torch.zeros(batch_size, self.max_n_nodes)
-            nnode = self.max_n_nodes
+            nnode = int(nodesxsample[0])
+            node_mask = torch.zeros(batch_size,nnode)
         else:
             nnode = int(nodesxsample[0])
             node_mask = torch.zeros(batch_size, nnode)
-
+            
         for i in range(batch_size):
             node_mask[i, 0 : nodesxsample[i]] = 1
 
@@ -1307,15 +1308,16 @@ class GuidanceModelPrediction(Task, core.Configurable):
                 )
 
 
-    def preprocess(self, train_set=None, valid_set=None, test_set=None):
+    def preprocess(self, train_set, valid_set=None, test_set=None):
         """
         Compute the mean and derivation for each task on the training set.
         """
-      
+        # if len(train_set) == 0:
+        #     raise ValueError("Training set is empty. check the data path and format.")
         values = defaultdict(list)
+
         if train_set is not None:
-            if len(train_set) == 0:
-                        raise ValueError("Training set is empty. check the data path and format.")
+
             for sample in train_set:
                 if not sample.get("labeled", True):
                     continue
