@@ -42,5 +42,6 @@ reference_indices: null # indices of core atoms for the outpainting objective
 # evaluator parameters
 use_posebuster: True
 metrics: valid_posebuster # use_posebuster must be true
-n_samples: 24
+n_samples: 48
+batch_size: 4
 generative_analysis: True

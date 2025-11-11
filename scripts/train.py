@@ -42,7 +42,6 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module, **kw
     trainer_module.get_optimizer()
     trainer_module.get_scheduler()
     
-    
     solver = Engine(
                 task_module.task,
                 data_module.train_set,
@@ -101,6 +100,7 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module, **kw
                     use_amp=use_amp,
                     precision=trainer_module.precision,
                     use_posebuster=kwargs.get("use_posebuster", False),
+                    batch_size=kwargs.get("batch_size", 1),
                     )
             else:
                 best_metrics, best_checkpoints = evaluate(
@@ -167,7 +167,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.data.get("allow_unknown", False):
         overrides["atom_vocab"].append("Suisei") # add an extra token for unknown atoms
     
-    if cfg.task.get("metrics", None) == "valid_posebuster":
+    if cfg.tasks.get("metrics", None) == "valid_posebuster":
         overrides["use_posebuster"] = True
         try :
             import posebusters
@@ -207,6 +207,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             n_samples=cfg.tasks.n_samples,
             metric=cfg.tasks.metrics,
             use_posebuster=cfg.tasks.use_posebuster,    
+            batch_size=cfg.tasks.batch_size,  
             )
     else:
         metrics = engine_wrapper(task_module, data_module, trainer_module, logger_module)

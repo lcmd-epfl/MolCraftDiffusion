@@ -127,6 +127,7 @@ def evaluate(
         _, test_loss, _ = solver.evaluate("test", use_amp=use_amp, precision=precision)
         val_loss = torch.tensor(val_loss).mean().item()
         test_loss = torch.tensor(test_loss).mean().item()
+      
         if kwargs.get("generative_analysis", False):
             path = os.path.join(output_generated_dir, f"gen_xyz_{epoch}")
             model_to_eval = solver.ema_model if solver.ema_decay > 0 else solver.model
@@ -134,7 +135,7 @@ def evaluate(
                                 model_to_eval,
                                 epoch,
                                 n_samples=kwargs.get("n_samples", 100),
-                                batch_size=1,
+                                batch_size=kwargs.get("batch_size", 1),
                                 logger=logger,
                                 path_save=path,
                                 use_posebuster=kwargs.get("use_posebuster", False),
@@ -225,11 +226,14 @@ def analyze_and_save(
 
     logging.warning(f"Analyzing molecule stability at epoch {epoch}...")
 
-    batch_size = min(batch_size, n_samples)
+ 
     model.max_n_nodes = 150
     molecules = {"one_hot": [], "x": [], "node_mask": []}
 
     n_batches = n_samples // batch_size
+    if n_samples % batch_size != 0:
+        n_batches += 1
+    current_batch_size = batch_size
     os.makedirs(path_save, exist_ok=True)
 
     fail_count = 0
@@ -258,17 +262,23 @@ def analyze_and_save(
                 one_hot, charges, x, node_mask = model.sample(nodesxsample=nodesxsample)
             keep = (charges > 0).squeeze()
 
-            one_hot = one_hot[:, keep, :]
-            x = x[:, keep, :]
+            one_hot = one_hot[ keep, :]
+            x = x[ keep, :]
 
             molecules["one_hot"].append(one_hot.detach().cpu().squeeze(0))
             molecules["x"].append(x.detach().cpu().squeeze(0))
             molecules["node_mask"].append(node_mask.detach().cpu().squeeze(0))
 
             save_xyz_file(path_save, one_hot, x, atom_decoder=model.atom_vocab)
-            xyz_path = os.path.join(path_save, "molecule_000.xyz")
-            new_name = os.path.join(path_save, f"molecule_{str(i + 1).zfill(4)}.xyz")
-            shutil.move(xyz_path, new_name)
+
+            for j in range(current_batch_size):
+                path_xyz = os.path.join(path_save, f"molecule_{str(j).zfill(3)}.xyz")
+                idx = i * batch_size + j
+                shutil.move(
+                    path_xyz,
+                    os.path.join(path_save, f"molecule_{str(idx).zfill(4)}.xyz"),
+                )
+                
 
         except Exception as e:
             fail_count += 1
@@ -283,7 +293,6 @@ def analyze_and_save(
 
     return _validate_xyzs(path_save, logger, use_posebuster=use_posebuster, postbuster_timeout=postbuster_timeout)
 
-# TODO postbuster
 def _validate_xyzs(path_save: str, logger: str, use_posebuster: bool = False, postbuster_timeout: int = 60) -> Dict[str, float]:
     """
     Validates the molecular structures saved as XYZ files by checking geometric and
