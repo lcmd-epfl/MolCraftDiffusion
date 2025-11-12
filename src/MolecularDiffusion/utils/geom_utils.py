@@ -309,6 +309,7 @@ def correct_edges(data, scale_factor=1.3):
     data.edge_index = torch.tensor(valid_edges, dtype=torch.long).t().contiguous()
     return data
 
+
 def save_xyz_file(
     path,
     one_hot,
@@ -318,11 +319,10 @@ def save_xyz_file(
     name="molecule",
     node_mask=None,
     idxs=None,
+    tol=1e-4,
 ):
-    try:
-        os.makedirs(path, exist_ok=True)
-    except OSError:
-        pass
+    """Save XYZ files for a batch of molecules, skipping atoms near (0,0,0)."""
+    os.makedirs(path, exist_ok=True)
 
     if node_mask is not None:
         atomsxmol = torch.sum(node_mask, dim=1)
@@ -331,35 +331,26 @@ def save_xyz_file(
 
     for batch_i in range(one_hot.size(0)):
         try:
-        
-            if idxs is None:
-                idx = batch_i + id_from
-            else:
-                idx = idxs[batch_i]
+            idx = batch_i + id_from if idxs is None else idxs[batch_i]
+            filename = f"{name}_{idx:03d}.xyz"
 
-            f = open(name + "_" + "%03d.xyz" % (idx), "w")
-            f.write("%d\n\n" % atomsxmol[batch_i])
             atoms = torch.argmax(one_hot[batch_i], dim=1)
             n_atoms = int(atomsxmol[batch_i])
-            for atom_i in range(n_atoms):
-                atom = atoms[atom_i]
-                atom = atom_decoder[atom.item() if isinstance(atom, torch.Tensor) else atom]
-                f.write(
-                    "%s %.9f %.9f %.9f\n"
-                    % (
-                        atom,
-                        positions[batch_i, atom_i, 0],
-                        positions[batch_i, atom_i, 1],
-                        positions[batch_i, atom_i, 2],
-                    )
-                )
-            f.close()
-            filename_xyz = name + "_" + "%03d.xyz" % (idx)
-            if os.path.exists(filename_xyz):
-                shutil.move(filename_xyz, path)
-            else:
-                pass
-        except Exception as e:
-            # print("Error in saving molecule: ", idx)
-            pass
 
+            # Filter out atoms near (0,0,0)
+            coords = positions[batch_i, :n_atoms]
+            mask = torch.any(torch.abs(coords) > tol, dim=1)  # keep atoms not at origin
+            filtered_atoms = atoms[mask]
+            filtered_coords = coords[mask]
+            n_valid = filtered_atoms.size(0)
+
+            with open(filename, "w") as f:
+                f.write(f"{n_valid}\n\n")
+                for atom, pos in zip(filtered_atoms, filtered_coords):
+                    symbol = atom_decoder[atom.item()]
+                    f.write(f"{symbol} {pos[0]:.9f} {pos[1]:.9f} {pos[2]:.9f}\n")
+
+            if os.path.exists(filename):
+                shutil.move(filename, path)
+        except Exception:
+            pass

@@ -77,7 +77,11 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self.sp_regularizer = sp_regularizer
         self.reference_indices = reference_indices
         self.normalize_condition = normalize_condition
-        
+
+        self.n_dim_data = self.model.in_node_nf 
+        self.n_atom_types = self.model.in_node_nf - len(self.model.extra_norm_values)
+        if self.model.include_charges:
+            self.n_atom_types -= 1        
         
     def preprocess(
         self,
@@ -457,11 +461,15 @@ class GeomMolecularGenerative(Task, core.Configurable):
         if (len(self.condition) > 0) and (self.prop_dist_model is not None):
             if context is None:
                 context = self.prop_dist_model.sample_batch(nodesxsample)
-            context = (
+                context = context.unsqueeze(1)
+                context = context.expand(-1, nnode, -1)
+            else:
+                context = (
                 context.unsqueeze(1).repeat(batch_size, nnode, 1).to(self.device) * node_mask
             )
         else:
             context = None
+       
 
         if mode == "ddpm":
             x, h, chain = self.model.sample(
@@ -495,21 +503,23 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 **kwargs # eta, n_steps, save_frame
             )
 
-        
         if chain is not None:
+
+            chain = chain.reshape(batch_size, n_frames, nnode, -1)
             # Prepare entire chain.
             if isinstance(chain, torch.Tensor):
-                x = chain[:, :, 0:3]
-                one_hot = chain[:, :, 3:-1]
+                x = chain[:, :, :, 0:3]
+                one_hot = chain[:, :, :, 3:-1]
                 one_hot = F.one_hot(
-                    torch.argmax(one_hot, dim=2), num_classes=len(self.atom_decoder)
+                    torch.argmax(one_hot, dim=3), num_classes=self.n_atom_types
                 )
-                charges = torch.round(chain[:, :, -1:]).long()
+                charges = torch.round(chain[:, :, :, -1:]).long()
+            #TODO how to deal with batch in case of retry here
             elif isinstance(chain, list):
                 x_0 = chain[0][:, :, 0:3]
                 one_hot_0 = chain[0][:, :, 3:-1]
                 one_hot_0 = F.one_hot(
-                    torch.argmax(one_hot_0, dim=2), num_classes=len(self.atom_decoder)
+                    torch.argmax(one_hot_0, dim=2), num_classes=self.n_atom_types
                 )
                 charges_0 = torch.round(chain[0][:, :, -1:]).long()
                 
@@ -520,7 +530,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
                     x_i = chain[1][i][:, :, 0:3]
                     one_hot_i = chain[1][i][:, :, 3:-1]
                     one_hot_i = F.one_hot(
-                        torch.argmax(one_hot_i, dim=2), num_classes=len(self.atom_decoder)
+                        torch.argmax(one_hot_i, dim=2), num_classes=self.n_atom_types
                     )
                     charges_i = torch.round(chain[1][i][:, :, -1:]).long()
                     x_retrys.append(x_i)
@@ -533,7 +543,6 @@ class GeomMolecularGenerative(Task, core.Configurable):
             one_hot = h["categorical"]
             charges = h["integer"]
         return one_hot, charges, x, node_mask
-
 
     def sample_around_xh_target(self, nodesxsample=torch.tensor([10]), 
                                 xh_target=None, context=None, fix_noise=False):
@@ -572,14 +581,19 @@ class GeomMolecularGenerative(Task, core.Configurable):
         edge_mask = edge_mask.view(batch_size * nnode * nnode, 1).to(self.device)
         node_mask = node_mask.unsqueeze(2).to(self.device)
 
+
         if (len(self.condition) > 0) and (self.prop_dist_model is not None):
             if context is None:
                 context = self.prop_dist_model.sample_batch(nodesxsample)
-            context = (
-                context.unsqueeze(1).repeat(1, nnode, 1).to(self.device) * node_mask
+                context = context.unsqueeze(1)
+                context = context.expand(-1, nnode, -1)
+            else:
+                context = (
+                context.unsqueeze(1).repeat(batch_size, nnode, 1).to(self.device) * node_mask
             )
         else:
             context = None
+       
 
         x, h = self.model.sample_around_xh(
             batch_size,

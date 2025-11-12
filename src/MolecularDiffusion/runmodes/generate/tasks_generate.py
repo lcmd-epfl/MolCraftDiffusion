@@ -30,7 +30,7 @@ class GenerativeFactory:
                  negative_target_values: List[float] = [],
                  batch_size: int = 1,
                  seed: int = 86,
-                 visualize_trajectory: bool = False,
+                 n_frames: int = 0,
                  output_path: str = "generated_mol",
                  condition_configs={},
     ):
@@ -63,7 +63,25 @@ class GenerativeFactory:
         
         self.batch_size = batch_size
         self.seed = seed
-        self.visualize_trajectory = visualize_trajectory
+        self.n_frames = n_frames
+        
+        if n_frames > 0:
+            self.visualize_trajectory = True
+            
+            if condition_configs.get("denoising_strength", 0) > 0:
+                t_start  = int(self.task.model.T * condition_configs.get("denoising_strength", 0.8))
+            elif condition_configs.get("t_start", 1) < 1:
+                t_start = int(self.task.model.T * condition_configs.get("t_start", 1))
+            else:
+                t_start = int(self.task.model.T)
+                
+            s_saves = torch.linspace(0, t_start, 
+                                            steps=self.n_frames).long()
+            self.s_saves = s_saves.flip(0)
+            logger.warning(f"Frames will be saved at timesteps: {self.s_saves.tolist()}")
+        else:
+            self.visualize_trajectory = False
+            
         self.output_path = output_path
         
         self.sampling_mode = sampling_mode # ddim not available for CFG and GG
@@ -128,29 +146,43 @@ class GenerativeFactory:
                     one_hot, _, x, _ = self.task.sample_conditonal(
                         nodesxsample=nodesxsample, 
                         target_value=target_value,
-                        mode=self.sampling_mode
+                        mode=self.sampling_mode,
+                        n_frames=self.n_frames
                     )
                 else:
                     one_hot, _, x, _ = self.task.sample(
                         nodesxsample=nodesxsample,
-                        mode=self.sampling_mode
+                        mode=self.sampling_mode,
+                        n_frames=self.n_frames
                     )
             
-                save_xyz_file(
-                    self.output_path,
-                    one_hot,
-                    x,
-                    atom_decoder=self.task.atom_vocab,
-                )
-
-                for j in range(current_batch_size):
-                    
-                    path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
-                    idx = i * self.batch_size + j
-                    shutil.move(
-                        path_xyz,
-                        os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                if self.visualize_trajectory:
+                    for j in range(current_batch_size):
+                        mol_idx = i * self.batch_size + j
+                        output_path_frame = os.path.join(self.output_path, f"mol_{mol_idx}")
+                        save_xyz_file(
+                            output_path_frame,
+                            one_hot[:, j],
+                            x[:, j],
+                            atom_decoder=self.task.atom_vocab,
+                            idxs=self.s_saves.tolist()
+                        )            
+                else:
+                    save_xyz_file(
+                        self.output_path,
+                        one_hot,
+                        x,
+                        atom_decoder=self.task.atom_vocab,
                     )
+
+                    for j in range(current_batch_size):
+                        
+                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                        idx = i * self.batch_size + j
+                        shutil.move(
+                            path_xyz,
+                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                        )
             except Exception as e:
                 fail_count += 1
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
@@ -208,7 +240,9 @@ class GenerativeFactory:
                 if self.task_type == "conditional":
                     one_hot, charges, x, _ = self.task.sample_conditonal(
                             nodesxsample=nodesxsample, 
-                            target_value=self.target_values
+                            target_value=self.target_values,
+                            n_frames=self.n_frames,
+                            mode=self.sampling_mode
                         )
                 elif self.task_type == "cfg":
                     one_hot, charges, x, _ = self.task.sample_guidance_conitional(
@@ -217,23 +251,39 @@ class GenerativeFactory:
                             negative_target_value=self.negative_target_values,
                             nodesxsample=nodesxsample, 
                             cfg_scale=self.condition_configs.get("cfg_scale",1),
-                            guidance_ver="cfg"
+                            guidance_ver="cfg",
+                            n_frames=self.n_frames
                         )
-                save_xyz_file(
-                    self.output_path,
-                    one_hot,
-                    x,
-                    atom_decoder=self.task.atom_vocab,
-                )
 
-                for j in range(current_batch_size):
-                    
-                    path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
-                    idx = i * self.batch_size + j
-                    shutil.move(
-                        path_xyz,
-                        os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                if self.visualize_trajectory:
+                    for j in range(current_batch_size):
+                        mol_idx = i * self.batch_size + j
+                        output_path_frame = os.path.join(self.output_path, f"mol_{mol_idx}")
+                        save_xyz_file(
+                            output_path_frame,
+                            one_hot[:, j],
+                            x[:, j],
+                            atom_decoder=self.task.atom_vocab,
+                            idxs=self.s_saves.tolist()
+                        )     
+                    x = x[:, -1]
+                    one_hot = one_hot[:, -1]   
+                else:     
+                    save_xyz_file(
+                        self.output_path,
+                        one_hot,
+                        x,
+                        atom_decoder=self.task.atom_vocab,
                     )
+
+                    for j in range(current_batch_size):
+                        
+                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                        idx = i * self.batch_size + j
+                        shutil.move(
+                            path_xyz,
+                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                        )
                 
                 #TODO to adapt this to work with batch of mols
                 if property_eval:

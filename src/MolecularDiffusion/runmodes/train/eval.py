@@ -142,61 +142,51 @@ def evaluate(
 
         if kwargs.get("generative_analysis", False):
             metrics = 0.0  # Default value
-            if is_main_process:
-                path = os.path.join(output_generated_dir, f"gen_xyz_{epoch}")
-                model_to_eval = (
-                    solver.ema_model if solver.ema_decay > 0 else solver.model
-                )
-                performances = analyze_and_save(
-                    model_to_eval,
-                    epoch,
-                    n_samples=kwargs.get("n_samples", 100),
-                    batch_size=kwargs.get("batch_size", 1),
-                    logger=logger,
-                    path_save=path,
-                    use_posebuster=kwargs.get("use_posebuster", False),
-                    postbuster_timeout=kwargs.get("postbuster_timeout", 120),
-                )
+            # if is_main_process:
+            path = os.path.join(output_generated_dir, f"gen_xyz_{epoch}")
+            model_to_eval = (
+                solver.ema_model if solver.ema_decay > 0 else solver.model
+            )
+            performances = analyze_and_save(
+                model_to_eval,
+                epoch,
+                n_samples=kwargs.get("n_samples", 100),
+                batch_size=kwargs.get("batch_size", 1),
+                logger=logger,
+                path_save=path,
+                use_posebuster=kwargs.get("use_posebuster", False),
+                postbuster_timeout=kwargs.get("postbuster_timeout", 120),
+            )
 
-                metrics = performances[
-                    kwargs.get("metric", "Validity Relax and connected")
-                ]
-
-            if torch.distributed.is_initialized():
-                device = next(solver.model.parameters()).device
-                metrics_tensor = torch.tensor(
-                    [metrics], dtype=torch.float64, device=device
-                )
-                torch.distributed.broadcast(metrics_tensor, src=0)
-                metrics = metrics_tensor.item()
-
+            metrics = performances[
+                kwargs.get("metric", "Validity Relax and connected")
+            ]
             if metrics > current_best_metric:
                 if is_main_process:
                     print(
                         f"\033[92m🚀 New best metric at epoch {epoch}: {metrics:.4f} (previously: {current_best_metric:.4f})\033[0m"
                     )
                 current_best_metric = metrics
-
-                if is_main_process:
-                    best_checkpoints = _manage_best_checkpoints(
-                        metric_value=metrics,
-                        epoch=epoch,
-                        solver=solver,
-                        output_path=output_path,
-                        best_checkpoints=best_checkpoints,
-                        task_name="edm-gen",
-                        top_k=3,
-                        higher_is_better=True,
-                    )
+                # if is_main_process:
+                best_checkpoints = _manage_best_checkpoints(
+                    metric_value=metrics,
+                    epoch=epoch,
+                    solver=solver,
+                    output_path=output_path,
+                    best_checkpoints=best_checkpoints,
+                    task_name="edm-gen",
+                    top_k=3,
+                    higher_is_better=True,
+                )
             else:
                 if is_main_process:
                     print(
                         f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m"
                     )
-            if torch.distributed.is_initialized():
-                objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
-                torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-                best_checkpoints = objects_to_broadcast[0]
+            # # if torch.distributed.is_initialized():
+            #     objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
+            #     torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
+            #     best_checkpoints = objects_to_broadcast[0]
 
         else:
             metrics = test_loss
@@ -207,27 +197,27 @@ def evaluate(
                         f"\033[92m🚀 New best metric at epoch {epoch}: {metrics:.4f} (previously: {current_best_metric:.4f})\033[0m"
                     )
                 current_best_metric = metrics
-                if is_main_process:
-                    best_checkpoints = _manage_best_checkpoints(
-                        metric_value=metrics,
-                        epoch=epoch,
-                        solver=solver,
-                        output_path=output_path,
-                        best_checkpoints=best_checkpoints,
-                        task_name="edm-loss",
-                        top_k=3,
-                        higher_is_better=False,
-                    )
+                # if is_main_process:
+                best_checkpoints = _manage_best_checkpoints(
+                    metric_value=metrics,
+                    epoch=epoch,
+                    solver=solver,
+                    output_path=output_path,
+                    best_checkpoints=best_checkpoints,
+                    task_name="edm-loss",
+                    top_k=3,
+                    higher_is_better=False,
+                )
             else:
                 if is_main_process:
                     print(
                         f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m"
                     )
 
-            if torch.distributed.is_initialized():
-                objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
-                torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-                best_checkpoints = objects_to_broadcast[0]
+            # if torch.distributed.is_initialized():
+            #     objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
+            #     torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
+            #     best_checkpoints = objects_to_broadcast[0]
 
     elif task in ("regression", "guidance"):
         _, preds, targets = solver.evaluate("valid")
@@ -244,35 +234,35 @@ def evaluate(
                     f"\033[92m🚀 New best metric at epoch {epoch}: {metrics:.4f} (previously: {current_best_metric:.4f})\033[0m"
                 )
             current_best_metric = metrics
-            if is_main_process:
-                best_checkpoints = _manage_best_checkpoints(
-                    metric_value=metrics,
-                    epoch=epoch,
-                    solver=solver,
-                    output_path=output_path,
-                    best_checkpoints=best_checkpoints,
-                    task_name=task,
-                    top_k=3,
-                    higher_is_better=False,
-                )
-                np.save(
-                    os.path.join(output_path, f"y_preds_{epoch}.npy"),
-                    y_preds.detach().cpu().numpy(),
-                )
-                np.save(
-                    os.path.join(output_path, f"y_trues_{epoch}.npy"),
-                    y_trues.detach().cpu().numpy(),
-                )
+            # if is_main_process:
+            best_checkpoints = _manage_best_checkpoints(
+                metric_value=metrics,
+                epoch=epoch,
+                solver=solver,
+                output_path=output_path,
+                best_checkpoints=best_checkpoints,
+                task_name=task,
+                top_k=3,
+                higher_is_better=False,
+            )
+            np.save(
+                os.path.join(output_path, f"y_preds_{epoch}.npy"),
+                y_preds.detach().cpu().numpy(),
+            )
+            np.save(
+                os.path.join(output_path, f"y_trues_{epoch}.npy"),
+                y_trues.detach().cpu().numpy(),
+            )
         else:
             if is_main_process:
                 print(
                     f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m"
                 )
 
-        if torch.distributed.is_initialized():
-            objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
-            torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-            best_checkpoints = objects_to_broadcast[0]
+        # if torch.distributed.is_initialized():
+        #     objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
+        #     torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
+        #     best_checkpoints = objects_to_broadcast[0]
 
     return current_best_metric, best_checkpoints 
     
@@ -430,29 +420,39 @@ def _validate_xyzs(path_save: str, logger: str, use_posebuster: bool = False, po
     summary = {k: v.mean().item() for k, v in metrics.items()}
 
     if use_posebuster:
-        mols, _ = load_molecules_from_xyz(path_save)
-        if mols:
-            postbuster_results = run_postbuster(mols, timeout=postbuster_timeout)
-            if postbuster_results is not None:
-                postbuster_output_path = os.path.join(path_save, "postbuster_metrics.csv")
-                postbuster_results.to_csv(postbuster_output_path, index=False)
+        postbuster_results = None
+        try:
+            mols, _ = load_molecules_from_xyz(path_save)
+            if mols:
+                postbuster_results = run_postbuster(mols, timeout=postbuster_timeout)
+        except Exception as e:
+            logging.warning(f"PoseBuster execution failed or timed out: {e}")
 
-                check_cols = [
-                    col
-                    for col in postbuster_results.columns
-                    if pd.api.types.is_numeric_dtype(postbuster_results[col])
-                    or pd.api.types.is_bool_dtype(postbuster_results[col])
-                ]
-                if check_cols:
-                    summary["valid_posebuster"] = postbuster_results[check_cols].all(axis=1).mean()
-                else:
-                    summary["valid_posebuster"] = 0.0
-                
-                summary.update({
-                    f"posebuster_{col}_mean": postbuster_results[col].mean()
-                    for col in postbuster_results.columns
-                    if pd.api.types.is_numeric_dtype(postbuster_results[col])
-                })
+        postbuster_output_path = os.path.join(path_save, "postbuster_metrics.csv")
+        if postbuster_results is not None and not postbuster_results.empty:
+            postbuster_results.to_csv(postbuster_output_path, index=False)
+
+            check_cols = [
+                col
+                for col in postbuster_results.columns
+                if pd.api.types.is_numeric_dtype(postbuster_results[col])
+                or pd.api.types.is_bool_dtype(postbuster_results[col])
+            ]
+            if check_cols:
+                summary["valid_posebuster"] = postbuster_results[check_cols].all(axis=1).mean()
+            else:
+                summary["valid_posebuster"] = 0.0
+
+            summary.update({
+                f"posebuster_{col}_mean": postbuster_results[col].mean()
+                for col in postbuster_results.columns
+                if pd.api.types.is_numeric_dtype(postbuster_results[col])
+            })
+        else:
+            logging.warning("PoseBuster returned no results or failed. Setting posebuster metrics to 0.")
+            summary["valid_posebuster"] = 0.0
+            pd.DataFrame().to_csv(postbuster_output_path, index=False)
+
     if logger == "wandb":
         wandb.log(summary)
     else:
