@@ -31,19 +31,23 @@ Installation
 For a more detailed installation, including setting up a conda environment and installing necessary packages, follow these steps:
 
     # create new python environment
-    conda create -n moleculardiffusion python=3.10 -c defaults
+    conda create -n moleculardiffusion python=3.11 -c defaults
     conda activate moleculardiffusion
 
     # install pytorch according to instructions (use CUDA version for your system)
     # https://pytorch.org/get-started/
-    conda install pytorch==2.5.1 torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-    conda install conda-forge::openbabel
+    pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
+    
     # install pytorch geometric (use CUDA version for your system)
     # https://pytorch-geometric.readthedocs.io/
     pip install torch_geometric
 
+    # Optional dependencies:
+    pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
+    conda install conda-forge::openbabel
+    conda install xtb==6.7.1
     # install other libraries
-    pip install fire seaborn decorator numpy==1.26.4 scipy rdkit-pypi posebusters networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus cosymlib morfeus-ml wandb torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
+    pip install fire seaborn decorator numpy==1.26.4 scipy rdkit-pypi posebusters==0.5.1 networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus cosymlib morfeus-ml wandb 
 
     pip install hydra-core==1.* hydra-colorlog rootutils
 

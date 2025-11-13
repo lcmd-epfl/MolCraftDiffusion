@@ -7,5 +7,5 @@ target_values: []
 property_names: []
 batch_size: 1
 seed: 86
-visualize_trajectory: False
+n_frames: 0
 output_path: generated_mol

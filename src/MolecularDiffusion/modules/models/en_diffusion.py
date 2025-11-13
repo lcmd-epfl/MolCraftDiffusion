@@ -22,7 +22,6 @@ from MolecularDiffusion.utils import (
     find_close_points_torch_and_push_op2,
     remove_mean_with_mask,
     remove_mean_pyG,
-    translate_to_origine,
     sample_center_gravity_zero_gaussian_with_mask,
     sample_gaussian_with_mask
 )
@@ -1515,61 +1514,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         )
         return zs
 
-    def sample_p_zs_given_zt_around_xh_target(
-        self,
-        s,
-        t,
-        zt,
-        node_mask,
-        edge_mask,
-        context,
-        xh_target,
-        fix_noise=False,
-    ):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
-        gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
 
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = (
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
-        )
-
-        sigma_s = self.sigma(gamma_s, target_tensor=zt)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-
-        eps_t = self.phi(zt, t, node_mask, edge_mask, context)
-    
-        if torch.all(eps_t == 0):
-            raise ValueError("NaN in eps_t, stop sampling.")
-        
-        # Compute mu for p(zs | zt).
-        assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
-        assert_mean_zero_with_mask(eps_t[:, :, : self.n_dims], node_mask)
-        mu = (
-            zt / alpha_t_given_s
-            - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
-        )
-
-        # Compute sigma for p(zs | zt).
-        sigma = sigma_t_given_s * sigma_s / sigma_t
-
-        # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        
-        zs[:, 0, :] = xh_target
-        zs[:, 1:, : self.n_dims] = translate_to_origine(zs[:, 1:, : self.n_dims], node_mask[:, 1:, :]) # DS
-        
-
-        # Project down to avoid numerical runaway of the center of gravity.
-        zs = torch.cat(
-            [
-                remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
-                zs[:, :, self.n_dims :],
-            ],
-            dim=2,
-        )
-        return zs
-    
     def sample_p_zs_given_zt_guidance_v0(
         self,
         s,
@@ -1584,9 +1529,27 @@ class EnVariationalDiffusion(torch.nn.Module):
         max_norm=20,
         n_backward=0,
     ):
-        """Samples from zs ~ p(zs | zt). Only used during sampling. Guidace with grad to zs."""
+        """Samples from zs ~ p(zs | zt) with guidance applied directly to the latent sample zs.
 
-        """Samples from zs ~ p(zs | zt). Only used during sampling. Guidace with grad to zs."""
+        This method computes the gradient of a target function with respect to the latent
+        variable zs and uses it to guide the sampling process.
+
+        Args:
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            target_function (callable): A function that takes zs and s and returns an energy value.
+            scale (float): The strength of the guidance.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+            max_norm (int, optional): Maximum norm for gradient clipping. Defaults to 20.
+            n_backward (int, optional): Number of backward steps for refining the gradient. Defaults to 0.
+
+        Returns:
+            Tuple[torch.Tensor, dict]: The guided sample zs and a dictionary with optimization info.
+        """
         opt_info = {}
         gamma_s = self.gamma(s).to(s.device)
         gamma_t = self.gamma(t).to(s.device)
@@ -1619,8 +1582,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         sigma = sigma_t_given_s * sigma_s / sigma_t
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        if t[0].item() == 1:
-            self.zs_norm_T = zs.norm(dim=[1, 2])  # initial z norm
 
         # guidance
         with torch.enable_grad():
@@ -1699,9 +1660,34 @@ class EnVariationalDiffusion(torch.nn.Module):
         fix_noise=False,
         max_norm=20,
         n_backward=0,
+        h_weight=1,
+        x_weight=1,
     ):
-        """Samples from zs ~ p(zs | zt). Only used during sampling. Guidace with grad to the mean."""
+        """Samples from zs ~ p(zs | zt) with guidance applied to the mean of the distribution.
+
+        This method computes the gradient of a target function with respect to the predicted
+        clean data z0 and uses it to guide the mean of the sampling distribution.
+
+        Args:
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            target_function (callable): A function that takes z0 and t and returns an energy value.
+            scale (float): The strength of the guidance.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+            max_norm (int, optional): Maximum norm for gradient clipping. Defaults to 20.
+            n_backward (int, optional): Number of backward steps for refining the gradient. Defaults to 0.
+            h_weight (int, optional): Weight for the feature component of the gradient. Defaults to 1.
+            x_weight (int, optional): Weight for the position component of the gradient. Defaults to 1.
+
+        Returns:
+            Tuple[torch.Tensor, dict]: The guided sample zs and a dictionary with optimization info.
+        """
         opt_info = {}
+        D = zt.size(2)
         gamma_s = self.gamma(s).to(s.device)
         gamma_t = self.gamma(t).to(s.device)
 
@@ -1763,8 +1749,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        if t[0].item() == 1:
-            self.zs_norm_T = zs.norm(dim=[1, 2])  # initial z norm
+
 
         if torch.isnan(zs).any():
             zs = zs.nan_to_num(0.0)
@@ -1819,9 +1804,36 @@ class EnVariationalDiffusion(torch.nn.Module):
         n_backward=0,
         h_weight=1,
         x_weight=1,
+        structure_guidance=False,
+        t_critical=0, # For outpaint
+        mask_node_index=[] # For inpaint
     ):
-        """
-        Inspired by GeoGuide
+        """Samples from zs ~ p(zs | zt) with guidance inspired by GeoGuide.
+
+        This method applies guidance to the mean of the sampling distribution, similar to v1,
+        but with modifications inspired by the GeoGuide paper. It also supports conditional
+        generation using a reference tensor.
+
+        Args:
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            target_function (callable): A function that takes z0 and t and returns an energy value.
+            scale (float): The strength of the guidance.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+            max_norm (int, optional): Maximum norm for gradient clipping. Defaults to 20.
+            n_backward (int, optional): Number of backward steps for refining the gradient. Defaults to 0.
+            h_weight (int, optional): Weight for the feature component of the gradient. Defaults to 1.
+            x_weight (int, optional): Weight for the position component of the gradient. Defaults to 1.
+            structure_guidance (bool, optional): If inpaint or outpaint, applies structure guidance. Defaults to False.
+            t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+            mask_node_index (list, optional): List of node indices to mask during inpaiting. Defaults to [].
+
+        Returns:
+            Tuple[torch.Tensor, dict]: The guided sample zs and a dictionary with optimization info.
         """
         opt_info = {}
         
@@ -1829,6 +1841,15 @@ class EnVariationalDiffusion(torch.nn.Module):
         D = zt.size(2)
         gamma_s = self.gamma(s).to(s.device)
         gamma_t = self.gamma(t).to(s.device)
+
+        # In the event the reference tensor is provided
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
+            natom_ref = self.condition_tensor.size(1)
+            mask_bools = [False] * natom_ref + [True] * (
+                node_mask.size(1) - natom_ref
+            )
+            mask_bools = torch.tensor(mask_bools, device=zt.device, dtype=torch.bool)
+            
 
         (
             sigma2_t_given_s,
@@ -1861,6 +1882,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         sigma = sigma_t_given_s * sigma_s / sigma_t
 
         z0 = (zt - sigma_t * eps_t) / ((1 - sigma_t**2) ** (1 / 2))
+        if self.condition_tensor is not None:
+            z0 = torch.cat(
+                        [self.condition_tensor, z0[:, mask_bools, :]], dim=1
+                    )
         # guidance
         with torch.enable_grad():
             z0 = z0.requires_grad_()
@@ -1887,8 +1912,28 @@ class EnVariationalDiffusion(torch.nn.Module):
         opt_info["mu1_norm"] = mu.norm(dim=[1, 2])
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        if t[0].item() == 1:
-            self.zs_norm_T = zs.norm(dim=[1, 2])  # initial z norm
+        # In the event the reference tensor is provided
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
+            if s > t_critical:
+                # Fix the reference part as conditioning
+                zs = torch.cat(
+                    [self.condition_tensor, zs[:, mask_bools, :]], dim=1
+                )
+            else:
+                # Fix just the atomm types of reference part as conditioning
+                zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
+        elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            zs = torch.cat(
+                [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
+            )
+
+        zs = torch.cat(
+            [
+                remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
+                zs[:, :, self.n_dims :],
+            ],
+            dim=2,
+        )
 
         if torch.isnan(zs).any():
             zs = zs.nan_to_num(0.0)
@@ -1923,7 +1968,35 @@ class EnVariationalDiffusion(torch.nn.Module):
                     clip_coef_clamped_reverse_zs = torch.clamp(clip_coef_reverse_zs, max=1)
                     grad_r *= clip_coef_clamped_reverse_zs[:, None, None]
                     zs = zs - scale * grad_r 
+
+                    # In the event the reference tensor is provided
+                    if self.condition_tensor is not None and "outpaint" in structure_guidance:
+                        if s > t_critical:
+                            # Fix the reference part as conditioning
+                            zs = torch.cat(
+                                [self.condition_tensor, zs[:, mask_bools, :]], dim=1
+                            )
+                        else:
+                            # Fix just the atomm types of reference part as conditioning
+                            zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
+                    elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+                        zs = torch.cat(
+                            [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
+                        )     
+
+        zs = torch.cat(
+            [
+                remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
+                zs[:, :, self.n_dims :],
+            ],
+            dim=2,
+        )
         
+        if self.condition_tensor  is not None and "outpaint" in structure_guidance:
+            self.condition_tensor = zs[:, ~mask_bools, :]
+        elif self.condition_tensor  is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            self.condition_tensor = zs[:, ~mask_node_index, :]  
+            
         return zs, opt_info
 
     def sample_p_zs_given_zt_guidance_cfg(
@@ -1936,15 +2009,47 @@ class EnVariationalDiffusion(torch.nn.Module):
         context,
         scale,
         fix_noise=False,
-        context_negative=None
+        context_negative=None,
+        structure_guidance=False,
+        t_critical=0, # For outpaint
+        mask_node_index=[] # For inpaint
     ):
         """
-        Classical CFG guidance.
+        Samples from zs ~ p(zs | zt) using classifier-free guidance (CFG).
+
+        This method adjusts the diffusion sampling process by guiding the noise prediction
+        towards a conditional distribution and away from an unconditional (or negative) one.
+        It also supports inpainting-style generation where a reference part of the structure
+        can be fixed.
+
+        Args:
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            scale (float): The strength of the classifier-free guidance.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+            context_negative (torch.Tensor, optional): Negative conditional information for guidance.
+                If None, unconditional generation is used as the negative target. Defaults to None.
+            structure_guidance (bool, optional): If inpaint or outpaint, applies structure guidance. Defaults to False.
+            t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+            mask_node_index (list, optional): List of node indices to mask during inpaiting. Defaults to [].
+
+        Returns:
+            torch.Tensor: The sampled data `zs` at timestep `s`.
         """
 
         gamma_s = self.gamma(s).to(s.device)
         gamma_t = self.gamma(t).to(s.device)
-
+        # In the event the reference tensor is provided
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
+            natom_ref = self.condition_tensor.size(1)
+            mask_bools = [False] * natom_ref + [True] * (
+                node_mask.size(1) - natom_ref
+            )
+            mask_bools = torch.tensor(mask_bools, device=zt.device, dtype=torch.bool)
         (
             sigma2_t_given_s,
             sigma_t_given_s,
@@ -1990,7 +2095,21 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-
+    
+        # In the event the reference tensor is provided
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
+            if s > t_critical:
+                # Fix the reference part as conditioning
+                zs = torch.cat(
+                    [self.condition_tensor, zs[:, mask_bools, :]], dim=1
+                )
+            else:
+                # Fix just the atomm types of reference part as conditioning
+                zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
+        elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            zs = torch.cat(
+                [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
+            )
         # Project down to avoid numerical runaway of the center of gravity.
         zs = torch.cat(
             [
@@ -1999,6 +2118,11 @@ class EnVariationalDiffusion(torch.nn.Module):
             ],
             dim=2,
         )
+        if self.condition_tensor  is not None and "outpaint" in structure_guidance:
+            self.condition_tensor = zs[:, ~mask_bools, :]
+        elif self.condition_tensor  is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            self.condition_tensor = zs[:, ~mask_node_index, :]  
+            
         return zs
 
     def sample_p_zs_given_zt_guidance_cfg_gg(
@@ -2017,13 +2141,48 @@ class EnVariationalDiffusion(torch.nn.Module):
         h_weight=1,
         x_weight=1,
         fix_noise=False,
+        structure_guidance=False,
+        t_critical=0, # For outpaint
+        mask_node_index=[] # For inpaint
     ):
-        """
-        Classical CFG guidance.
+        """Combines Classifier-Free Guidance (CFG) with Gradient-Based Guidance (GG).
+
+        This method first computes the noise prediction using CFG and then applies a
+        gradient-based correction to the mean of the sampling distribution.
+
+        Args:
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            target_function (callable): A function that takes z0 and t and returns an energy value.
+            cfg_scale (float): The strength of the classifier-free guidance.
+            gg_scale (float): The strength of the gradient-based guidance.
+            max_norm (int, optional): Maximum norm for gradient clipping. Defaults to 20.
+            n_backward (int, optional): Number of backward steps for refining the gradient. Defaults to 0.
+            h_weight (int, optional): Weight for the feature component of the gradient. Defaults to 1.
+            x_weight (int, optional): Weight for the position component of the gradient. Defaults to 1.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+            structure_guidance (bool, optional): If inpaint or outpaint, applies structure guidance. Defaults to False.
+            t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+            mask_node_index (list, optional): List of node indices to mask during inpaiting. Defaults to [].
+
+        Returns:
+            torch.Tensor: The guided sample zs.
         """
         D = zt.size(2)
         gamma_s = self.gamma(s).to(s.device)
         gamma_t = self.gamma(t).to(s.device)
+        # In the event the reference tensor is provided
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
+            natom_ref = self.condition_tensor.size(1)
+            mask_bools = [False] * natom_ref + [True] * (
+                node_mask.size(1) - natom_ref
+            )
+            mask_bools = torch.tensor(mask_bools, device=zt.device, dtype=torch.bool)
+            
 
         (
             sigma2_t_given_s,
@@ -2064,7 +2223,20 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # gradient guidance
         z0 = (zt - sigma_t * eps_t) / ((1 - sigma_t**2) ** (1 / 2))
-       
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
+            if s > t_critical:
+                # Fix the reference part as conditioning
+                z0 = torch.cat(
+                    [self.condition_tensor, z0[:, mask_bools, :]], dim=1
+                )
+            else:
+                # Fix just the atomm types of reference part as conditioning
+                z0[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
+        elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            z0 = torch.cat(
+                [ self.condition_tensor, z0[:, mask_node_index, :]], dim=1
+            )
+            
         with torch.enable_grad():
             z0 = z0.requires_grad_()
             energy = target_function(z0, t).sum()
@@ -2086,6 +2258,19 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
+            if s > t_critical:
+                # Fix the reference part as conditioning
+                zs = torch.cat(
+                    [self.condition_tensor, zs[:, mask_bools, :]], dim=1
+                )
+            else:
+                # Fix just the atomm types of reference part as conditioning
+                zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
+        elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            zs = torch.cat(
+                [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
+            )
 
         # Project down to avoid numerical runaway of the center of gravity.
         zs = torch.cat(
@@ -2123,84 +2308,36 @@ class EnVariationalDiffusion(torch.nn.Module):
                     clip_coef_clamped_reverse_zs = torch.clamp(clip_coef_reverse_zs, max=1)
                     grad_r *= clip_coef_clamped_reverse_zs[:, None, None]
                     zs = zs - gg_scale * grad_r 
+
+                    # In the event the reference tensor is provided
+                    if self.condition_tensor is not None and "outpaint" in structure_guidance:
+                        if s > t_critical:
+                            # Fix the reference part as conditioning
+                            zs = torch.cat(
+                                [self.condition_tensor, zs[:, mask_bools, :]], dim=1
+                            )
+                        else:
+                            # Fix just the atomm types of reference part as conditioning
+                            zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
+                    elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+                        zs = torch.cat(
+                            [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
+                        )    
+        zs = torch.cat(
+            [
+                remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
+                zs[:, :, self.n_dims :],
+            ],
+            dim=2,
+        )
+        
+        if self.condition_tensor  is not None and "outpaint" in structure_guidance:
+            self.condition_tensor = zs[:, ~mask_bools, :]
+        elif self.condition_tensor  is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            self.condition_tensor = zs[:, ~mask_node_index, :]  
         return zs
 
 
-    @torch.no_grad()
-    def sample_domain_specific(
-        self,
-        n_samples,
-        n_nodes,
-        node_mask,
-        edge_mask,
-        context,
-        xh_target,
-        fix_noise=False,
-    ):
-        """
-        Draw samples from the generative model.
-        xh_target: target xh: [batch size, 1, n_features]
-        """
-        if fix_noise:
-            # Noise is broadcasted over the batch axis, useful for visualizations.
-            z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-        else:
-            z = self.sample_combined_position_feature_noise(
-                n_samples, n_nodes, node_mask
-            )
-
-        assert_mean_zero_with_mask(z[:, :, : self.n_dims], node_mask)
-
-        def noising_xh(xh_target, t_array):
-            gamma_t = self.inflate_batch_array(
-                self.gamma(t_array),
-                xh_target[:, :, : self.n_dims],
-            )
-
-            # Compute alpha_t and sigma_t from gamma.
-            alpha_t = self.alpha(gamma_t, xh_target[:, :, : self.n_dims])
-            sigma_t = self.sigma(gamma_t, xh_target[:, :, : self.n_dims])
-
-            eps = self.sample_combined_position_feature_noise(
-                n_samples=xh_target.size(0), n_nodes=1, node_mask=node_mask[:, :1]
-            )
-
-            z_target = alpha_t * xh_target + sigma_t * eps
-            return z_target
-
-        # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        for s in reversed(range(0, self.T)):
-            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-            t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
-
-            z_target = noising_xh(xh_target, t_array)
-            z[:, 0] = z_target
-
-            z = self.sample_p_zs_given_zt(
-                s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise
-            )
-
-        # Finally sample p(x, h | z_0).
-        z_target_0 = noising_xh(xh_target, torch.zeros_like(z[:, :, :1]))
-        z[:, :1] = z_target_0
-        x, h = self.sample_p_xh_given_z0(
-            z, node_mask, edge_mask, context, fix_noise=fix_noise
-        )
-
-        assert_mean_zero_with_mask(x, node_mask)
-
-        max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
-        if max_cog > 5e-2:
-            print(
-                f"Warning cog drift with error {max_cog:.3f}. Projecting "
-                f"the positions down."
-            )
-            x = remove_mean_with_mask(x, node_mask)
-
-        return x, h
-    
     def sample_p_zs_given_zt_ssgd(
         self,
         s,
@@ -2316,7 +2453,33 @@ class EnVariationalDiffusion(torch.nn.Module):
         scale_factor=1.1,
         fix_noise=False,
     ):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+        """Performs inpainting on a molecular structure.
+
+        This method fills in a missing part of a molecule, defined by `mask_node_index`,
+        while keeping the rest of the structure fixed. It uses geometric constraints to
+        ensure the generated part is chemically plausible.
+
+        Args:
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            mask_node_index (torch.Tensor): Indices of the nodes to be inpainted.
+            connector_dicts (dict): A dictionary defining the connector atoms and their degrees.
+            t_critical_1 (float, optional): Critical timestep for applying the first set of geometric constraints. Defaults to 0.8.
+            t_critical_2 (float, optional): Critical timestep for applying the second set of geometric constraints. Defaults to 0.3.
+            d_threshold_f (float, optional): Distance threshold for finding close points. Defaults to 1.8.
+            w_b (int, optional): Weight for the bond term in the geometric constraints. Defaults to 2.
+            all_frozen (bool, optional): If True, all atoms in the reference fragment are frozen. Defaults to False.
+            use_covalent_radii (bool, optional): If True, uses covalent radii for distance checks. Defaults to True.
+            scale_factor (float, optional): Scale factor for covalent radii. Defaults to 1.1.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+
+        Returns:
+            torch.Tensor: The inpainted sample zs.
+        """
         
     
         connector_indices = torch.tensor(list(connector_dicts.keys()), device=zt.device, dtype=torch.long)
@@ -2456,6 +2619,32 @@ class EnVariationalDiffusion(torch.nn.Module):
         scale_factor=1.1,
         fix_noise=False,
     ):
+        """Performs outpainting on a molecular structure.
+
+        This method extends a given molecular fragment by generating new atoms and connecting
+        them to the fragment at specified connector points.
+
+        Args:
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            mask_bools (torch.Tensor): A boolean mask indicating which atoms are part of the generated structure.
+            connector_dicts (dict): A dictionary defining the connector atoms and their degrees.
+            t_critical_1 (float, optional): Critical timestep for applying the first set of geometric constraints. Defaults to 0.8.
+            t_critical_2 (float, optional): Critical timestep for applying the second set of geometric constraints. Defaults to 0.4.
+            d_threshold_f (float, optional): Distance threshold for finding close points. Defaults to 1.8.
+            w_b (int, optional): Weight for the bond term in the geometric constraints. Defaults to 2.
+            all_frozen (bool, optional): If True, all atoms in the reference fragment are frozen. Defaults to False.
+            use_covalent_radii (bool, optional): If True, uses covalent radii for distance checks. Defaults to True.
+            scale_factor (float, optional): Scale factor for covalent radii. Defaults to 1.1.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+
+        Returns:
+            torch.Tensor: The outpainted sample zs.
+        """
         # natom_ref = condition_tensor.size(1)
         connector_indices = torch.tensor(list(connector_dicts.keys()), device=zt.device, dtype=torch.long)
         connector_degrees = torch.tensor([value[0] for value in connector_dicts.values()], device=zt.device, dtype=torch.long)
@@ -2589,24 +2778,24 @@ class EnVariationalDiffusion(torch.nn.Module):
         t_critical=0.05,
         fix_noise=False,
     ):
-        """
-        Samples from zs ~ p(zs | zt), fine-tuning the generated structure to a reference.
+        """Performs outpainting with fine-tuning to a reference structure.
 
-        Assumes the reference part is the first part of the tensor.
+        This method guides the outpainting process by fine-tuning the generated structure
+        to a given reference tensor.
 
         Args:
-            s (torch.Tensor): End  timestep.
-            t (torch.Tensor): Start timestep.
-            zt (torch.Tensor): Latent vector at time t.
-            reference_tensor (torch.Tensor): Reference tensor to guide the generation.
-            node_mask (torch.Tensor): Node mask.
-            edge_mask (torch.Tensor): Edge mask.
-            context (torch.Tensor): Context tensor.
-            t_critical (float): Critical time for the stopping the conditioning (position). [0-1] (default: 0.02)
-            fix_noise (bool): Whether to fix the noise for sampling.
+            s (torch.Tensor): The current timestep, s.
+            t (torch.Tensor): The next timestep, t.
+            zt (torch.Tensor): The noisy data at timestep t.
+            reference_tensor (torch.Tensor): The reference structure to fine-tune to.
+            node_mask (torch.Tensor): Mask for nodes in the graph.
+            edge_mask (torch.Tensor): Mask for edges in the graph.
+            context (torch.Tensor): The conditional information for guidance.
+            t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to 0.05.
+            fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
 
         Returns:
-            torch.Tensor: Sampled latent vector at time s.
+            torch.Tensor: The outpainted and fine-tuned sample zs.
         """
         natom_ref = reference_tensor.size(1)
         mask_bools = [False] * natom_ref + [True] * (
@@ -2664,64 +2853,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         return zs
         
         
-        
-    # NOTE assume just one node in the reference
-    def sample_p_zs_given_zt_around_xh_target(
-        self,
-        s,
-        t,
-        zt,
-        node_mask,
-        edge_mask,
-        context,
-        xh_target,
-        fix_noise=False,
-    ):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
-        gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
-
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = (
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
-        )
-
-        sigma_s = self.sigma(gamma_s, target_tensor=zt)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-
-        # Neural net prediction.
-        eps_s = self.phi(zt, t, node_mask, edge_mask, context)
-
-        # Compute mu for p(zs | zt).
-        assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
-        assert_mean_zero_with_mask(eps_s[:, :, : self.n_dims], node_mask)
-
-        mu = (
-            zt / alpha_t_given_s
-            - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_s
-        )
-
-        # Compute sigma for p(zs | zt).
-        sigma = sigma_t_given_s * sigma_s / sigma_t
-
-        # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-
-        # Assume that the first node is the reference
-        
-        if s[0].item() > 0.1:
-            zs[:, 0, :] = xh_target
-            zs[:, 1:, : self.n_dims] = translate_to_origine(zs[:, 1:, : self.n_dims], node_mask[:, 1:, :]) # DS
-        
-        # # Project down to avoid numerical runaway of the center of gravity.
-        # zs = torch.cat(
-        #     [
-        #         remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
-        #         zs[:, :, self.n_dims :],
-        #     ],
-        #     dim=2,
-        # )
-        return zs
-
     def sample_combined_position_feature_noise(
         self,
         n_samples,
@@ -2890,7 +3021,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         Draw samples from the generative model.
         """
         t_int_start = self.T * t_start
-        SCALE_FACTOR = 1.3
         
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
@@ -2961,7 +3091,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 h_int_ref = condition_tensor[:, :, -1].squeeze(0) * self.norm_values[2]
 
                 mol_graph = create_pyg_graph(x_ref, h_int_ref, r=3)
-                mol_graph = correct_edges(mol_graph, scale_factor=SCALE_FACTOR)
+                mol_graph = correct_edges(mol_graph, scale_factor=1.2)
 
                 connector_idxs = []
                 connector_n_bonds = []
@@ -3232,10 +3362,6 @@ class EnVariationalDiffusion(torch.nn.Module):
                         condition_component,
                         fix_noise=fix_noise,
                     )
-                    elif condition_alg == "buildaround":
-                        z = self.sample_p_zs_given_zt_around_xh_target(
-                            s_array, t_array, z, node_mask, edge_mask, context, condition_tensor, fix_noise=fix_noise
-                        )
                     elif condition_alg == "inpaint":
                             
                         if s/self.T < denoising_strength: 
@@ -3611,7 +3737,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 chain = None
         else:
             if n_frames:
-                chain_flat = chain.view(n_samples * n_frames, z.size(1), z.size(2)-len(self.extra_norm_values)) 
+                chain_flat = chain.view(n_frames, n_samples , z.size(1), z.size(2)-len(self.extra_norm_values)) 
   
         return x, h, chain_flat
 
@@ -3669,6 +3795,9 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return chain_flat
 
+    #TODO we have to preprocess the data for structure-guidnace here
+    #TODO for the hybrid, intend to use with fine-tuned adapted model
+    #TODO 3D constaints will not be employed
     @torch.no_grad()
     def sample_guidance(
         self,
@@ -3690,6 +3819,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         n_backwards=0,
         h_weight=1,
         x_weight=1,
+        condition_tensor=None,
+        condition_mode=None,
+        mask_node_index=torch.tensor([[]]), # For Inpainting
+        denoising_strength=0.0, # For Inpainting
+        noise_initial_mask=False, # For Inpainting
+        t_start=1.0,
+        t_critical=0,
+        n_frames=0,
         debug=False,
     ):
         """
@@ -3715,14 +3852,23 @@ class EnVariationalDiffusion(torch.nn.Module):
         - n_backwards (int): Number of backward steps. Default is 0.
         - h_weight (float): Weight for the gradient of atom feature. Default is 1.0.
         - x_weight (float): Weight for the gradient of cartesian coordinate. Default is 1.0.
+        - n_frames (int, optional): Number of frames for sampling. Defaults to 0.
         - debug (bool): Debug mode. Default is False.
             Save gradient norms, max gradients, clipping coefficients, and energies to files.
+        - condition_tensor (torch.Tensor, optional): Tensor for conditional guidance. Defaults to None.
+        - condition_mode (str, optional): Mode for conditional guidance. Defaults to None.
+        - mask_node_index (torch.Tensor, optional): Indices of nodes to be inpainted. Defaults to an empty tensor.
+        - denoising_strength (float, optional): Strength of denoising for inpainting
+        - noise_initial_mask (bool, optional): Whether to noise the initial masked region. Defaults to False.
+        - t_start (float, optional): Timestep to start applying guidance. Defaults to 1.0.
+        - t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+
 
         Returns:
         Tuple[Tensor, Tensor]: Sampled positions and features.
         """
         debug = False
-        
+        t_int_start = self.T * t_start
         n_nodes = node_mask.size(1)
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
@@ -3742,123 +3888,420 @@ class EnVariationalDiffusion(torch.nn.Module):
             "z_norm": [],
             "values": [],
         }
-
+        
         guidance_at = int(guidance_at * self.T)
         guidance_stop = int(guidance_stop * self.T)
 
         scale_deploy = gg_scale
+    
+        # Structure guidance preprocesssing
+        if condition_mode:
+            condition_alg, condition_component = condition_mode.split("_")
+            print(condition_alg, condition_component)
+        else:
+            condition_alg = None
+            condition_component = None
+        
+        if condition_component == "xh" or condition_component == "x":
+            n_node_cond = condition_tensor.size(1)
+            unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
+            node_mask_cond = torch.ones((n_samples, n_node_cond,1), device=z.device)  
+            if "ft" not in condition_alg:
+                condition_tensor[:,:, : self.n_dims] = remove_mean_with_mask(condition_tensor[:,:, : self.n_dims], node_mask_cond)
 
+        # for tracking intermediate frames
+        if n_frames > 0:
+            
+            z_size = (z.size(0), z.size(1), z.size(2)-len(self.extra_norm_values))
+         
+            chain = torch.zeros((n_frames,) + z_size, device=z.device)
+            if condition_alg == "inpaint":
+                s_saves = torch.linspace(0, int(denoising_strength * self.T), 
+                                         steps=n_frames, device=z.device).long() 
+            else:
+                s_saves = torch.linspace(0, self.T, 
+                                         steps=n_frames, device=z.device).long() 
+        
+        
+        if condition_alg:
+            if  "inpaint" in condition_alg:
+                n_node_cond = condition_tensor.size(1)
+                d = torch.full((n_samples, 1), fill_value=denoising_strength, device=z.device)
+                
+                gamma_d = self.inflate_batch_array(self.gamma(d), condition_tensor)
+            
+                # Compute alpha_t and sigma_t from gamma.
+                alpha_d = self.alpha(gamma_d, condition_tensor)
+                sigma_d = self.sigma(gamma_d, condition_tensor)
+
+                #-----------------------partial inpainting------------------------------------#
+                if mask_node_index.size(1) > 0:
+                    #
+                    # CONSTANTS
+                    scale_factor = 1.1
+                    all_frozen = False
+                    use_covalent_radii = True
+                    w_b = 2
+                    d_threshold_f = 1.4
+                    # Reorder condition_tensor such that connector nodes are the first nodes
+                    connector_mask = torch.zeros(condition_tensor.size(1), dtype=torch.bool, device=z.device)
+                    connector_mask[mask_node_index] = True  
+                    non_connector_mask = ~connector_mask          
+                    reordered_condition_tensor = torch.cat([condition_tensor[:, non_connector_mask, :], 
+                                                            condition_tensor[:, connector_mask, :]], dim=1)
+                    condition_tensor = reordered_condition_tensor
+
+                    x_ref = condition_tensor[:, :, : self.n_dims].squeeze(0)
+                    h_int_ref = condition_tensor[:, :, -1].squeeze(0) * self.norm_values[2]
+
+                    mol_graph = create_pyg_graph(x_ref, h_int_ref, r=3)
+                    mol_graph = correct_edges(mol_graph, scale_factor=1.2)
+
+                    connector_idxs = []
+                    connector_n_bonds = []
+                    mask_node_index_corr = torch.arange(condition_tensor.size(1) - mask_node_index.size(1), condition_tensor.size(1), device=z.device, dtype=torch.long)
+                    unmasked_node_indices = torch.arange(condition_tensor.size(1) - mask_node_index.size(1), device=z.device).tolist()
+                    for node in unmasked_node_indices:
+                        adj_nodes = mol_graph.edge_index[1][mol_graph.edge_index[0] == node]
+                        adj_nodes = adj_nodes.long().to(z.device)
+                        if any(torch.isin(adj_nodes, mask_node_index_corr)):
+                            connector_idxs.append(node)
+                            connector_n_bonds.append(len(adj_nodes))  
+
+                    connector_idxs = list(set(connector_idxs))
+                    connector_indices = torch.tensor(connector_idxs, device=z.device, dtype=torch.long)
+                    connector_degrees = torch.tensor(connector_n_bonds, device=z.device, dtype=torch.long)      
+                    connector_dicts = {j.item(): [connector_degrees[i].item()] for i, j in enumerate(connector_indices)}   
+                    
+                    node_mask_m = torch.ones_like(mask_node_index, device=z.device)
+                    node_mask_m = node_mask_m.unsqueeze(-1)
+                    
+                    node_mask_um = torch.ones((n_samples, n_node_cond-mask_node_index.size(1)), device=z.device)  
+                    node_mask_um = node_mask_um.unsqueeze(-1)
+        
+                    mask_node_bool = [True if i in mask_node_index else False for i in range(n_node_cond)]
+                    mask_node_bool = torch.tensor(mask_node_bool, device=z.device)
+                    mask_node_bool_corr = torch.cat([torch.zeros(n_node_cond - mask_node_bool.sum(), device=z.device),
+                                                    torch.ones(mask_node_bool.sum(), device=z.device)]).bool()
+                    
+                    xh_unmasked = condition_tensor[:,~mask_node_bool_corr, :] # not to be denoise
+
+                    # noise the masked nodes
+                    if noise_initial_mask:
+                        eps_s_ref = self.sample_combined_position_feature_noise(
+                            n_samples=mask_node_index.size(0), n_nodes=mask_node_index.size(1), node_mask=node_mask_m)
+                        z = alpha_d * condition_tensor[:, mask_node_bool_corr, :] + sigma_d * eps_s_ref # to be denoised
+                        
+                        z = torch.cat([xh_unmasked, z], dim=1)
+                        z = torch.cat(  
+                            [
+                                remove_mean_with_mask(z[:, :, : self.n_dims], node_mask_cond),
+                                z[:, :, self.n_dims :],
+                            ],
+                            dim=2,
+                        )      
+        
+                        zs_pos = z[:, :, : self.n_dims]
+                        zs_pos = zs_pos.squeeze(0)  
+                        zs_new_pos = zs_pos[mask_node_bool_corr]
+                        condition_pos = xh_unmasked[:, :, : self.n_dims].squeeze(0)
+                        condition_charge = None
+                        zs_charge = None
+    
+                        _, zl_corr = find_close_points_torch_and_push_op2(
+                                    condition_pos,
+                                    zs_new_pos, 
+                                    connector_indices=torch.tensor(list(connector_dicts.keys()), device=z.device, dtype=torch.long),    
+                                    d_threshold_f=d_threshold_f,
+                                    w_b=w_b,
+                                    all_frozen=all_frozen,
+                                    z_ref=condition_charge,
+                                    z_tgt=zs_charge,
+                                    scale_factor=scale_factor
+                                    )
+
+                        z[:, mask_node_bool_corr, :self.n_dims] = zl_corr.unsqueeze(0) 
+
+                    
+                    
+                    # keep the masked nodes clean
+                    else:
+                        z = torch.cat([xh_unmasked, condition_tensor[:, mask_node_bool_corr, :]], dim=1)
+
+                #-----------------------all inpainting------------------------------------#
+                else:
+                    if condition_component == "xh":
+                        eps_s_ref = self.sample_combined_position_feature_noise(
+                        n_samples=condition_tensor.size(0), n_nodes=condition_tensor.size(1), node_mask=node_mask[:, :condition_tensor.size(1), :])
+                        z = alpha_d * condition_tensor + sigma_d * eps_s_ref
+                        z = torch.cat(
+                            [
+                                remove_mean_with_mask(z[:, :, : self.n_dims], node_mask[:, :condition_tensor.size(1), :]),
+                                z[:, :, self.n_dims :],
+                            ],
+                            dim=2,
+                        )
+                        xh_unmasked = None
+                    elif condition_component == "x":
+                        eps_s_ref = sample_center_gravity_zero_gaussian_with_mask(
+                            size=(condition_tensor.size(0), condition_tensor.size(1), self.n_dims),
+                            device=node_mask.device,
+                            node_mask=node_mask[:, :condition_tensor.size(1), :],
+                        )
+                        z = torch.cat([
+                            alpha_d * condition_tensor[:, :, : self.n_dims] + sigma_d * eps_s_ref,
+                            condition_tensor[:, :, self.n_dims:]
+                        ], dim=2)
+                        z = torch.cat(
+                            [
+                                remove_mean_with_mask(z[:, :, : self.n_dims], node_mask[:, :condition_tensor.size(1), :]),
+                                z[:, :, self.n_dims :],
+                            ],
+                            dim=2,
+                        )
+                    elif condition_component == "h":
+                        eps_s_ref = sample_gaussian_with_mask(
+                            size=(condition_tensor.size(0), condition_tensor.size(1), self.in_node_nf),
+                            device=node_mask.device,
+                            node_mask=node_mask[:, :condition_tensor.size(1), :],
+                        )
+
+                        z = torch.cat([
+                            condition_tensor[:, :, : self.n_dims],
+                            alpha_d * condition_tensor[:, :, self.n_dims:] + sigma_d * eps_s_ref
+                        ], dim=2)
+                        z = torch.cat(
+                            [
+                                remove_mean_with_mask(z[:, :, : self.n_dims], node_mask[:, :condition_tensor.size(1), :]),
+                                z[:, :, self.n_dims :],
+                            ],
+                            dim=2,)
+                    mask_node_bool_corr = []
+                    connector_dicts = {}
+                #-----------------------extended inpainting-----------------------------------
+                n_node_extend = n_nodes - n_node_cond
+    
+                if n_node_extend > 0:
+                    node_mask_um = torch.ones((n_samples, z.size(1)-mask_node_index.size(1)), device=z.device)  
+                    z_extend = self.sample_combined_position_feature_noise(
+                        mask_node_index.size(0), n_node_extend, 
+                        torch.ones((mask_node_index.size(0), n_node_extend,1), device=z.device)  )
+                    z = torch.cat([z, z_extend], dim=1) 
+
+                    zs_pos = z[:, :, : self.n_dims]
+                    zs_pos = zs_pos.squeeze(0)  
+
+                    zs_extend_pos = zs_pos[-n_node_extend:]
+                    condition_pos = zs_pos[:-n_node_extend]
+                    
+                    if mask_node_index.size(1) > 0:
+                        n_connector = mask_node_index.size(1)
+                        connector_indices = torch.arange(n_connector , condition_pos.size(0), device=z.device)
+                    else:
+                        n_connector = condition_pos.size(0)
+                        connector_indices = torch.arange(0 , n_connector, device=z.device)
+                    
+                    condition_charge = z[:, n_node_extend:, -1].squeeze(0)*self.norm_values[2]
+                    condition_charge = torch.round(condition_charge).long()
+                    condition_charge[condition_charge >= 118] = 118
+                    condition_charge[condition_charge <= 1] = 1
+                    condition_charge = condition_charge.unsqueeze(-1)
+                    zs_charge = z[:, :n_node_extend, -1].squeeze(0)*self.norm_values[2]
+                    zs_charge = torch.round(zs_charge).long()
+                    zs_charge[zs_charge >= 118] = 118
+                    zs_charge[zs_charge <= 1] = 1
+                    zs_charge = zs_charge.unsqueeze(-1)
+   
+                    _, zl_corr = find_close_points_torch_and_push_op2(
+                                condition_pos,
+                                zs_extend_pos, 
+                                connector_indices=connector_indices,    
+                                d_threshold_f=1.4,
+                                w_b=2,
+                                all_frozen=False,
+                                z_ref=condition_charge,
+                                z_tgt=zs_charge,
+                                scale_factor=1.2
+                                )  
+                    z[:, -n_node_extend:, :self.n_dims] = zl_corr.unsqueeze(0)    
+                    if mask_node_index.size(1) > 0:
+                        mask_node_bool_corr = torch.cat([mask_node_bool_corr, 
+                                                        torch.ones(n_node_extend, device=z.device)]).bool() 
+                        # connector_dicts = {key + n_node_extend: value for key, value in connector_dicts.items()}
+                if mask_node_index.size(1) > 0:
+                    self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
+            
+            elif "outpaint" in condition_alg:
+                natom_ref = condition_tensor.size(1)
+                
+                if any(idx > natom_ref - 1 for idx in connector_dicts.keys()):
+                    raise ValueError("connector_indices is out of bound")
+                if not connector_dicts and condition_alg == "outpaint":
+                    raise ValueError("connector_indices is empty")
+                
+                z = torch.cat([condition_tensor, z], dim=1) 
+                n_nodes = z.size(1)
+                node_mask = torch.ones((n_samples, n_nodes), device=z.device)
+                edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
+                diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool, device=z.device).unsqueeze(0)
+                edge_mask *= diag_mask
+                edge_mask = edge_mask.view(z.size(0) * n_nodes * n_nodes, 1).to(self.device)  
+                node_mask = node_mask.unsqueeze(-1)
+                condition_tensor = z[:, :natom_ref, :]   
+                mask_node_bool_corr = torch.cat([torch.zeros(natom_ref, device=z.device), 
+                                                    torch.ones(n_nodes - natom_ref, device=z.device)]).bool()
+                self.condition_tensor = z[:, ~mask_node_bool_corr, :]               
+                
+        else:
+            mask_node_bool_corr = None
+        z = torch.cat(  
+            [
+                remove_mean_with_mask(z[:, :, : self.n_dims], node_mask),
+                z[:, :, self.n_dims :],
+            ],
+            dim=2,
+        )       
+        if self.condition_tensor is not None:
+            self.condition_tensor = z[:, ~mask_node_bool_corr, :]
+            
+        write_index = 0
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         with tqdm(total=self.T, dynamic_ncols=True, unit="steps") as pbar:
             for s in reversed(range(0, self.T)):
+                
                 s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
                 t_array = s_array + 1
                 s_array = s_array / self.T
                 t_array = t_array / self.T
-                if s > guidance_at or s < guidance_stop:
-                    if s == guidance_stop:
-                        logger.info("Guidance stops at ", s)
-                    z = self.sample_p_zs_given_zt(
-                        s_array, t_array, z, node_mask, edge_mask, context=context, fix_noise=fix_noise
-                    )
-
+    
+                if s > t_int_start:
+                    pbar.update(1)
+                    if n_frames > 0:
+                        if s in s_saves:
+                            chain[write_index] = self.unnormalize_z(z, node_mask)
+                            write_index += 1
+                    continue
                 else:
-                    if s == guidance_at:
-                        logger.info("Guidance starts at ", s)
-                    if guidance_ver == 0:
-                        z, opt_info = self.sample_p_zs_given_zt_guidance_v0(
-                            s_array,
-                            t_array,
-                            z,
-                            node_mask,
-                            edge_mask,
-                            context,
-                            target_function,
-                            scale_deploy,
-                            fix_noise=fix_noise,
-                            max_norm=max_norm,
-                            n_backward=n_backwards,
+                    
+                    if s > guidance_at or s < guidance_stop:
+                        if s == guidance_stop:
+                            logger.info("Guidance stops at ", s)
+                        z = self.sample_p_zs_given_zt(
+                            s_array, t_array, z, node_mask, edge_mask, context=context, fix_noise=fix_noise
                         )
-                    elif guidance_ver == 1:
-                        z, opt_info = self.sample_p_zs_given_zt_guidance_v1(
-                            s_array,
-                            t_array,
-                            z,
-                            node_mask,
-                            edge_mask,
-                            context,
-                            target_function,
-                            scale_deploy,
-                            fix_noise=fix_noise,
-                            max_norm=max_norm,
-                            n_backward=n_backwards,
-                        )
-                    elif guidance_ver == 2:
-                        z, opt_info = self.sample_p_zs_given_zt_guidance_v2(
-                            s_array,
-                            t_array,
-                            z,
-                            node_mask,
-                            edge_mask,
-                            context,
-                            target_function,
-                            scale_deploy,
-                            fix_noise=fix_noise,
-                            max_norm=max_norm,
-                            n_backward=n_backwards,
-                        )
-                    elif guidance_ver == "cfg":
-                        z = self.sample_p_zs_given_zt_guidance_cfg(
-                            s_array,
-                            t_array,
-                            z,
-                            node_mask,
-                            edge_mask,
-                            context,
-                            cfg_scale,
-                            fix_noise=fix_noise,
-                            context_negative=context_negative
-                        )
-                    elif guidance_ver == "cfg_gg":
-                        z = self.sample_p_zs_given_zt_guidance_cfg_gg(
-                            s_array,
-                            t_array,
-                            z,
-                            node_mask,
-                            edge_mask,
-                            context,
-                            target_function,
-                            cfg_scale,
-                            scale_deploy,
-                            max_norm=max_norm,
-                            n_backward=n_backwards,
-                            h_weight=h_weight,
-                            x_weight=x_weight,
-                            fix_noise=fix_noise,
-                        )
+
                     else:
-                        raise ValueError(f"Unknown guidance version {guidance_ver}.")
+                        if s == guidance_at:
+                            logger.info("Guidance starts at ", s)
+                        #NOTE this does not support structure-guidance yet
+                        if guidance_ver == 0:
+                            z, opt_info = self.sample_p_zs_given_zt_guidance_v0(
+                                s_array,
+                                t_array,
+                                z,
+                                node_mask,
+                                edge_mask,
+                                context,
+                                target_function,
+                                scale_deploy,
+                                fix_noise=fix_noise,
+                                max_norm=max_norm,
+                                n_backward=n_backwards,
+                            )
+                        #NOTE this does not support structure-guidance yet
+                        elif guidance_ver == 1:
+                            z, opt_info = self.sample_p_zs_given_zt_guidance_v1(
+                                s_array,
+                                t_array,
+                                z,
+                                node_mask,
+                                edge_mask,
+                                context,
+                                target_function,
+                                scale_deploy,
+                                fix_noise=fix_noise,
+                                max_norm=max_norm,
+                                n_backward=n_backwards,
+                            )
+                        elif guidance_ver == 2:
+                            z, opt_info = self.sample_p_zs_given_zt_guidance_v2(
+                                s_array,
+                                t_array,
+                                z,
+                                node_mask,
+                                edge_mask,
+                                context,
+                                target_function,
+                                scale_deploy,
+                                fix_noise=fix_noise,
+                                max_norm=max_norm,
+                                n_backward=n_backwards,
+                                t_critical=t_critical,
+                                structure_guidance=condition_alg,
+                                mask_node_index=mask_node_bool_corr
+                            )
+                        elif guidance_ver == "cfg":
+                            z = self.sample_p_zs_given_zt_guidance_cfg(
+                                s_array,
+                                t_array,
+                                z,
+                                node_mask,
+                                edge_mask,
+                                context,
+                                cfg_scale,
+                                fix_noise=fix_noise,
+                                context_negative=context_negative,
+                                t_critical=t_critical,
+                                structure_guidance=condition_alg,
+                                mask_node_index=mask_node_bool_corr
+                            )
+                        elif guidance_ver == "cfg_gg":
+                            z = self.sample_p_zs_given_zt_guidance_cfg_gg(
+                                s_array,
+                                t_array,
+                                z,
+                                node_mask,
+                                edge_mask,
+                                context,
+                                target_function,
+                                cfg_scale,
+                                scale_deploy,
+                                max_norm=max_norm,
+                                n_backward=n_backwards,
+                                h_weight=h_weight,
+                                x_weight=x_weight,
+                                fix_noise=fix_noise,
+                                t_critical=t_critical,
+                                structure_guidance=condition_alg,
+                                mask_node_index=mask_node_bool_corr
+                            )
+                        else:
+                            raise ValueError(f"Unknown guidance version {guidance_ver}.")
 
-                    if scheduler is not None:
-                        scale_deploy = scheduler.step(
-                            opt_info["energies"], scale_deploy
+                        if scheduler is not None:
+                            scale_deploy = scheduler.step(
+                                opt_info["energies"], scale_deploy
+                            )
+
+                    if debug:
+                        opt_infos["grad_norms"].append(
+                            opt_info["grad_norms"].detach().cpu().item()
                         )
-
-                if debug:
-                    opt_infos["grad_norms"].append(
-                        opt_info["grad_norms"].detach().cpu().item()
-                    )
-                    opt_infos["mu0_norm"].append(
-                        opt_info["mu0_norm"].detach().cpu().item()
-                    )
-                    opt_infos["mu1_norm"].append(
-                        opt_info["mu1_norm"].detach().cpu().item()
-                    )
-                    opt_infos["z_norm"].append(opt_info["z_norm"].detach().cpu().item())
-                    opt_infos["energies"].append(
-                        opt_info["energies"].detach().cpu().item()
-                    )
-                pbar.update(1)
+                        opt_infos["mu0_norm"].append(
+                            opt_info["mu0_norm"].detach().cpu().item()
+                        )
+                        opt_infos["mu1_norm"].append(
+                            opt_info["mu1_norm"].detach().cpu().item()
+                        )
+                        opt_infos["z_norm"].append(opt_info["z_norm"].detach().cpu().item())
+                        opt_infos["energies"].append(
+                            opt_info["energies"].detach().cpu().item()
+                        )
+                    if n_frames > 0:
+                        if s in s_saves:
+                            chain[write_index] = self.unnormalize_z(z, node_mask)
+                            write_index += 1
+                    pbar.update(1)
 
         if debug:
             for key, value in opt_infos.items():
@@ -3880,7 +4323,15 @@ class EnVariationalDiffusion(torch.nn.Module):
             )
             x = remove_mean_with_mask(x, node_mask)
 
-        return x, h
+        if n_frames > 0: 
+            xh = torch.cat([x, h["categorical"], h["integer"]], dim=2)
+            chain[-1] = xh     
+            chain_flat = chain.view(n_frames, n_samples , z.size(1), z.size(2)-len(self.extra_norm_values)) 
+            
+        else:
+            chain_flat = None
+        
+        return x, h, chain_flat
 
     @torch.no_grad()
     def sample_chain(

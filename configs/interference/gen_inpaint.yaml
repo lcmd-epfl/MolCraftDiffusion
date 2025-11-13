@@ -7,7 +7,7 @@ target_values: []
 property_names: []
 batch_size: 1
 seed: 86
-visualize_trajectory: False
+n_frames: 0
 output_path: generated_mol
 condition_configs:
   reference_structure_path: "data/template_structures/BINOLCpHHH.xyz"

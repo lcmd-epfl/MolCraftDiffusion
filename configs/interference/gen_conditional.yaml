@@ -7,5 +7,5 @@ target_values: [3,1.5]
 property_names: ["S1_exc", "T1_exc"]
 batch_size: 1
 seed: 86
-visualize_trajectory: False
+n_frames: 0
 output_path: generated_mol

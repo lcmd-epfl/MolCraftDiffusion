@@ -785,6 +785,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         n_backwards=0,
         h_weight=1,
         x_weight=1,
+        n_frames=0,
         debug=False,
     ):
         """
@@ -807,6 +808,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         - n_backwards (int): Number of backward steps. Default is 0.
         - h_weight (float): Weight for the gradient of atom feature. Default is 1.0.
         - x_weight (float): Weight for the gradient of cartesian coordinate. Default is 1.0.
+        - n_frames (int): Number of frames to keep. Default is 0.
         - debug (bool): Debug mode. Default is False.
             Save gradient norms, max gradients, clipping coefficients, and energies to files.
 
@@ -904,7 +906,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             context_negative = None
 
         # sample from the EDM model
-        x, h = self.model.sample_guidance(
+        x, h, chain = self.model.sample_guidance(
             batch_size,
             target_function,
             node_mask,
@@ -924,15 +926,52 @@ class GeomMolecularGenerative(Task, core.Configurable):
             h_weight=h_weight,
             x_weight=x_weight,
             debug=debug,
+            n_frames=n_frames,
         )
 
-        assert_correctly_masked(x, node_mask)
-        assert_mean_zero_with_mask(x, node_mask)
-        one_hot = h["categorical"]
-        charges = h["integer"]
+        if chain is not None:
+
+            # chain = chain.reshape(batch_size, n_frames, nnode, -1)
+            # Prepare entire chain.
+            if isinstance(chain, torch.Tensor):
+                x = chain[:, :, :, 0:3]
+                one_hot = chain[:, :, :, 3:-1]
+                one_hot = F.one_hot(
+                    torch.argmax(one_hot, dim=3), num_classes=self.n_atom_types
+                )
+                charges = torch.round(chain[:, :, :, -1:]).long()
+                
+            #TODO how to deal with batch in case of retry here
+            elif isinstance(chain, list):
+                x_0 = chain[0][:, :, 0:3]
+                one_hot_0 = chain[0][:, :, 3:-1]
+                one_hot_0 = F.one_hot(
+                    torch.argmax(one_hot_0, dim=2), num_classes=self.n_atom_types
+                )
+                charges_0 = torch.round(chain[0][:, :, -1:]).long()
+                
+                x_retrys = []
+                one_hot_retrys = []
+                charges_retrys = []
+                for i in range(chain[1].shape[0]):
+                    x_i = chain[1][i][:, :, 0:3]
+                    one_hot_i = chain[1][i][:, :, 3:-1]
+                    one_hot_i = F.one_hot(
+                        torch.argmax(one_hot_i, dim=2), num_classes=self.n_atom_types
+                    )
+                    charges_i = torch.round(chain[1][i][:, :, -1:]).long()
+                    x_retrys.append(x_i)
+                    one_hot_retrys.append(one_hot_i)
+                    charges_retrys.append(charges_i)
+                one_hot = [one_hot_0, one_hot_retrys]
+                charges = [charges_0, charges_retrys]
+                x = [x_0, x_retrys]
+        else:
+            one_hot = h["categorical"]
+            charges = h["integer"]
         return one_hot, charges, x, node_mask
-
-
+    
+    
     def sample_hybrid_guidance(
         self,
         target_function,

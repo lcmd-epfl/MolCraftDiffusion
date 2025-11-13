@@ -104,6 +104,9 @@ class GenerativeFactory:
         elif self.task_type in ("gradient_guidance", "cfggg"):
             self.property_guidance()
         elif self.task_type in ("inpaint", "outpaint", "outpaintft"):
+            if self.batch_size > 1:
+                self.batch_size = 1
+                logger.warning("Structure-guided generation can be carried out in batch size of 1")
             self.structural_guidance()
         elif self.task_type in {"inpaint_cfg", "inpaint_gg", "inpaint_cfggg", "outpaint_cfg", "outpaint_gg", "outpaint_cfggg"}:
             self.hybrid_guidance()
@@ -427,8 +430,7 @@ class GenerativeFactory:
         xh_ref = self.preprocess_ref_structure(self.task.device)
 
         n_retrys = self.condition_configs.get("n_retrys")
-        n_frames = self.condition_configs.get("n_frames")
-        if n_retrys > 0 and n_frames == 0:
+        if n_retrys > 0 and self.n_frames:
             logger.info("No frames saved, set n_retrys = 0")
             n_retrys = 0
         
@@ -505,7 +507,7 @@ class GenerativeFactory:
                         scale_factor=self.condition_configs.get("scale_factor"),
                         noise_initial_mask=self.condition_configs.get("noise_initial_mask"),
                         mask_node_index=mask_node_index,    
-                        n_frames=self.condition_configs.get("n_frames"),
+                        n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
                         context=context,
@@ -525,7 +527,7 @@ class GenerativeFactory:
                         use_covalent_radii=self.condition_configs.get("use_covalent_radii"),
                         scale_factor=self.condition_configs.get("scale_factor"),
                         connector_dicts=self.condition_configs.get("connector_dicts"),
-                        n_frames=self.condition_configs.get("n_frames"),
+                        n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
                         context=context,
@@ -536,24 +538,36 @@ class GenerativeFactory:
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
                         t_start=self.condition_configs.get("t_start", 1),
-                        n_frames=self.condition_configs.get("n_frames"),
+                        n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
                         context=context,
                     )
-                #TODO this just works for single xyz, will find ways to save frames layer
-                save_xyz_file(
-                    self.output_path,
-                    one_hot,
-                    x,
-                    atom_decoder=self.task.atom_vocab,
-                )
 
-                path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
-                shutil.move(
-                    path_xyz,
-                    os.path.join(self.output_path, f"molecule_{str(i+1).zfill(4)}.xyz"),
-                )                   
+                if self.visualize_trajectory:   
+                    output_path_frame = os.path.join(self.output_path, f"mol_{i}")
+                    # assume batch_size = 1
+                    save_xyz_file(
+                        output_path_frame,
+                        one_hot[:, 0],
+                        x[:, 0],
+                        atom_decoder=self.task.atom_vocab,
+                        idxs=self.s_saves.tolist()
+                    )     
+                    x = x[:, -1]
+                    one_hot = one_hot[:, -1]   
+                else:     
+                    save_xyz_file(
+                        self.output_path,
+                        one_hot,
+                        x,
+                        atom_decoder=self.task.atom_vocab,
+                    )
+                    path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
+                    shutil.move(
+                        path_xyz,
+                        os.path.join(self.output_path, f"molecule_{str(i).zfill(4)}.xyz"),
+                    )             
                              
             except Exception as e:
                 fail_count += 1
@@ -565,6 +579,7 @@ class GenerativeFactory:
                 "success": (i + 1 - fail_count),
                 "success_rate": f"{100 * (i + 1 - fail_count) / (i + 1):.1f}%",
             })   
+
 
     def hybrid_guidance(self):
         
@@ -589,7 +604,12 @@ class GenerativeFactory:
             scheduler = scheduler()
             
         fail_count = 0
-        progress_bar = tqdm(range(self.num_generate), desc="Sampling molecules", leave=True)
+        num_round = self.num_generate // self.batch_size
+        if self.num_generate % self.batch_size != 0:
+            num_round += 1
+        current_batch_size = self.batch_size
+        progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
+        
         
         if hasattr(self.task, 'predictive_model'):
             property_eval = True
@@ -604,12 +624,17 @@ class GenerativeFactory:
             property_eval = False
              
         for i in progress_bar:
+            if i == num_round-1 and self.num_generate % self.batch_size != 0:
+                current_batch_size = self.num_generate % self.batch_size
+            else:
+                current_batch_size = self.batch_size
             try:
                 if len(self.mol_size) == 1:
                     nodesxsample = torch.tensor(self.mol_size, dtype=torch.long)
+                    nodesxsample = nodesxsample.repeat(current_batch_size) 
                 elif len(self.mol_size) == 2:
                     if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                        nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                        nodesxsample = self.task.node_dist_model.sample(current_batch_size)
                     else:
                         mean = (self.mol_size[0] + self.mol_size[1]) / 2
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
@@ -620,7 +645,7 @@ class GenerativeFactory:
                     if nodesxsample.item() < xh_ref.shape[1]:
                         nodesxsample = torch.tensor([xh_ref.shape[1]])
                         logging.warning("Specified molecular size is too small, set it as the same size as the reference structure")
-                                           
+                               
                     try:
                         mask_node_index = torch.tensor([self.condition_configs.get("mask_node_index", [])])
                     except RuntimeError:
@@ -628,7 +653,7 @@ class GenerativeFactory:
                 else:
                     mask_node_index = torch.tensor([[]])
 
-            
+                xh_tensor = xh_ref.repeat(current_batch_size, 1, 1)
                 one_hot, charges, x, _  = self.task.sample_hybrid_guidance(
                     target_function=target_function,
                     target_value=self.target_values,
@@ -643,7 +668,7 @@ class GenerativeFactory:
                     guidance_at=self.condition_configs.get("guidance_at",1),
                     guidance_stop=self.condition_configs.get("guidance_stop",0),
                     n_backwards=self.condition_configs.get("n_backwards",1),
-                    condition_tensor=xh_ref,
+                    condition_tensor=xh_tensor,
                     condition_mode=condition_mode,
                     mask_node_index=mask_node_index, # For Inpainting
                     denoising_strength=self.condition_configs.get("denoising_strength", 0.8), # For Inpainting
@@ -652,19 +677,36 @@ class GenerativeFactory:
                     t_critical=self.condition_configs.get("t_critical", 0),
                 )   
                 
-                save_xyz_file(
-                    self.output_path,
-                    one_hot,
-                    x,
-                    atom_decoder=self.task.atom_vocab,
-                )
+                if self.visualize_trajectory:
+                    for j in range(current_batch_size):
+                        mol_idx = i * self.batch_size + j
+                        output_path_frame = os.path.join(self.output_path, f"mol_{mol_idx}")
+                        save_xyz_file(
+                            output_path_frame,
+                            one_hot[:, j],
+                            x[:, j],
+                            atom_decoder=self.task.atom_vocab,
+                            idxs=self.s_saves.tolist()
+                        )     
+                    x = x[:, -1]
+                    one_hot = one_hot[:, -1]   
+                else:     
+                    save_xyz_file(
+                        self.output_path,
+                        one_hot,
+                        x,
+                        atom_decoder=self.task.atom_vocab,
+                    )
 
-                path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
-                shutil.move(
-                    path_xyz,
-                    os.path.join(self.output_path, f"molecule_{str(i+1).zfill(4)}.xyz"),
-                )
-                
+                    for j in range(current_batch_size):
+                        
+                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                        idx = i * self.batch_size + j
+                        shutil.move(
+                            path_xyz,
+                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                        )
+            
                 if property_eval:
                     xh = torch.cat([
                         x,
