@@ -108,7 +108,11 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module, **kw
                     precision=trainer_module.precision,
                     use_posebuster=kwargs.get("use_posebuster", False),
                     batch_size=kwargs.get("batch_size", 1),
-                    )
+                    save_top_k=getattr(trainer_module, "save_top_k", 3),
+                    save_every_val_epoch=getattr(
+                        trainer_module, "save_every_val_epoch", False
+                    ),
+                )
             else:
                 best_metrics, best_checkpoints = evaluate(
                     task_module.task_type,
@@ -117,8 +121,12 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module, **kw
                     best_metrics,
                     best_checkpoints,
                     logger_module.logger,
-                    output_path=trainer_module.output_path
-                    )
+                    output_path=trainer_module.output_path,
+                    save_top_k=getattr(trainer_module, "save_top_k", 3),
+                    save_every_val_epoch=getattr(
+                        trainer_module, "save_every_val_epoch", False
+                    ),
+                )
     return best_metrics, solver
     
 #TODO to safely retrieve metric value for hydra-based hyperparameter optimization

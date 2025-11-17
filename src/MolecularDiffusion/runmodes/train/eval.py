@@ -130,6 +130,15 @@ def evaluate(
         if is_main_process:
             logging.info(f"Saved last model checkpoint to {last_path}")
 
+    save_top_k = kwargs.get("save_top_k", 3)
+    save_every_val_epoch = kwargs.get("save_every_val_epoch", False)
+
+    if save_every_val_epoch and is_main_process:
+        checkpoint_name = f"epoch_{epoch}.pkl"
+        checkpoint_path = os.path.join(output_path, checkpoint_name)
+        solver.save(checkpoint_path)
+        logging.info(f"Saved checkpoint for epoch {epoch} at {checkpoint_path}")
+
     if task == "diffusion":
         output_generated_dir = kwargs.get("output_generated_dir", None)
         if output_generated_dir is None:
@@ -175,7 +184,7 @@ def evaluate(
                     output_path=output_path,
                     best_checkpoints=best_checkpoints,
                     task_name="edm-gen",
-                    top_k=3,
+                    top_k=save_top_k,
                     higher_is_better=True,
                 )
             else:
@@ -205,7 +214,7 @@ def evaluate(
                     output_path=output_path,
                     best_checkpoints=best_checkpoints,
                     task_name="edm-loss",
-                    top_k=3,
+                    top_k=save_top_k,
                     higher_is_better=False,
                 )
             else:
@@ -454,7 +463,10 @@ def _validate_xyzs(path_save: str, logger: str, use_posebuster: bool = False, po
             pd.DataFrame().to_csv(postbuster_output_path, index=False)
 
     if logger == "wandb":
-        wandb.log(summary)
+        if (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+            wandb.log(summary)
+        else:
+            logging.info("Skipping wandb logging on non-main process.")
     else:
         max_key_len = max(len(k) for k in summary)
         for key, value in summary.items():

@@ -997,6 +997,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         noise_initial_mask=False, # For Inpainting
         t_start=1.0,
         t_critical=0,
+        n_frames=0,
         debug=False,
     ):
         """
@@ -1028,6 +1029,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         - noise_initial_mask (bool, optional): Whether to noise the initial masked region. Defaults to False.
         - t_start (float, optional): Timestep to start applying guidance. Defaults to 1.0.
         - t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+        - n_frames (int, optional): Number of frames to keep. Defaults to 0.
 
         Returns:
         Tuple[Tensor, Tensor, Tensor, Tensor]: Positions, one-hot encoding of atoms, node mask, and edge mask.
@@ -1154,6 +1156,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             noise_initial_mask=noise_initial_mask, # For Inpainting
             t_start=t_start,
             t_critical=t_critical,
+            n_frames=n_frames,
         )
 
         assert_correctly_masked(x, node_mask)

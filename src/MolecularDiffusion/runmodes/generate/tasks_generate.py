@@ -675,6 +675,7 @@ class GenerativeFactory:
                     noise_initial_mask=self.condition_configs.get("noise_initial_mask", False), # For Inpainting
                     t_start=self.condition_configs.get("t_start", 1),
                     t_critical=self.condition_configs.get("t_critical", 0),
+                    n_frames=self.n_frames,
                 )   
                 
                 if self.visualize_trajectory:
