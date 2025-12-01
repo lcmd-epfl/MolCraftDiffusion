@@ -19,6 +19,8 @@ from MolecularDiffusion.utils import (
     create_pyg_graph,
     enforce_min_nodes_per_connector,
     ensure_intact,
+    initialize_extra_nodes,
+    initialize_extra_nodes_seed,
     find_close_points_torch_and_push_op2,
     remove_mean_with_mask,
     remove_mean_pyG,
@@ -2097,10 +2099,11 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
         # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)    
     
         # In the event the reference tensor is provided
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
+        
             if s > t_critical:
                 # Fix the reference part as conditioning
                 zs = torch.cat(
@@ -2712,7 +2715,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 condition_charge = None
                 d_threshold_c = [1.5]*len(connector_degrees)
                 zs_charge = None
-
+            
             _, zl_corr = find_close_points_torch_and_push_op2(
                         condition_pos,
                         zs_new_pos, 
@@ -2993,7 +2996,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             chain_flat = None
         return x, h, chain_flat
  
-
     @torch.no_grad()
     def sample(
         self, 
@@ -3004,29 +3006,17 @@ class EnVariationalDiffusion(torch.nn.Module):
         context, 
         condition_tensor=None,
         condition_mode=None,
-        mask_node_index=torch.tensor([[]]), # For Inpainting
-        denoising_strength=0.0, # For Inpainting
-        noise_initial_mask=False, # For Inpainting
-        connector_dicts={}, # For outpainting
-        t_start=1.0,
-        t_critical_1=0.8,
-        t_critical_2=0.5,
-        d_threshold_f=1.4,
-        w_b=2,
-        all_frozen=False,
-        use_covalent_radii=True,
-        scale_factor=1.1,
+        inpaint_cfgs={},
+        outpaint_cfgs={},
         fix_noise=False,
         n_frames=0,
         t_retry=180,
         n_retrys=0,
-
     ):
         
         """
         Draw samples from the generative model.
         """
-        t_int_start = self.T * t_start
         
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
@@ -3049,7 +3039,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         if condition_component == "xh" or condition_component == "x":
             n_node_cond = condition_tensor.size(1)
-            unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
+    
             node_mask_cond = torch.ones((n_samples, n_node_cond,1), device=z.device)  
             if condition_alg != "outpaintft":
                 condition_tensor[:,:, : self.n_dims] = remove_mean_with_mask(condition_tensor[:,:, : self.n_dims], node_mask_cond)
@@ -3066,14 +3056,27 @@ class EnVariationalDiffusion(torch.nn.Module):
                     chain_retry = [torch.zeros((n_frames_retry,) + z_size, device=z.device) for _ in range(n_retrys)]
                 except RuntimeError:
                     chain_retry = [torch.zeros((n_frames_retry+1,) + z_size, device=z.device) for _ in range(n_retrys)]
-            if condition_alg == "inpaint":
-                s_saves = torch.linspace(0, int(denoising_strength * self.T), 
-                                         steps=n_frames, device=z.device).long() 
-            else:
-                s_saves = torch.linspace(0, self.T, 
-                                         steps=n_frames, device=z.device).long() 
+     
+            s_saves = torch.linspace(0, self.T, 
+                                        steps=n_frames, device=z.device).long() 
         
         if condition_alg == "inpaint":
+
+            denoising_strength = getattr(inpaint_cfgs, "denoising_strength", None)
+            if denoising_strength is None:
+                raise ValueError("denoising_strength must be specified in to use inpainting")
+            noise_initial_mask = getattr(inpaint_cfgs, "noise_initial_mask", False)
+            mask_node_index = getattr(inpaint_cfgs, "mask_node_index", torch.tensor([], device=z.device, dtype=torch.long))
+            mask_node_index = torch.tensor([mask_node_index], device=z.device, dtype=torch.long)
+            scale_factor = getattr(inpaint_cfgs, "scale_factor", 1.1)
+            d_threshold_f = getattr(inpaint_cfgs, "d_threshold_f", 1.8)
+            w_b = getattr(inpaint_cfgs, "w_b", 2)
+            all_frozen = getattr(inpaint_cfgs, "all_frozen", False)
+            use_covalent_radii = getattr(inpaint_cfgs, "use_covalent_radii", True)
+            t_critical_1 = getattr(outpaint_cfgs, "t_critical_1", 0.8)
+            t_critical_2 = getattr(outpaint_cfgs, "t_critical_2", 0.5)
+            t_int_start =  self.T
+            unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
             n_node_cond = condition_tensor.size(1)
             d = torch.full((n_samples, 1), fill_value=denoising_strength, device=z.device)
             
@@ -3096,6 +3099,11 @@ class EnVariationalDiffusion(torch.nn.Module):
                 x_ref = condition_tensor[:, :, : self.n_dims].squeeze(0)
                 h_int_ref = condition_tensor[:, :, -1].squeeze(0) * self.norm_values[2]
 
+                if x_ref.dim() > 2:
+                    x_ref = x_ref[0]
+                if h_int_ref.dim() > 2:
+                    h_int_ref = h_int_ref[0]
+                        
                 mol_graph = create_pyg_graph(x_ref, h_int_ref, r=3)
                 mol_graph = correct_edges(mol_graph, scale_factor=1.2)
 
@@ -3224,69 +3232,63 @@ class EnVariationalDiffusion(torch.nn.Module):
             n_node_extend = n_nodes - n_node_cond
   
             if n_node_extend > 0:
-                node_mask_um = torch.ones((n_samples, z.size(1)-mask_node_index.size(1)), device=z.device)  
-                z_extend = self.sample_combined_position_feature_noise(
-                    mask_node_index.size(0), n_node_extend, 
-                    torch.ones((mask_node_index.size(0), n_node_extend,1), device=z.device)  )
-                z = torch.cat([z, z_extend], dim=1) 
-
-                zs_pos = z[:, :, : self.n_dims]
-                zs_pos = zs_pos.squeeze(0)  
-
-                zs_extend_pos = zs_pos[-n_node_extend:]
-                condition_pos = zs_pos[:-n_node_extend]
-                
                 if mask_node_index.size(1) > 0:
                     n_connector = mask_node_index.size(1)
-                    connector_indices = torch.arange(n_connector , condition_pos.size(0), device=z.device)
+                    connector_indices = torch.arange(0 , n_connector, device=z.device) + condition_tensor[:, ~mask_node_bool_corr, :].shape[1]
                 else:
                     n_connector = condition_pos.size(0)
                     connector_indices = torch.arange(0 , n_connector, device=z.device)
                 
-                if use_covalent_radii:
-                    condition_charge = z[:, n_node_extend:, -1].squeeze(0)*self.norm_values[2]
-                    condition_charge = torch.round(condition_charge).long()
-                    condition_charge[condition_charge >= 118] = 118
-                    condition_charge[condition_charge <= 1] = 1
-                    condition_charge = condition_charge.unsqueeze(-1)
-                    zs_charge = z[:, :n_node_extend, -1].squeeze(0)*self.norm_values[2]
-                    zs_charge = torch.round(zs_charge).long()
-                    zs_charge[zs_charge >= 118] = 118
-                    zs_charge[zs_charge <= 1] = 1
-                    zs_charge = zs_charge.unsqueeze(-1)
-                    
-                else:
-                    condition_charge = None
-                    zs_charge = None
-                _, zl_corr = find_close_points_torch_and_push_op2(
-                            condition_pos,
-                            zs_extend_pos, 
-                            connector_indices=connector_indices,    
-                            d_threshold_f=1.4,
-                            w_b=2,
-                            all_frozen=False,
-                            z_ref=condition_charge,
-                            z_tgt=zs_charge,
-                            scale_factor=scale_factor
-                            )  
-                z[:, -n_node_extend:, :self.n_dims] = zl_corr.unsqueeze(0)    
+                new_nodes = initialize_extra_nodes(z, connector_indices, n_node_extend, eps=2.0, min_samples=1)
+                z = torch.cat([z, new_nodes], dim=1) 
+
                 if mask_node_index.size(1) > 0:
                     mask_node_bool_corr = torch.cat([mask_node_bool_corr, 
                                                      torch.ones(n_node_extend, device=z.device)]).bool() 
-                    # connector_dicts = {key + n_node_extend: value for key, value in connector_dicts.items()}
-            if mask_node_index.size(1) > 0:
-                self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
+                                       
+                                       
+            self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
         
         elif condition_alg in ["outpaint", "outpaintft"]:
-                        
-            natom_ref = condition_tensor.size(1)
+
             
+            t_start = getattr(outpaint_cfgs, "t_start", 1.0)
+            t_int_start = int(t_start * self.T)
+            t_critical_1 = getattr(outpaint_cfgs, "t_critical_1", 0.8)
+            t_critical_2 = getattr(outpaint_cfgs, "t_critical_2", 0.5)
+            connector_dicts = getattr(outpaint_cfgs, "connector_dicts", None)
+            if connector_dicts is None:
+                raise ValueError("connector_dicts must be specified in to use outpainting")
+            connector_indices = list(connector_dicts.keys())
+            connector_indices = torch.tensor(connector_indices, device=z.device, dtype=torch.long)
+            min_dist = getattr(outpaint_cfgs, "min_dist", 1.0)
+            seed_dist = getattr(outpaint_cfgs, "seed_dist", 2.0)
+            spread = getattr(outpaint_cfgs, "spread", 1.0)
+            n_bq_atom = getattr(outpaint_cfgs, "n_bq_atom", 0)
+                
+            natom_ref = condition_tensor.size(1)
+            natom_extra = n_nodes - natom_ref
+            new_nodes = initialize_extra_nodes_seed(
+                condition_tensor, 
+                connector_indices, 
+                natom_extra, 
+                seed_dist=seed_dist, 
+                min_dist=min_dist, 
+                spread=spread,
+                n_bq_atom=n_bq_atom
+            )
+            if any(idx > natom_ref - 1 for idx in connector_indices):
+                raise ValueError("connector_indices is out of bound")
+            if connector_indices.size(0) == 0 and condition_alg == "outpaint":
+                raise ValueError("connector_indices is empty")
+            z = torch.cat([condition_tensor, new_nodes], dim=1)
+        
             if any(idx > natom_ref - 1 for idx in connector_dicts.keys()):
                 raise ValueError("connector_indices is out of bound")
             if not connector_dicts and condition_alg == "outpaint":
                 raise ValueError("connector_indices is empty")
             
-            z = torch.cat([condition_tensor, z], dim=1) 
+            z[:, :natom_ref, :] = condition_tensor
             n_nodes = z.size(1)
             node_mask = torch.ones((n_samples, n_nodes), device=z.device)
             edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
@@ -3747,6 +3749,7 @@ class EnVariationalDiffusion(torch.nn.Module):
   
         return x, h, chain_flat
 
+
     
     @torch.no_grad()
     def sample_chain(
@@ -3824,11 +3827,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         x_weight=1,
         condition_tensor=None,
         condition_mode=None,
-        mask_node_index=torch.tensor([[]]), # For Inpainting
-        denoising_strength=0.0, # For Inpainting
-        noise_initial_mask=False, # For Inpainting
-        t_start=1.0,
-        t_critical=0,
+        inpaint_cfgs={},
+        outpaint_cfgs={},
         n_frames=0,
         debug=False,
     ):
@@ -3861,17 +3861,26 @@ class EnVariationalDiffusion(torch.nn.Module):
             Save gradient norms, max gradients, clipping coefficients, and energies to files.
         - condition_tensor (torch.Tensor, optional): Tensor for conditional guidance. Defaults to None.
         - condition_mode (str, optional): Mode for conditional guidance. Defaults to None.
-        - mask_node_index (torch.Tensor, optional): Indices of nodes to be inpainted. Defaults to an empty tensor.
-        - denoising_strength (float, optional): Strength of denoising for inpainting
-        - noise_initial_mask (bool, optional): Whether to noise the initial masked region. Defaults to False.
-        - t_start (float, optional): Timestep to start applying guidance. Defaults to 1.0.
-        - t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
-
+        - inpaint_cfgs (dict, optional): Configuration for inpainting. 
+            The dictionary must contains:        
+                - mask_node_index (torch.Tensor, optional): Indices of nodes to be inpainted. Defaults to an empty tensor.
+                - denoising_strength (float, optional): Strength of denoising for inpainting
+                - noise_initial_mask (bool, optional): Whether to noise the initial masked region. Defaults to False.
+        - outpaint_cfgs (dict, optional): Configuration for outpainting. 
+            The dictionary must contains:
+                - t_start (float, optional): Timestep to start the generation. Defaults to 1.0.
+                - t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+`               - connector_index (torch.Tensor, optional): Indices of connector nodes for outpainting. Defaults to an empty tensor.
+                - seed_dist (float, optional): Distance of the seed from the connector atom (used if n_bq_atom == 0)..
+                - min_dist (float, optional): Minimum distance from any existing atom in xh_cond (except the connector itself). Defaults to 1.
+                - spread (float, optional): Spread of the initiating nodes. Defaults is 1 angstrom.
+                - n_bq_atom (int, optional): Number of dummy atoms. Defaults is 0.
 
         Returns:
         Tuple[Tensor, Tensor]: Sampled positions and features.
         """
         debug = False
+        
         
         n_nodes = node_mask.size(1)
         if fix_noise:
@@ -3907,7 +3916,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         if condition_component == "xh" or condition_component == "x":
             n_node_cond = condition_tensor.size(1)
-            unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
             node_mask_cond = torch.ones((n_samples, n_node_cond,1), device=z.device)  
             if "ft" not in condition_alg:
                 condition_tensor[:,:, : self.n_dims] = remove_mean_with_mask(condition_tensor[:,:, : self.n_dims], node_mask_cond)
@@ -3915,20 +3923,26 @@ class EnVariationalDiffusion(torch.nn.Module):
     
         # for tracking intermediate frames
         if n_frames > 0:
-            
             z_size = (z.size(0), z.size(1), z.size(2)-len(self.extra_norm_values))
-         
             chain = torch.zeros((n_frames,) + z_size, device=z.device)
-            if condition_alg == "inpaint":
-                s_saves = torch.linspace(0, int(denoising_strength * self.T), 
-                                         steps=n_frames, device=z.device).long() 
-            else:
-                s_saves = torch.linspace(0, self.T, 
+            s_saves = torch.linspace(0, self.T, 
                                          steps=n_frames, device=z.device).long() 
         
-        
+
         if condition_alg:
             if  "inpaint" in condition_alg:
+                
+                denoising_strength = getattr(inpaint_cfgs, "denoising_strength", None)
+                if denoising_strength is None:
+                    raise ValueError("denoising_strength must be specified in to use inpainting")
+                noise_initial_mask = getattr(inpaint_cfgs, "noise_initial_mask", False)
+                mask_node_index = getattr(inpaint_cfgs, "mask_node_index", torch.tensor([], device=z.device, dtype=torch.long))
+                t_critical = getattr(outpaint_cfgs, "t_critical", 0.0)
+                
+                mask_node_index = torch.tensor([mask_node_index], device=z.device, dtype=torch.long)
+                unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
+                s_saves = torch.linspace(0, int(denoising_strength * self.T), 
+                                         steps=n_frames, device=z.device).long() 
                 t_int_start = int(self.T * denoising_strength)
                 n_node_cond = condition_tensor.size(1)
                 d = torch.full((n_samples, 1), fill_value=denoising_strength, device=z.device)
@@ -3945,7 +3959,6 @@ class EnVariationalDiffusion(torch.nn.Module):
                     # CONSTANTS
                     scale_factor = 1.1
                     all_frozen = False
-                    use_covalent_radii = True
                     w_b = 2
                     d_threshold_f = 1.4
                     # Reorder condition_tensor such that connector nodes are the first nodes
@@ -3958,7 +3971,11 @@ class EnVariationalDiffusion(torch.nn.Module):
 
                     x_ref = condition_tensor[:, :, : self.n_dims].squeeze(0)
                     h_int_ref = condition_tensor[:, :, -1].squeeze(0) * self.norm_values[2]
-
+                    
+                    if x_ref.dim() > 2:
+                        x_ref = x_ref[0]
+                    if h_int_ref.dim() > 2:
+                        h_int_ref = h_int_ref[0]
                     mol_graph = create_pyg_graph(x_ref, h_int_ref, r=3)
                     mol_graph = correct_edges(mol_graph, scale_factor=scale_factor)
 
@@ -4088,80 +4105,65 @@ class EnVariationalDiffusion(torch.nn.Module):
                     connector_dicts = {}
                 #-----------------------extended inpainting-----------------------------------
                 n_node_extend = n_nodes - n_node_cond
-    
                 if n_node_extend > 0:
-                    node_mask_um = torch.ones((n_samples, z.size(1)-mask_node_index.size(1)), device=z.device)  
-                    z_extend = self.sample_combined_position_feature_noise(
-                        mask_node_index.size(0), n_node_extend, 
-                        torch.ones((mask_node_index.size(0), n_node_extend,1), device=z.device)  )
-                    z = torch.cat([z, z_extend], dim=1) 
-
-                    zs_pos = z[:, :, : self.n_dims]
-                    zs_pos = zs_pos.squeeze(0)  
-
-                    zs_extend_pos = zs_pos[-n_node_extend:]
-                    condition_pos = zs_pos[:-n_node_extend]
-                    
                     if mask_node_index.size(1) > 0:
                         n_connector = mask_node_index.size(1)
-                        connector_indices = torch.arange(n_connector , condition_pos.size(0), device=z.device)
+                        connector_indices = torch.arange(0 , n_connector, device=z.device) + condition_tensor[:, ~mask_node_bool_corr, :].shape[1]
                     else:
                         n_connector = condition_pos.size(0)
                         connector_indices = torch.arange(0 , n_connector, device=z.device)
                     
-                    condition_charge = z[:, n_node_extend:, -1].squeeze(0)*self.norm_values[2]
-                    condition_charge = torch.round(condition_charge).long()
-                    condition_charge[condition_charge >= 118] = 118
-                    condition_charge[condition_charge <= 1] = 1
-                    condition_charge = condition_charge.unsqueeze(-1)
-                    zs_charge = z[:, :n_node_extend, -1].squeeze(0)*self.norm_values[2]
-                    zs_charge = torch.round(zs_charge).long()
-                    zs_charge[zs_charge >= 118] = 118
-                    zs_charge[zs_charge <= 1] = 1
-                    zs_charge = zs_charge.unsqueeze(-1)
-   
-                    _, zl_corr = find_close_points_torch_and_push_op2(
-                                condition_pos,
-                                zs_extend_pos, 
-                                connector_indices=connector_indices,    
-                                d_threshold_f=1.4,
-                                w_b=2,
-                                all_frozen=False,
-                                z_ref=condition_charge,
-                                z_tgt=zs_charge,
-                                scale_factor=1.2
-                                )  
-                    z[:, -n_node_extend:, :self.n_dims] = zl_corr.unsqueeze(0)    
+                    new_nodes = initialize_extra_nodes(z, connector_indices, n_node_extend, eps=2.0, min_samples=1)
+                    z = torch.cat([z, new_nodes], dim=1) 
                     if mask_node_index.size(1) > 0:
                         mask_node_bool_corr = torch.cat([mask_node_bool_corr, 
                                                         torch.ones(n_node_extend, device=z.device)]).bool() 
                         # connector_dicts = {key + n_node_extend: value for key, value in connector_dicts.items()}
-                if mask_node_index.size(1) > 0:
-                    self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
-            
+                        
+            if mask_node_index.size(1) > 0:
+                self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
+                
             elif "outpaint" in condition_alg:
+                
+                t_start = getattr(outpaint_cfgs, "t_start", 1.0)
+                t_critical = getattr(outpaint_cfgs, "t_critical", 0.0)
+                connector_indices = getattr(outpaint_cfgs, "connector_indices", None)
+                if connector_indices is None:
+                    raise ValueError("connector_indices must be specified in to use outpainting")
+                connector_indices = torch.tensor(connector_indices, device=z.device, dtype=torch.long)
+                min_dist = getattr(outpaint_cfgs, "min_dist", 1.0)
+                seed_dist = getattr(outpaint_cfgs, "seed_dist", 2.0)
+                spread = getattr(outpaint_cfgs, "spread", 1.0)
+                n_bq_atom = getattr(outpaint_cfgs, "n_bq_atom", 0)
+
+                
+                s_saves = torch.linspace(0, self.T * t_start, 
+                                         steps=n_frames, device=z.device).long() 
                 t_int_start = self.T * t_start
+                self.condition_tensor = condition_tensor
+
                 natom_ref = condition_tensor.size(1)
-                
-                if any(idx > natom_ref - 1 for idx in connector_dicts.keys()):
+                natom_extra = n_nodes - natom_ref
+                new_nodes = initialize_extra_nodes_seed(
+                    condition_tensor, 
+                    connector_indices, 
+                    natom_extra, 
+                    seed_dist=seed_dist, 
+                    min_dist=min_dist, 
+                    spread=spread,
+                    n_bq_atom=n_bq_atom
+                )
+                if any(idx > natom_ref - 1 for idx in connector_indices):
                     raise ValueError("connector_indices is out of bound")
-                if not connector_dicts and condition_alg == "outpaint":
+                if connector_indices.size(0) == 0 and condition_alg == "outpaint":
                     raise ValueError("connector_indices is empty")
-                
-                z = torch.cat([condition_tensor, z], dim=1) 
-                n_nodes = z.size(1)
-                node_mask = torch.ones((n_samples, n_nodes), device=z.device)
-                edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-                diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool, device=z.device).unsqueeze(0)
-                edge_mask *= diag_mask
-                edge_mask = edge_mask.view(z.size(0) * n_nodes * n_nodes, 1).to(self.device)  
-                node_mask = node_mask.unsqueeze(-1)
-                condition_tensor = z[:, :natom_ref, :]   
-                mask_node_bool_corr = torch.cat([torch.zeros(natom_ref, device=z.device), 
-                                                    torch.ones(n_nodes - natom_ref, device=z.device)]).bool()
-                self.condition_tensor = z[:, ~mask_node_bool_corr, :]               
-                
+                z = torch.cat([condition_tensor, new_nodes], dim=1)
+                if n_frames > 0:
+                    chain = torch.zeros((n_frames,) + z_size, device=z.device)
+                mask_node_bool_corr = None
+            
         else:
+            t_critical = 0
             t_int_start = self.T
             mask_node_bool_corr = None
         z = torch.cat(  
@@ -4170,10 +4172,15 @@ class EnVariationalDiffusion(torch.nn.Module):
                 z[:, :, self.n_dims :],
             ],
             dim=2,
-        )       
+        )      
         
         if self.condition_tensor is not None:
-            self.condition_tensor = z[:, ~mask_node_bool_corr, :]
+            if condition_alg == "inpaint":
+                self.condition_tensor = z[:, ~mask_node_bool_corr, :]
+            elif condition_alg == "outpaint":
+                self.condition_tensor = z[:, :natom_ref, :]
+        
+            
             
         write_index = 0
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
@@ -4349,6 +4356,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         return x, h, chain_flat
 
+
     @torch.no_grad()
     def sample_chain(
         self,
@@ -4511,7 +4519,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # t is a tensor of shape [B, 1], normalized between 0 and 1
         t_normalized = t.squeeze()
         x = 1 - t_normalized
-
+        schedule_type = schedule_type.lower()
         if schedule_type == "linear":
             scale = initial_scale + (final_scale - initial_scale) * x
         elif schedule_type == "exponential":

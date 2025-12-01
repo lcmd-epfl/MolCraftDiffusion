@@ -1,3 +1,5 @@
+import numpy as np
+from sklearn.cluster import DBSCAN
 import networkx as nx
 import torch
 from scipy.sparse import csr_matrix
@@ -11,6 +13,264 @@ from ase.data import covalent_radii
 
 EDGE_THRESHOLD = 2
 WEIGHT_FACTOR = 2
+
+
+def initialize_extra_nodes_seed(xh_cond, connector_indices, n_extra, seed_dist=1.0, min_dist=1.0, spread=0.5, n_bq_atom=0):
+    """
+    Initializes extra nodes based on seed locations.
+    
+    If n_bq_atom > 0, uses the last n_bq_atom positions in xh_cond as seed locations.
+    Otherwise, calculates seed locations around connector atoms maximizing distance to other atoms.
+    
+    Args:
+        xh_cond (torch.Tensor): Tensor of shape (B, N, D).
+                                Dims: [coords(3) | node_features(D-3)].
+        connector_indices (list or torch.Tensor): Indices of connector atoms.
+        n_extra (int): Number of extra nodes to initialize per batch item.
+        seed_dist (float): Distance of the seed from the connector atom (used if n_bq_atom == 0).
+        min_dist (float): Minimum distance from any existing atom in xh_cond (except the connector itself).
+        spread (float): Standard deviation for the normal distribution when sampling new node positions.
+        n_bq_atom (int): Number of "boundary/query" atoms at the end of xh_cond to use as seeds.
+                         If > 0, connector_indices and seed_dist are ignored for seed location determination.
+
+    Returns:
+        torch.Tensor: New nodes tensor of shape (B, n_extra, D).
+    """
+    B, N, D = xh_cond.shape
+    device = xh_cond.device
+    
+    # Get all atom positions for distance checking
+    all_pos = xh_cond[:, :, :3] # (B, N, 3)
+
+    new_nodes_list = []
+    
+    for b in range(B):
+        batch_new_nodes = []
+        curr_mol_pos = all_pos[b] # (N, 3)
+        seed_positions = {} # {seed_idx: seed_pos_tensor}
+        
+        if n_bq_atom > 0:
+            # --- BQ ATOM MODE ---
+            # Use last n_bq_atom positions as seeds
+            if n_bq_atom > N:
+                raise ValueError(f"n_bq_atom ({n_bq_atom}) cannot be larger than total atoms ({N})")
+                
+            # Extract seeds from the end of the molecule coordinates
+            # Indices: N-n_bq_atom to N-1
+            bq_start_idx = N - n_bq_atom
+            for i in range(n_bq_atom):
+                seed_idx = bq_start_idx + i
+                seed_positions[i] = curr_mol_pos[seed_idx]
+                
+            # Connector indices for exclusion logic during sampling:
+            # If we use BQ atoms, which atom should we exclude from distance check?
+            # Typically BQ atoms are phantom or guides. If they are part of xh_cond, 
+            # we should probably exclude the BQ atom itself corresponding to the seed.
+            # Let's map seed_local_idx -> real_atom_idx
+            seed_to_real_idx = {i: bq_start_idx + i for i in range(n_bq_atom)}
+            
+        else:
+            # --- CONNECTOR MODE (Original) ---
+            if isinstance(connector_indices, list):
+                connector_indices = torch.tensor(connector_indices, device=device)
+            
+            # Extract position of connector atoms
+            connector_pos = xh_cond[:, connector_indices, :3]
+            
+            # Identify valid seed locations for each connector
+            for i, conn_idx in enumerate(connector_indices):
+                conn_p = connector_pos[b, i] # (3,)
+                
+                # Find the direction that maximizes distance to other atoms ("away" from rest)
+                num_attempts = 100
+                
+                # Random directions on unit sphere
+                directions = torch.randn(num_attempts, 3, device=device)
+                directions = directions / torch.norm(directions, dim=1, keepdim=True)
+                
+                # Candidate seed positions
+                candidate_seeds = conn_p.unsqueeze(0) + directions * seed_dist # (num_attempts, 3)
+                
+                # Calculate distances to all atoms: (num_attempts, N)
+                diffs = candidate_seeds.unsqueeze(1) - curr_mol_pos.unsqueeze(0)
+                dists = torch.norm(diffs, dim=2)
+                
+                # Mask out the connector atom itself
+                mask = torch.ones(N, dtype=torch.bool, device=device)
+                mask[conn_idx] = False
+                
+                # Distances to non-connector atoms
+                valid_dists = dists[:, mask] # (num_attempts, N-1)
+                
+                if valid_dists.shape[1] > 0:
+                    # For each candidate, find distance to nearest neighbor
+                    min_dists = torch.min(valid_dists, dim=1).values # (num_attempts,)
+                    
+                    # Pick candidate with MAX minimum distance (Maximin)
+                    best_idx = torch.argmax(min_dists)
+                    seed_positions[i] = candidate_seeds[best_idx]
+                else:
+                    seed_positions[i] = candidate_seeds[0]
+            
+            # In connector mode, real index is the connector index
+            seed_to_real_idx = {i: connector_indices[i].item() for i in range(len(connector_indices))}
+
+        # --- SAMPLE EXTRA NODES ---
+        valid_seed_indices = torch.tensor(list(seed_positions.keys()), device=device)
+        
+        # Sample pool logic (ensure coverage then random)
+        sample_pool = []
+        
+        # Ensure we have enough indices to pick from
+        num_seeds = len(valid_seed_indices)
+        if num_seeds == 0:
+             # Should ideally not happen given the logic above
+             raise ValueError("No valid seed positions found.")
+
+        # First, ensure each is picked once if we have room
+        if n_extra >= num_seeds:
+            sample_pool.append(valid_seed_indices)
+            remaining = n_extra - num_seeds
+            if remaining > 0:
+                # Sample remaining randomly with replacement
+                random_indices = torch.randint(0, num_seeds, (remaining,), device=device)
+                sample_pool.append(valid_seed_indices[random_indices])
+        else:
+             # Pick n_extra distinct ones
+             # torch.randperm produces indices 0..num_seeds-1
+             perm = torch.randperm(num_seeds, device=device)
+             selected_indices = perm[:n_extra]
+             sample_pool.append(valid_seed_indices[selected_indices])
+             
+        # Flatten pool
+        sample_pool_tensor = torch.cat(sample_pool)
+        
+        # Shuffle pool
+        perm = torch.randperm(len(sample_pool_tensor), device=device)
+        sample_pool_tensor = sample_pool_tensor[perm]
+
+        for i in range(n_extra):
+            seed_local_idx = sample_pool_tensor[i].item()
+            seed_pos = seed_positions[seed_local_idx] # (3,) tensor
+            
+            # Sample location from N(seed_pos, spread)
+            valid_sample = False
+            for _ in range(50):
+                 sampled_pos = torch.normal(mean=seed_pos, std=spread)
+                 
+                 # Check distance against xh_cond
+                 dists = torch.norm(curr_mol_pos - sampled_pos, dim=1)
+                 
+                 # Exclude the "parent" atom (connector or BQ atom) from distance check
+                 real_parent_idx = seed_to_real_idx[seed_local_idx]
+                 
+                 mask = torch.ones(N, dtype=torch.bool, device=device)
+                 mask[real_parent_idx] = False
+                 
+                 min_d = torch.min(dists[mask]) if mask.any() else float('inf')
+                 
+                 if min_d >= min_dist:
+                     valid_sample = True
+                     break
+            
+            # Sample features: N(0, 1)
+            sampled_feats = torch.randn(D-3, device=device)
+            
+            node = torch.cat([sampled_pos, sampled_feats])
+            batch_new_nodes.append(node)
+            
+        new_nodes_list.append(torch.stack(batch_new_nodes))
+
+    new_nodes_tensor = torch.stack(new_nodes_list)
+    return new_nodes_tensor
+
+
+def initialize_extra_nodes(xh_cond, connector_indices, n_extra, eps=2.0, min_samples=1):
+    """
+    Initializes extra nodes based on clusters of connector atoms.
+
+    Args:
+        xh_cond (torch.Tensor): Tensor of shape (B, N, D).
+                                Dims: [coords(3) | node_features(D-3)].
+        connector_indices (list or torch.Tensor): Indices of connector atoms.
+        n_extra (int): Number of extra nodes to initialize per batch item.
+        eps (float): The maximum distance between two samples for one to be considered as in the neighborhood of the other.
+        min_samples (int): The number of samples (or total weight) in a neighborhood for a point to be considered as a core point.
+
+    Returns:
+        torch.Tensor: New nodes tensor of shape (B, n_extra, D).
+    """
+    B, N, D = xh_cond.shape
+    device = xh_cond.device
+    
+    # Ensure connector_indices is a tensor
+    if isinstance(connector_indices, list):
+        connector_indices = torch.tensor(connector_indices, device=device)
+        
+    # 1. Extract position of connector atoms
+    # connector_pos: (B, n_connectors, 3)
+    connector_pos = xh_cond[:, connector_indices, :3]
+    
+    new_nodes_list = []
+    
+    # Process each batch item separately as clustering is per-molecule
+    for b in range(B):
+        pos = connector_pos[b].cpu().numpy() # (n_connectors, 3)
+        
+        # 2. Identify clusters (distance criteria)
+        # Using DBSCAN with eps=2.0 (Angstroms, assuming unnormalized or consistently normalized) 
+        # and min_samples=1.
+        # If coords are normalized, eps should be adjusted. 
+        # The prompt says normalize_coords=1, so eps=2.0 is reasonable for Angstroms.
+        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(pos)
+        labels = clustering.labels_
+        unique_labels = set(labels)
+        
+        # 3. Determine mean location of clusters
+        cluster_means = {} # Dict[cluster_id: mean_pos]
+        for label in unique_labels:
+            if label == -1: continue # Noise, shouldn't happen with min_samples=1
+            mask = labels == label
+            cluster_points = pos[mask]
+            mean_p = np.mean(cluster_points, axis=0)
+            cluster_means[label] = mean_p
+            
+        # 4. Sample extra nodes
+        # randomly pick cluster-id and sample location from N(mean-pos, 1)
+        # sample node feature from N(0, 1)
+        
+        batch_new_nodes = []
+        available_clusters = list(cluster_means.keys())
+        
+        for _ in range(n_extra):
+            # Pick random cluster
+            if not available_clusters:
+                 # Fallback if no clusters found (shouldn't happen if connectors exist)
+                 mean_pos = np.mean(pos, axis=0) if len(pos) > 0 else np.zeros(3)
+            else:
+                cluster_id = np.random.choice(available_clusters)
+                mean_pos = cluster_means[cluster_id]
+            
+            # Sample position: N(mean_pos, 1)
+            # Shape (3,)
+            sampled_pos = np.random.normal(loc=mean_pos, scale=1.0, size=(3,))
+            
+            # Sample features: N(0, 1)
+            # Shape (D-3,)
+            sampled_feats = np.random.normal(loc=0.0, scale=1.0, size=(D-3,))
+            
+            # Concatenate
+            node = np.concatenate([sampled_pos, sampled_feats])
+            batch_new_nodes.append(node)
+            
+        # Stack new nodes for this batch: (n_extra, D)
+        new_nodes_list.append(np.stack(batch_new_nodes))
+        
+    # Stack all batches: (B, n_extra, D)
+    new_nodes_tensor = torch.tensor(np.stack(new_nodes_list), dtype=xh_cond.dtype, device=device)
+    
+    return new_nodes_tensor
+
 
 def find_close_points_torch(
     ref: torch.Tensor,

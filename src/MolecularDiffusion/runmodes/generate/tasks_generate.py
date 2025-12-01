@@ -260,6 +260,7 @@ class GenerativeFactory:
                             negative_target_value=self.negative_target_values,
                             nodesxsample=nodesxsample, 
                             cfg_scale=self.condition_configs.get("cfg_scale",1),
+                            cfg_scale_schedule=self.condition_configs.get("cfg_scale_schedule",1),
                             guidance_ver="cfg",
                             n_frames=self.n_frames
                         )
@@ -436,6 +437,7 @@ class GenerativeFactory:
         if property_eval:    
             self.df = pd.DataFrame(df_dict)
     
+
     def structural_guidance(self):
         
         # get condition structure
@@ -508,17 +510,7 @@ class GenerativeFactory:
                         nodesxsample,
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
-                        denoising_strength=self.condition_configs.get("denoising_strength", 0.8),
-                        t_start=self.condition_configs.get("t_start", 1),
-                        t_critical_1=self.condition_configs.get("t_critical_1"),
-                        t_critical_2=self.condition_configs.get("t_critical_2"),
-                        d_threshold_f=self.condition_configs.get("d_threshold_f"),
-                        w_b=self.condition_configs.get("w_b"),
-                        all_frozen=self.condition_configs.get("all_frozen"),
-                        use_covalent_radii=self.condition_configs.get("use_covalent_radii"),
-                        scale_factor=self.condition_configs.get("scale_factor"),
-                        noise_initial_mask=self.condition_configs.get("noise_initial_mask"),
-                        mask_node_index=mask_node_index,    
+                        inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", {}),
                         n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
@@ -530,15 +522,7 @@ class GenerativeFactory:
                         nodesxsample,
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
-                        t_start=self.condition_configs.get("t_start", 1),
-                        t_critical_1=self.condition_configs.get("t_critical_1"),
-                        t_critical_2=self.condition_configs.get("t_critical_2"),
-                        d_threshold_f=self.condition_configs.get("d_threshold_f"),
-                        w_b=self.condition_configs.get("w_b"),
-                        all_frozen=self.condition_configs.get("all_frozen"),
-                        use_covalent_radii=self.condition_configs.get("use_covalent_radii"),
-                        scale_factor=self.condition_configs.get("scale_factor"),
-                        connector_dicts=self.condition_configs.get("connector_dicts"),
+                        outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
                         n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
@@ -549,7 +533,7 @@ class GenerativeFactory:
                         nodesxsample,
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
-                        t_start=self.condition_configs.get("t_start", 1),
+                        outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
                         n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
@@ -558,7 +542,6 @@ class GenerativeFactory:
 
                 if self.visualize_trajectory:   
                     output_path_frame = os.path.join(self.output_path, f"mol_{i}")
-                    # assume batch_size = 1
                     save_xyz_file(
                         output_path_frame,
                         one_hot[:, 0],
@@ -597,6 +580,8 @@ class GenerativeFactory:
                 "success": (i + 1 - fail_count),
                 "success_rate": f"{100 * (i + 1 - fail_count) / (i + 1):.1f}%",
             })   
+
+
 
 
     def hybrid_guidance(self):
@@ -664,14 +649,7 @@ class GenerativeFactory:
                     if nodesxsample[0].item() < xh_ref.shape[1]:
                         nodesxsample = torch.tensor([xh_ref.shape[1]]*current_batch_size)
                         logging.warning("Specified molecular size is too small, set it as the same size as the reference structure")
-                            
-                    try:
-                        mask_node_index = torch.tensor([self.condition_configs.get("mask_node_index", [])])
-                    except RuntimeError:
-                        mask_node_index = torch.tensor([[]])
-                else:
-                    mask_node_index = torch.tensor([[]])
-
+                        
                 xh_tensor = xh_ref.repeat(current_batch_size, 1, 1)
                 one_hot, charges, x, _  = self.task.sample_hybrid_guidance(
                     target_function=target_function,
@@ -690,11 +668,8 @@ class GenerativeFactory:
                     n_backwards=self.condition_configs.get("n_backwards",1),
                     condition_tensor=xh_tensor,
                     condition_mode=condition_mode,
-                    mask_node_index=mask_node_index, # For Inpainting
-                    denoising_strength=self.condition_configs.get("denoising_strength", 0.8), # For Inpainting
-                    noise_initial_mask=self.condition_configs.get("noise_initial_mask", False), # For Inpainting
-                    t_start=self.condition_configs.get("t_start", 1),
-                    t_critical=self.condition_configs.get("t_critical", 0),
+                    inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", None),
+                    outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", None),
                     n_frames=self.n_frames,
                 )   
                 

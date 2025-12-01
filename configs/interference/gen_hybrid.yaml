@@ -12,15 +12,16 @@ output_path: generated_mol
 condition_configs:
   cfg_scale: 1
   reference_structure_path: "data/template_structures/INT2_0.xyz"
-  t_start: 0.8
-  t_critical: 0.05
+  inpaint_cfgs:
+    t_start: 0.8
+    t_critical: 0.05
 
   # inpaint
-  # denoising_strength: 0.7
-  # noise_initial_mask: False
-  # mask_node_index: 
-  # - 5
-  # - 30
-  # - 31
+  #   denoising_strength: 0.7
+  #   noise_initial_mask: False
+  #   mask_node_index: 
+  #   - 5
+  #   - 30
+  #   - 31
 
 

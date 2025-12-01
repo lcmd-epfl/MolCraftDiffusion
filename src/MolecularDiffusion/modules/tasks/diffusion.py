@@ -415,6 +415,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         return one_hot, charges, x
 
 
+
     def sample(self, 
                nodesxsample=torch.tensor([10]),
                context=None, 
@@ -424,7 +425,6 @@ class GeomMolecularGenerative(Task, core.Configurable):
                n_frames=0,
                n_retrys=0,
                t_retry=180,
-               t_start=1,
                mode="ddpm",
                **kwargs):
         """
@@ -500,7 +500,6 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 n_frames=n_frames,
                 n_retrys=n_retrys,
                 t_retry=t_retry,
-                t_start=t_start,
                 **kwargs
             )
         elif mode == "ddim":    
@@ -511,12 +510,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 edge_mask,
                 context,
                 eta=1,
-                # condition_tensor,
-                # condition_mode,
                 fix_noise=fix_noise,
                 n_frames=n_frames,
-                # n_retrys=n_retrys,
-                # t_retry=t_retry,
                 **kwargs # eta, n_steps, save_frame
             )
 
@@ -855,6 +850,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         nodesxsample=torch.tensor([10]),
         gg_scale=1,
         cfg_scale=1,
+        cfg_scale_schedule=None,
         max_norm=10,
         std=1.0,
         fix_noise=False,
@@ -877,6 +873,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         - nodesxsample (Tensor): Number of nodes per sample. Default is torch.tensor([10]).
         - gg_scale (float): Scale factor for gradient guidance. Default is 1.0.
         - cfg_scale (float): Scale factor for classifier-free guidance. Default is 1.0.
+        - cfg_scale_schedule (str, optional): Scheduler for cfg scale. Default is None. [linear, exponential, cosine]
         - max_norm (float): Initial maximum norm for the gradients. Default is 10.0.
         - std (float): Standard deviation of the noise. Default is 1.0.
         - fix_noise (bool): Fix noise for visualization purposes. Default is False.
@@ -995,6 +992,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             context_negative=context_negative,
             gg_scale=gg_scale,
             cfg_scale=cfg_scale,
+            cfg_scale_schedule=cfg_scale_schedule,
             max_norm=max_norm,
             fix_noise=fix_noise,
             std=std,
@@ -1059,7 +1057,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             charges = h["integer"]
         return one_hot, charges, x, node_mask
 
-
+    # Structure+property guidance
     def sample_hybrid_guidance(
         self,
         target_function,
@@ -1081,11 +1079,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
         x_weight=1,
         condition_tensor=None,
         condition_mode=None,
-        mask_node_index=torch.tensor([[]]), # For Inpainting
-        denoising_strength=0.0, # For Inpainting
-        noise_initial_mask=False, # For Inpainting
-        t_start=1.0,
-        t_critical=0,
+        inpaint_cfgs={},
+        outpaint_cfgs={},
         n_frames=0,
         debug=False,
     ):
@@ -1114,11 +1109,21 @@ class GeomMolecularGenerative(Task, core.Configurable):
             Save gradient norms, max gradients, clipping coefficients, and energies to files.
         - condition_tensor (torch.Tensor, optional): Tensor for conditional guidance. Defaults to None.
         - condition_mode (str, optional): Mode for conditional guidance. Defaults to None.
-        - mask_node_index (torch.Tensor, optional): Indices of nodes to be inpainted. Defaults to an empty tensor.
-        - denoising_strength (float, optional): Strength of denoising for inpainting
-        - noise_initial_mask (bool, optional): Whether to noise the initial masked region. Defaults to False.
-        - t_start (float, optional): Timestep to start applying guidance. Defaults to 1.0.
-        - t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+        - inpaint_cfgs (dict, optional): Configuration for inpainting. 
+            The dictionary must contains:        
+                - mask_node_index (torch.Tensor, optional): Indices of nodes to be inpainted. Defaults to an empty tensor.
+                - denoising_strength (float, optional): Strength of denoising for inpainting
+                - noise_initial_mask (bool, optional): Whether to noise the initial masked region. Defaults to False.
+        - outpaint_cfgs (dict, optional): Configuration for outpainting. 
+            The dictionary must contains:
+                - t_start (float, optional): Timestep to start the generation. Defaults to 1.0.
+                - t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
+`               - connector_index (torch.Tensor, optional): Indices of connector nodes for outpainting. Defaults to an empty tensor.
+                - seed_dist (float, optional): Distance of the seed from the connector atom (used if n_bq_atom == 0)..
+                - min_dist (float, optional): Minimum distance from any existing atom in xh_cond (except the connector itself). Defaults to 1.
+                - spread (float, optional): Spread of the initiating nodes. Defaults is 1 angstrom.
+                - n_bq_atom (int, optional): Number of dummy atoms. Defaults is 0.
+
         - n_frames (int, optional): Number of frames to keep. Defaults to 0.
 
         Returns:
@@ -1241,11 +1246,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
             debug=debug,
             condition_tensor=condition_tensor,
             condition_mode=condition_mode,
-            mask_node_index=mask_node_index, # For Inpainting
-            denoising_strength=denoising_strength, # For Inpainting
-            noise_initial_mask=noise_initial_mask, # For Inpainting
-            t_start=t_start,
-            t_critical=t_critical,
+            inpaint_cfgs=inpaint_cfgs,
+            outpaint_cfgs=outpaint_cfgs,
             n_frames=n_frames,
             cfg_scale_schedule=cfg_scale_schedule
         )
@@ -1270,7 +1272,6 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 )
                 charges = torch.round(chain[:, :, :, -1:]).long()
                 
-            #TODO how to deal with batch in case of retry here
             elif isinstance(chain, list):
                 x_0 = chain[0][:, :, 0:3]
                 one_hot_0 = chain[0][:, :, 3:-1]

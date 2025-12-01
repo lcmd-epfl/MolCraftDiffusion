@@ -12,19 +12,20 @@ output_path: generated_mol
 condition_configs:
   reference_structure_path: "data/template_structures/BINOLCp.xyz"
   condition_component: xh
-  t_start: 0.8
-  t_critical_1: 0.7
-  t_critical_2: 0.4
-  d_threshold_f: 2
-  w_b: 0.1
-  all_frozen: False
-  use_covalent_radii: True
-  scale_factor: 1.1
-  noise_initial_mask: False
-  connector_dicts:
-    1: [3]
-    2: [3]
-    3: [3]
+  outpaint_cfgs:
+    t_start: 0.8
+    t_critical_1: 0.7
+    t_critical_2: 0.4
+    d_threshold_f: 2
+    w_b: 0.1
+    all_frozen: False
+    use_covalent_radii: True
+    scale_factor: 1.1
+    noise_initial_mask: False
+    connector_dicts:
+      1: [3]
+      2: [3]
+      3: [3]
   n_retrys: 3
   t_retry: 180
 

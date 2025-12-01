@@ -11,7 +11,8 @@ n_frames: 0
 output_path: generated_mol
 condition_configs:
   reference_structure_path: "data/template_structures/INT2_0.xyz"
-  t_start: 1
+  outpaint_cfgs:
+    t_start: 1
   n_retrys: 0
   t_retry: 180
 

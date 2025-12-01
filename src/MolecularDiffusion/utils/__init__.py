@@ -28,6 +28,8 @@ from .geom_analyzer import (
 )
 
 from .geom_constraint import (
+    initialize_extra_nodes,
+    initialize_extra_nodes_seed,
     ensure_intact,
     enforce_min_nodes_per_connector,
     find_close_points_torch_and_push_op2,
@@ -100,9 +102,13 @@ __all__ = [
     "create_pyg_graph",
     "correct_edges",
     "remove_mean_pyG",
+    
+    "initialize_extra_nodes",
+    "initialize_extra_nodes_seed",
     "ensure_intact",
     "enforce_min_nodes_per_connector",
     "find_close_points_torch_and_push_op2",
+    
     "check_connected",
     "check_quality",
     "check_stability",
