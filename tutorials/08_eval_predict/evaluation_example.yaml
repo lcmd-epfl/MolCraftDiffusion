@@ -1,0 +1,43 @@
+# @package _global_
+
+defaults:
+  - data: mol_dataset  
+  - tasks: guidance # or 'regression', depending on your model type
+  - trainer: default
+  - hydra: default
+  - _self_
+
+name: "benchmark_run"
+output_directory: "output_pred/benchmark"
+
+# 1. Data Configuration
+data:
+  # Path where processed data (.pt files) are stored/cached
+  root: "data/processed/"
+  
+  # Path to the CSV file containing ground truth labels
+  filename: "data/test_set.csv"
+  
+  # Unique name for this dataset (creates 'processed_data_test_set.pt')
+  dataset_name: "test_set_benchmark"
+  
+  # Directory containing corresponding .xyz files
+  xyz_dir: "data/test_xyz/"
+  
+  max_atom: 100
+  data_type: pyg # Keep as 'pyg' for regression/guidance tasks
+  
+  # CRITICAL: Set train_ratio to 0.0 to treat the whole file as a test set
+  train_ratio: 0.0 
+  batch_size: 1
+
+# 2. Task & Model Configuration
+tasks:
+  # Path to the trained model checkpoint
+  chkpt_path: "trained_models/guidance-epoch=195-metric=0.1975.pkl"
+  
+  # List of tasks/columns to evaluate against
+  task_learn: ["gap", "homo", "lumo"] 
+
+# 3. Reproducibility
+seed: 9

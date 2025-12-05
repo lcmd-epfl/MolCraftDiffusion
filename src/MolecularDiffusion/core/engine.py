@@ -505,6 +505,9 @@ class Engine(core.Configurable):
 
         # Combine invalid indices
         combined_invalid_indices = invalid_pred_indices | invalid_target_indices
+        # If 2D or more, check if any value in the row is invalid to drop the whole row
+        if combined_invalid_indices.ndim > 1:
+            combined_invalid_indices = combined_invalid_indices.flatten(start_dim=1).any(dim=1)
 
         # Get the mask for valid (non-nan/inf) values
         valid_mask = ~combined_invalid_indices
@@ -551,7 +554,20 @@ class Engine(core.Configurable):
             config_dict["test_set"] = None
             optimizer_state = None
 
-        engine = cls.load_config_dict(config_dict)  # Uses class method to build Engine
+        # Filter out extra keys that are not arguments of Engine.__init__
+        # to avoid TypeError in load_config_dict
+        extra_keys = ["atom_vocab", "data_type", "node_feature", "with_hydrogen", "edge_type", "radius", "n_neigh"]
+        engine_config = config_dict.copy()
+        extras = {}
+        for k in extra_keys:
+            if k in engine_config:
+                extras[k] = engine_config.pop(k)
+
+        engine = cls.load_config_dict(engine_config)  # Uses class method to build Engine
+        
+        # Attach extras to engine
+        for k, v in extras.items():
+            setattr(engine, k, v)
 
         # Move model to device
         engine.model.to(engine.device)
@@ -634,11 +650,65 @@ class Engine(core.Configurable):
             logger.warning("Save checkpoint to %s" % checkpoint)
         checkpoint = os.path.expanduser(checkpoint)
         if self.rank == 0:
+            hyperparameters = self.sanitized_config_dict()
+
+            # Inject data properties if available
+            if self.train_set is not None:
+                # Get underlying dataset (handle Subset)
+                dataset = self.train_set.dataset if hasattr(self.train_set, "dataset") else self.train_set
+                
+                # 1. atom_vocab
+                if hasattr(dataset, "atom_vocab"):
+                    hyperparameters["atom_vocab"] = dataset.atom_vocab
+                elif hasattr(self.model, "atom_vocab"):
+                    hyperparameters["atom_vocab"] = self.model.atom_vocab
+
+                # 2. with_hydrogen
+                if hasattr(dataset, "with_hydrogen"):
+                    hyperparameters["with_hydrogen"] = dataset.with_hydrogen
+
+                # 3. node_feature
+                # Try to get from config_dict if available
+                if hasattr(dataset, "config_dict"):
+                    try:
+                        # config_dict might be a method or property or object
+                        cfg = dataset.config_dict
+                        if callable(cfg):
+                            cfg = cfg()
+                        if "atom_feature" in cfg:
+                            hyperparameters["node_feature"] = cfg["atom_feature"]
+                    except Exception:
+                        pass
+
+                # 4. data_type
+                # Infer from class name
+                ds_cls_name = dataset.__class__.__name__
+                if "pyG" in ds_cls_name or "GraphDataset" in ds_cls_name:
+                    hyperparameters["data_type"] = "pyg"
+                    
+                    # 5. Add PyG specific params
+                    if hasattr(dataset, "kwargs") and isinstance(dataset.kwargs, dict):
+                         if "edge_type" in dataset.kwargs:
+                            hyperparameters["edge_type"] = dataset.kwargs["edge_type"]
+                         if "radius" in dataset.kwargs:
+                            hyperparameters["radius"] = dataset.kwargs["radius"]
+                         if "n_neigh" in dataset.kwargs:
+                            hyperparameters["n_neigh"] = dataset.kwargs["n_neigh"]
+                    
+                    # Or checking attributes directly if kwargs approach fails or is not populated
+                    # (Based on `pointcloud_dataset_pyG` implementation, it passes them as kwargs to load_csv/load_db)
+                    # But `DataModule` passes them to `pointcloud_dataset_pyG` __init__, which passes to load_db/load_csv
+                    # Let's also check if they are stored as attributes if user implementation saved them.
+                    # Re-reading dataset.py, `GraphDataset` stores `kwargs` in `self.kwargs`.
+                    
+                elif "pointcloud" in ds_cls_name.lower() or "PointCloudDataset" in ds_cls_name:
+                    hyperparameters["data_type"] = "pointcloud"
+
             state = {
                 "model": self.model.state_dict(),
                 "ema_model": self.ema_model.state_dict(),
                 "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
-                "hyperparameters": self.sanitized_config_dict(), # Save full config dictionary
+                "hyperparameters": hyperparameters, # Save full config dictionary
             }
             # if self.scheduler is not None:
             #     state["scheduler"] = self.scheduler.state_dict()

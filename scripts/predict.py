@@ -51,7 +51,7 @@ def load_model(chkpt_path):
     """
     engine = Engine(None, None, None, None, None)
     
-    engine = engine.load_from_checkpoint(chkpt_path)
+    engine = engine.load_from_checkpoint(chkpt_path, interference_mode=True)
     engine.model.mlp.dropout.p = 0
     # engine.model.load_state_dict(torch.load(chkpt_path)["model"])
     engine.model.eval()
@@ -87,7 +87,6 @@ def xyz2mol(xyz_file, atom_vocab, node_feature, edge_type="fully_connected", rad
     mol_xyz = PointCloud_Mol.from_xyz(
         xyz_file, with_hydrogen=True, forbidden_atoms=[]
     )
-
     coords = mol_xyz.get_coord()
     n_nodes = len(mol_xyz.atoms)
 
@@ -143,8 +142,7 @@ def xyz2mol(xyz_file, atom_vocab, node_feature, edge_type="fully_connected", rad
     edge_mask *= diag_mask
     edge_mask = edge_mask.view(1 * n_nodes * n_nodes, 1)
     h = node_features.view(1 * n_nodes, -1).clone()
-    
-    if edge_type == "fully_connected":
+    if edge_type == "distance":
         edge_index = radius_graph(coords, r=radius)
     elif edge_type == "neighbor":
         edge_index = knn_graph(coords, k=n_neigh)
@@ -226,12 +224,11 @@ def _runner(solver, xyz_paths: list, max_atoms: int = 100) -> torch.Tensor:
             log.info(f"Skipping {xyz_path} (atoms={n_atoms} > max_atoms={max_atoms})")
             continue
 
-        # try:
         mol_obj = xyz2mol(xyz_file=xyz_path,
                         atom_vocab=solver.model.atom_vocab,
                         node_feature=solver.model.node_feature,
                         device=device)
-
+    
         prediction = solver.model.predict(mol_obj, evaluate=True)[0]
         predictions.append(prediction.detach().cpu().numpy())
         current_preds_dict = {prop_name: prediction[j].item() for j, prop_name in enumerate(task_names)}
@@ -318,6 +315,7 @@ def runner(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     if not(hasattr(solver.model, 'std')):
         chkpt = torch.load(cfg.chkpt_directory)
+        
         solver.model.std = chkpt["model"]["std"].to(solver.model.device)    
         solver.model.weight = chkpt["model"]["weight"].to(solver.model.device)
         solver.model.mean = chkpt["model"]["mean"].to(solver.model.device)

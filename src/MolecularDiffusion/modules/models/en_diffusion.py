@@ -1917,7 +1917,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
         # In the event the reference tensor is provided
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
-            if s > t_critical:
+            if s[0] > t_critical:
                 # Fix the reference part as conditioning
                 zs = torch.cat(
                     [self.condition_tensor, zs[:, mask_bools, :]], dim=1
@@ -3937,7 +3937,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     raise ValueError("denoising_strength must be specified in to use inpainting")
                 noise_initial_mask = getattr(inpaint_cfgs, "noise_initial_mask", False)
                 mask_node_index = getattr(inpaint_cfgs, "mask_node_index", torch.tensor([], device=z.device, dtype=torch.long))
-                t_critical = getattr(outpaint_cfgs, "t_critical", 0.0)
+                t_critical = 0.0
                 
                 mask_node_index = torch.tensor([mask_node_index], device=z.device, dtype=torch.long)
                 unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
@@ -4120,8 +4120,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                                                         torch.ones(n_node_extend, device=z.device)]).bool() 
                         # connector_dicts = {key + n_node_extend: value for key, value in connector_dicts.items()}
                         
-            if mask_node_index.size(1) > 0:
-                self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
+                if mask_node_index.size(1) > 0:
+                    self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
                 
             elif "outpaint" in condition_alg:
                 
@@ -4409,6 +4409,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return chain_flat
 
+
     def check_sanity_xh(
         self,
         x: torch.Tensor,
@@ -4451,65 +4452,85 @@ class EnVariationalDiffusion(torch.nn.Module):
             context=context,
             reference_indices=None,
             t0_always=True)
-                        
+     
         n_core = self.in_node_nf - self.ndim_extra - 1
         start  = self.n_dims
         mid    = start + n_core
         hint_i = mid 
 
-        if torch.isinf(loss).any():
-            for i in range(1, n_frame_look_back+1):
-                
-                x_i = chain[-i-1][:, :, : self.n_dims]
-                
-                if self.ndim_extra > 0:
-                    h_cat_i = chain[-i-1][:, :, start:mid]
-                    h_int_i = chain[-i-1][:, :, hint_i:hint_i+1]
-                    h_extra_i = chain[-i-1][:, :, -self.ndim_extra:]
-                    h_i = {
-                        "categorical": h_cat_i,
-                        "integer": h_int_i,
-                        "extra": h_extra_i,
-                    }
-                else:
-                    h_cat_i = chain[-i-1][:, :, start: -1]
-                    h_int_i = chain[-i-1][:, :, -1:]
-                    h_i = {
-                        "categorical": h_cat_i,
-                        "integer": h_int_i,
-                        "extra": None,
-                    }
-                
-                zx_i, zh_i, _ = self.normalize(x_i, h_i, node_mask)
-                
-                # Reconstruct z_i from normalized components
-                if self.ndim_extra > 0:
-                    zh_i_combined = torch.cat([zh_i["categorical"], zh_i["integer"], zh_i["extra"]], dim=2)
-                else:
-                    zh_i_combined = torch.cat([zh_i["categorical"], zh_i["integer"]], dim=2)
+        x_refined = []
+        h_refined = []
+        for idx, loss_i in enumerate(loss):
+            if torch.isinf(loss_i).any():
+                for i in range(1, n_frame_look_back+1):
+                    x_i = chain[-i-1][idx, :, : self.n_dims].unsqueeze(0)
 
-                z_i = torch.cat([zx_i, zh_i_combined], dim=2)
+                    if self.ndim_extra > 0:
+                        h_cat_i = chain[-i-1][idx, :, start:mid].unsqueeze(0)
+                        h_int_i = chain[-i-1][idx, :, hint_i:hint_i+1].unsqueeze(0)
+                        h_extra_i = chain[-i-1][idx, :, -self.ndim_extra:].unsqueeze(0)
+                        h_i = {
+                            "categorical": h_cat_i,
+                            "integer": h_int_i,
+                            "extra": h_extra_i,
+                        }
+                    else:
+                        h_cat_i = chain[-i-1][idx, :, start: -1].unsqueeze(0)
+                        h_int_i = chain[-i-1][idx, :, -1:].unsqueeze(0) 
+                        h_i = {
+                            "categorical": h_cat_i,
+                            "integer": h_int_i,
+                            "extra": None,
+                        }
+                    node_mask_i = node_mask[idx].unsqueeze(0)
 
-                x, h = self.sample_p_xh_given_z0(
-            z_i, node_mask, edge_mask, context=context, fix_noise=False
-        )
-                loss, _ = self.compute_loss(       
-                        x,
-                        h,
-                        node_mask=node_mask,
-                        edge_mask=edge_mask,
-                        context=context,
-                        reference_indices=None,
-                        t0_always=True)
-                if not torch.isinf(loss).any():
-                    # if self.debug:
-                    #     logger.info(f"Found clean molecule at chain frame {i}")
-                    break
-        # else:
-            # if self.debug:
-            #     logger.info("The generated molecule is clean.")
+                    zx_i, zh_i, _ = self.normalize(x_i, h_i, node_mask_i)
+                    
+                    # Reconstruct z_i from normalized components
+                    if self.ndim_extra > 0:
+                        zh_i_combined = torch.cat([zh_i["categorical"], zh_i["integer"], zh_i["extra"]], dim=2)
+                    else:
+                        zh_i_combined = torch.cat([zh_i["categorical"], zh_i["integer"]], dim=2)
 
-        return x, h
+                    z_i = torch.cat([zx_i, zh_i_combined], dim=2)
+                    edge_mask_i = node_mask_i.unsqueeze(1) * node_mask_i.unsqueeze(2)
+                    context_i = context[idx].unsqueeze(0)
+                    x_i, h_i = self.sample_p_xh_given_z0(
+                z_i, node_mask_i, edge_mask_i, context=context_i, fix_noise=False
+            )
+                    loss, _ = self.compute_loss(       
+                            x_i,
+                            h_i,
+                            node_mask=node_mask_i,
+                            edge_mask=edge_mask_i,
+                            context=context_i,
+                            reference_indices=None,
+                            t0_always=True)
+                    if not torch.isinf(loss).any():
+                        x_refined.append(x_i)
+                        h_refined.append(h_i)
+                        if self.debug:
+                            logger.info(f"Found clean molecule at chain frame {i}")
+                        break
+            else:
+                x_refined.append(x[idx].unsqueeze(0))
+                h_refined.append(
+                    {"categorical" : h["categorical"][idx].unsqueeze(0),
+                     "integer"   : h["integer"][idx].unsqueeze(0),
+                     "extra"     : h["extra"][idx].unsqueeze(0) if self.ndim_extra > 0 else None        }
+                )        
+        
+        h_final = {}
+        x_refined = torch.cat(x_refined, dim=0)
+        h_final["categorical"] = torch.cat([h_i["categorical"] for h_i in h_refined], dim=0)
+        h_final["integer"] = torch.cat([h_i["integer"] for h_i in h_refined], dim=0)
+        if self.ndim_extra > 0:
+            h_final["extra"] = torch.cat([h_i["extra"] for h_i in h_refined], dim=0)
+        else:
+            h_final["extra"] = None
+
+        return x_refined, h_final
+
 
     def scale_schedule(self, t, initial_scale=10.0, final_scale=1.0, schedule_type="linear"):
         """

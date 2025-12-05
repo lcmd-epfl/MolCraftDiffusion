@@ -56,6 +56,9 @@ class DataModule:
         batch_size: int = 32,
         num_workers: int = 0,
         dataset_name: str = "suisei",
+        edge_type: str = "fully_connected",
+        radius: float = 4.0,
+        n_neigh: int = 5,
     ):
         self.root = root
         self.filename = filename
@@ -82,6 +85,9 @@ class DataModule:
         self.train_set = None
         self.valid_set = None
         self.test_set = None
+        self.edge_type = edge_type
+        self.radius = radius
+        self.n_neigh = n_neigh
         
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -162,6 +168,9 @@ class DataModule:
                         target_fields=self.target_fields,
                         allow_unknown=self.allow_unknown,
                         verbose=verbose_level,
+                        edge_type=self.edge_type,
+                        radius=self.radius,
+                        n_neigh=self.n_neigh,
                     )
                 else:
                     dataset = pointcloud_dataset(
@@ -204,6 +213,9 @@ class DataModule:
                     target_fields=self.target_fields,
                     allow_unknown=self.allow_unknown,
                     verbose=verbose_level,
+                    edge_type=self.edge_type,
+                    radius=self.radius,
+                    n_neigh=self.n_neigh,
                 )
             else:
                 raise ValueError(

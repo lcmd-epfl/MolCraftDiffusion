@@ -104,8 +104,8 @@ class ProperyPrediction(Task, core.Configurable):
         """
         Compute the mean and derivation for each task on the training set.
         """
-        if len(train_set) == 0:
-            raise ValueError("Training set is empty. check the data path and format.")
+        # if len(train_set) == 0:
+        #     raise ValueError("Training set is empty. check the data path and format.")
         values = defaultdict(list)
         if train_set is not None:
             for sample in train_set:
@@ -327,7 +327,13 @@ class ProperyPrediction(Task, core.Configurable):
         return metric
 
     def predict(self, batch, all_loss=None, metric=None, evaluate=False):
-        
+        if evaluate:
+            self.eval()
+            self.model.eval()
+        else:
+            self.train()
+            self.model.train()
+            
         if self.architecture == "egcn":
             h = batch["graph"].x
             charges = batch["graph"].atomic_numbers
@@ -436,6 +442,9 @@ class ProperyPrediction(Task, core.Configurable):
         bs = batch["graph"].batch.max().item() + 1
         natoms = batch["graph"].natoms   
         n_nodes = natoms.max().item()
+        natoms = torch.tensor(natoms).to(self.device)
+        if natoms.dim() == 0:
+            natoms = natoms.unsqueeze(0)
         array_paddded = torch.zeros(bs, n_nodes, array.shape[1]).to(self.device)
         natom_cum = 0
         for i, natom in enumerate(natoms):

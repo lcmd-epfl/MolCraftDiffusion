@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - tasks: guidance
+  - interference: prediction
+  - _self_
+
+# 1. Run Name (used for logging)
+name: "screening_run"
+
+# 2. Model Checkpoint
+# Path to the .pkl file of your trained model.
+# Note: Even though the parameter is named 'directory', it expects a file path.
+chkpt_directory: "trained_models/guidance-epoch=195-metric=0.1975.pkl"
+
+# 3. Input Data
+# Directory containing your .xyz files.
+xyz_directory: "test_xyz_pred/"
+
+# 4. Output Location
+output_directory: "test_output/my_predictions"
+
+# 5. Model Specifics
+# These must match the configuration used during training.
+# If unknown, check the 'atom_vocab' and 'node_feature' in your training config.
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
+node_feature: null  # e.g., null, "atom_geom", "atom_topological"
+
+# 6. Constraints
+# Skip molecules larger than this size to avoid memory issues
+max_atoms: 100

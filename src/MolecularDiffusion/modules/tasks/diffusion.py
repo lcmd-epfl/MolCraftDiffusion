@@ -1641,7 +1641,12 @@ class GuidanceModelPrediction(Task, core.Configurable):
         """"
         If evaluate is True, the data must be normalized beforehand.
         """
-
+        if evaluate:
+            self.eval()
+            self.model.eval()
+        else:
+            self.train()
+            self.model.train()
         h = batch["graph"].x
         charges = batch["graph"].atomic_numbers.unsqueeze(-1)
         x = batch["graph"].pos
@@ -1816,6 +1821,8 @@ class GuidanceModelPrediction(Task, core.Configurable):
         natoms = batch["graph"].natoms   
         n_nodes = natoms.max().item()
         array_paddded = torch.zeros(bs, n_nodes, array.shape[1]).to(self.device)
+        if natoms.dim() == 0:
+            natoms = natoms.unsqueeze(0)
         natom_cum = 0
         for i, natom in enumerate(natoms):
             array_mol = array[natom_cum:natom_cum+natom]

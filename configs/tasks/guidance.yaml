@@ -16,7 +16,7 @@ normalization: False
 include_cosine: True
 norm_constant: 1.0
 normalization_factor: 1.0
-chkpt_path: trained_models/egcl_guidance_formed_s1t1_a1/guidance-epoch=195-metric=0.1975.pkl
+chkpt_path: null
 
 # specific to diffusion
 task_learn: [S1_exc,T1_exc]

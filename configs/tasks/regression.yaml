@@ -16,7 +16,7 @@ normalization: True
 include_cosine: True
 norm_constant: 1.0
 normalization_factor: 1.0
-chkpt_path: "trained_models/egcl_reg_formed_s1t1_a3/regression-epoch=138-metric=0.1478.pkl"
+chkpt_path: null
 
 # specific to regression
 task_learn: [S1_exc,T1_exc]

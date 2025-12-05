@@ -143,7 +143,6 @@ def predict(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     y_preds, y_trues = engine_wrapper(task_module,
                              data_module,
                              trainer_module)
-
     df = pd.read_csv(cfg.data.filename)
     task_matrix = df[cfg.tasks.task_learn].to_numpy()
     filenames = df["filename"].to_numpy()
