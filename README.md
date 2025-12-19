@@ -47,7 +47,7 @@ For a more detailed installation, including setting up a conda environment and i
     conda install conda-forge::openbabel
     conda install xtb==6.7.1
     # install other libraries
-    pip install fire seaborn decorator numpy==1.26.4 scipy rdkit-pypi posebusters==0.5.1 networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus cosymlib morfeus-ml wandb rmsd
+    pip install fire seaborn decorator numpy scipy rdkit-pypi posebusters==0.5.1 networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus-ml morfeus-ml wandb rmsd
 
     pip install hydra-core==1.* hydra-colorlog rootutils
 
@@ -61,6 +61,9 @@ For a more detailed installation, including setting up a conda environment and i
     # Install the package. Use editable mode (-e) to make the MolCraftDiff CLI tool available.
     pip install -e .
 
+    # optional for some featurizer/metrics
+    # this require numpy==1.24.*
+    pip install cosymlib
 
 Usage
 -----

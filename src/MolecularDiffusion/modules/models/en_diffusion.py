@@ -1974,7 +1974,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
                     # In the event the reference tensor is provided
                     if self.condition_tensor is not None and "outpaint" in structure_guidance:
-                        if s > t_critical:
+                        if s[0].item() > t_critical:
                             # Fix the reference part as conditioning
                             zs = torch.cat(
                                 [self.condition_tensor, zs[:, mask_bools, :]], dim=1
@@ -2102,9 +2102,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)    
     
         # In the event the reference tensor is provided
-        if self.condition_tensor is not None and "outpaint" in structure_guidance:
-        
-            if s > t_critical:
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:  
+            if s[0].item() > t_critical:
                 # Fix the reference part as conditioning
                 zs = torch.cat(
                     [self.condition_tensor, zs[:, mask_bools, :]], dim=1
@@ -2230,7 +2229,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # gradient guidance
         z0 = (zt - sigma_t * eps_t) / ((1 - sigma_t**2) ** (1 / 2))
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
-            if s > t_critical:
+            if s[0].item() > t_critical:
                 # Fix the reference part as conditioning
                 z0 = torch.cat(
                     [self.condition_tensor, z0[:, mask_bools, :]], dim=1
@@ -2265,7 +2264,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
-            if s > t_critical:
+            if s[0].item() > t_critical:
                 # Fix the reference part as conditioning
                 zs = torch.cat(
                     [self.condition_tensor, zs[:, mask_bools, :]], dim=1
@@ -2317,7 +2316,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
                     # In the event the reference tensor is provided
                     if self.condition_tensor is not None and "outpaint" in structure_guidance:
-                        if s > t_critical:
+                        if s[0].item() > t_critical:
                             # Fix the reference part as conditioning
                             zs = torch.cat(
                                 [self.condition_tensor, zs[:, mask_bools, :]], dim=1
@@ -2561,7 +2560,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                             all_frozen=all_frozen,
                             z_ref=condition_charge,
                             z_tgt=zs_charge,
-                            scale_factor=scale_factor
+                            scale_factor=scale_factor,
                             )   
                 
                 zs[:, mask_node_index, :self.n_dims] = zl_corr.unsqueeze(0) 
@@ -2770,8 +2769,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         self.condition_tensor = zs[:, ~mask_bools, :]   
         
         return zs
-        
-
     def sample_p_zs_given_zt_op_ft(
         self,
         s,
@@ -3060,6 +3057,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             s_saves = torch.linspace(0, self.T, 
                                         steps=n_frames, device=z.device).long() 
         
+        t_int_start = self.T
         if condition_alg == "inpaint":
 
             denoising_strength = getattr(inpaint_cfgs, "denoising_strength", None)
@@ -3251,11 +3249,16 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         elif condition_alg in ["outpaint", "outpaintft"]:
 
-            
             t_start = getattr(outpaint_cfgs, "t_start", 1.0)
             t_int_start = int(t_start * self.T)
             t_critical_1 = getattr(outpaint_cfgs, "t_critical_1", 0.8)
             t_critical_2 = getattr(outpaint_cfgs, "t_critical_2", 0.5)
+            d_threshold_f = getattr(outpaint_cfgs, "d_threshold_f", 1.8)
+            w_b = getattr(outpaint_cfgs, "w_b", 2)
+            all_frozen = getattr(outpaint_cfgs, "all_frozen", False)
+            use_covalent_radii = getattr(outpaint_cfgs, "use_covalent_radii", True)
+            scale_factor = getattr(outpaint_cfgs, "scale_factor", 1.1)
+            
             connector_dicts = getattr(outpaint_cfgs, "connector_dicts", None)
             if connector_dicts is None:
                 raise ValueError("connector_dicts must be specified in to use outpainting")
@@ -3268,6 +3271,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 
             natom_ref = condition_tensor.size(1)
             natom_extra = n_nodes - natom_ref
+
             new_nodes = initialize_extra_nodes_seed(
                 condition_tensor, 
                 connector_indices, 
@@ -3401,8 +3405,14 @@ class EnVariationalDiffusion(torch.nn.Module):
                             context,
                             mask_node_bool_corr,
                             connector_dicts=connector_dicts,
+                            t_critical_1=t_critical_1,
+                            t_critical_2=t_critical_2,
+                            d_threshold_f=d_threshold_f,
+                            w_b=w_b,
+                            all_frozen=all_frozen,
+                            use_covalent_radii=use_covalent_radii,
+                            scale_factor=scale_factor,
                             fix_noise=fix_noise,
-                            # t_critical=0.4
                             )
                     elif condition_alg == "outpaintft": 
                         z = self.sample_p_zs_given_zt_op_ft(
@@ -3593,8 +3603,14 @@ class EnVariationalDiffusion(torch.nn.Module):
                                     context,
                                     mask_node_bool_corr,
                                     connector_dicts=connector_dicts,
+                                    t_critical_1=t_critical_1,
+                                    t_critical_2=t_critical_2,
+                                    d_threshold_f=d_threshold_f,
+                                    w_b=w_b,
+                                    all_frozen=all_frozen,
+                                    use_covalent_radii=use_covalent_radii,
+                                    scale_factor=scale_factor,
                                     fix_noise=fix_noise,
-                                    # t_critical=0.4
                                     )
                             elif condition_alg == "outpaintft": 
                                 z = self.sample_p_zs_given_zt_op_ft(
@@ -4110,7 +4126,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                         n_connector = mask_node_index.size(1)
                         connector_indices = torch.arange(0 , n_connector, device=z.device) + condition_tensor[:, ~mask_node_bool_corr, :].shape[1]
                     else:
-                        n_connector = condition_pos.size(0)
+                        n_connector = condition_tensor.size(1)
                         connector_indices = torch.arange(0 , n_connector, device=z.device)
                     
                     new_nodes = initialize_extra_nodes(z, connector_indices, n_node_extend, eps=2.0, min_samples=1)
@@ -4512,6 +4528,15 @@ class EnVariationalDiffusion(torch.nn.Module):
                         if self.debug:
                             logger.info(f"Found clean molecule at chain frame {i}")
                         break
+                    else:
+                        # Cannot find a clean molecule in the look-back frames
+                        if i == n_frame_look_back:
+                            x_refined.append(x[idx].unsqueeze(0))
+                            h_refined.append(
+                                {"categorical" : h["categorical"][idx].unsqueeze(0),
+                                 "integer"   : h["integer"][idx].unsqueeze(0),
+                                 "extra"     : h["extra"][idx].unsqueeze(0) if self.ndim_extra > 0 else None        }
+                            )
             else:
                 x_refined.append(x[idx].unsqueeze(0))
                 h_refined.append(

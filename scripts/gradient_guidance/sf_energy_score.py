@@ -1,13 +1,22 @@
 import sys
+import os
 from math import sqrt
 from typing import List
 
 import numpy as np
 import torch
+import rootutils
+
+# Setup root directory
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 # from navicatGA.timeout import timeout
 from numpy import dot
 from MolecularDiffusion.core import Engine
+from MolecularDiffusion.utils.plot_function import (
+    plot_kde_distribution,
+    plot_histogram_distribution,
+)
 from torch_geometric.data import Data
 from torch_geometric.nn import  radius_graph
 from torch_geometric.data import Batch
@@ -308,3 +317,82 @@ class SFEnergyScore:
         target = -energy_score(preds[1], preds[0])
     
         return target
+
+if __name__ == "__main__":
+    import argparse
+    import pandas as pd
+    
+    parser = argparse.ArgumentParser(description="Compute energy scores from a CSV file.")
+    parser.add_argument("--input_csv", type=str, required=True, help="Path to the input CSV file.")
+    parser.add_argument("--output_csv", type=str, required=True, help="Path to save the output CSV file.")
+    parser.add_argument("--threshold", type=float, help="Threshold to count entries with score higher than this value.")
+    args = parser.parse_args()
+
+    df = pd.read_csv(args.input_csv)
+
+    # Identify columns
+    s1_col = next((col for col in ["S1", "S1_exc", "s1"] if col in df.columns), None)
+    t1_col = next((col for col in ["T1", "T1_exc", "t1"] if col in df.columns), None)
+    
+    if not s1_col or not t1_col:
+        print(f"Error: Could not find S1 or T1 columns. Available columns: {df.columns}")
+        sys.exit(1)
+        
+    energy_scores = []
+    for index, row in df.iterrows():
+        try:
+            s1_val = float(row[s1_col])
+            t1_val = float(row[t1_col])
+            
+            # energy_score takes torch tensors
+            t1_tensor = torch.tensor(t1_val)
+            s1_tensor = torch.tensor(s1_val)
+            
+            # energy_score(x, y) where x=t1, y=s1
+            score = energy_score(t1_tensor, s1_tensor).item()
+            energy_scores.append(score)
+        except Exception as e:
+            print(f"Error processing row {index}: {e}")
+            energy_scores.append(np.nan)
+
+    df["energy_score"] = energy_scores
+    
+    # Save
+    df.to_csv(args.output_csv, index=False)
+    
+    # Statistics
+    valid_scores = [s for s in energy_scores if not np.isnan(s)]
+    if valid_scores:
+        print(f"Mean energy score: {np.mean(valid_scores)}")
+        print(f"Max energy score: {np.max(valid_scores)}")
+        print(f"Min energy score: {np.min(valid_scores)}")
+        
+        if args.threshold is not None:
+            count_above = sum(1 for s in valid_scores if s > args.threshold)
+            portion_above = count_above / len(valid_scores)
+            print(f"Entries with score > {args.threshold}: {count_above} ({portion_above:.2%})")
+
+        # Plotting
+        output_dir = os.path.dirname(args.output_csv)
+        if not output_dir:
+            output_dir = "."
+            
+        print(f"Plotting distributions to {output_dir}")
+        try:
+            # Drop NaNs for plotting
+            plot_series = df["energy_score"].dropna()
+            
+            plot_kde_distribution(
+                plot_series, 
+                "Energy Score", 
+                os.path.join(output_dir, "energy_score_kde.png")
+            )
+            plot_histogram_distribution(
+                plot_series, 
+                "Energy Score", 
+                os.path.join(output_dir, "energy_score_hist.png")
+            )
+        except Exception as e:
+            print(f"Error plotting distributions: {e}")
+    else:
+        print("No valid energy scores computed.")

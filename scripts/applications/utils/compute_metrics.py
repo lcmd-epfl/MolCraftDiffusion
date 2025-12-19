@@ -180,7 +180,7 @@ def runner(args):
         for xyz in tqdm(xyz_passed, desc="Checking neutrality of molecules", total=len(xyz_passed)):
             neutral_mols.append(check_neutrality(xyz))
       
-        postbuster_results = run_postbuster(mols, timeout=300)
+        postbuster_results = run_postbuster(mols, timeout=3000)
         if postbuster_results is not None:
             num_atoms_list = [mol.GetNumAtoms() for mol in mols]
             postbuster_results['num_atoms'] = num_atoms_list
@@ -191,7 +191,8 @@ def runner(args):
                 'double_bond_flatness', 'internal_energy'
             ]
             postbuster_results['valid_posebuster'] = postbuster_results[posebuster_checks].all(axis=1)
-
+            posebuster_checks_connected = posebuster_checks + ['all_atoms_connected']
+            postbuster_results['valid_posebuster_connected'] = postbuster_results[posebuster_checks_connected].all(axis=1)
             if args.output is None:
                 postbuster_output_path = f"{xyz_dir}/postbuster_metrics.csv"
                 hist_path = f"{xyz_dir}/postbuster_molecular_size_histogram.png"
@@ -201,6 +202,7 @@ def runner(args):
                 hist_path = f"{base}_postbuster_molecular_size_histogram.png"
 
             postbuster_results['neutral_molecule'] = neutral_mols
+            postbuster_results["filename"] = [os.path.basename(xyz) for xyz in xyz_passed]
             postbuster_results.to_csv(postbuster_output_path, index=False)
 
             logging.info(f"Molecular size mean: {postbuster_results['num_atoms'].mean():.2f}")
@@ -227,6 +229,7 @@ def runner(args):
             logging.info(f"Double Bond Flatness: {postbuster_results['double_bond_flatness'].mean():.2f}")
             logging.info(f"Internal Energy: {postbuster_results['internal_energy'].mean():.2f}")
             logging.info(f"Valid Posebuster: {postbuster_results['valid_posebuster'].mean() * 100:.2f}%")
+            logging.info(f"Valid Posebuster Connected: {postbuster_results['valid_posebuster_connected'].mean() * 100:.2f}%")
             logging.info(f"Neutral Molecule: {sum(neutral_mols) / len(neutral_mols) * 100:.2f}%")
 
 

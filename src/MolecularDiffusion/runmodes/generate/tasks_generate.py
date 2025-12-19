@@ -246,6 +246,7 @@ class GenerativeFactory:
                         nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                         nodesxsample = nodesxsample.repeat(current_batch_size) 
+              
                 if self.task_type == "conditional":
                     one_hot, charges, x, _ = self.task.sample_conditonal(
                             nodesxsample=nodesxsample, 
@@ -498,10 +499,6 @@ class GenerativeFactory:
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])                
 
                 if self.task_type == "inpaint":
-                    try:
-                        mask_node_index = torch.tensor([self.condition_configs.get("mask_node_index", [])])
-                    except RuntimeError:
-                        mask_node_index = torch.tensor([[]])
                     if nodesxsample.item() < xh_ref.shape[1]:
                         nodesxsample = torch.tensor([xh_ref.shape[1]])
                         logging.warning("Specified molecular size is too small, set it as the same size as the reference structure")
@@ -581,9 +578,6 @@ class GenerativeFactory:
                 "success_rate": f"{100 * (i + 1 - fail_count) / (i + 1):.1f}%",
             })   
 
-
-
-
     def hybrid_guidance(self):
         
         xh_ref = self.preprocess_ref_structure(self.task.device)
@@ -643,7 +637,7 @@ class GenerativeFactory:
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
                         nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
-
+                        nodesxsample = nodesxsample.repeat(current_batch_size) 
 
                 if "inpaint" in self.task_type:
                     if nodesxsample[0].item() < xh_ref.shape[1]:

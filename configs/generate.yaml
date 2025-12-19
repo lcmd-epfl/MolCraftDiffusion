@@ -10,9 +10,9 @@ defaults:
 
 # run name, eg. for wandb logging
 name: "akatsuki"
-chkpt_directory: "/home/pregabalin/RF/MolecularDiffusion/trained_models/edm_pretrained/"
+chkpt_directory: "/home/pregabalin/RF/MolecularDiffusion/trained_models/edm_qm9vqm24//"
 atom_vocab: [H,B,C,N,O,F,Al,Si,P,S,Cl,As,Se,Br,I,Hg,Bi]
-diffusion_steps: 600
+diffusion_steps: 300
 
 # tags to help you identify your experiments
 # you can overwrite this in experiment configs
@@ -21,3 +21,9 @@ diffusion_steps: 600
 # seed for random number generators in pytorch, numpy and python.random
 seed: 9
 
+interference:
+  batch_size: 1
+  num_generate: 12
+  output_path: gen_test
+  n_frames: 30
+  # mol_size: [0,0]

@@ -1,32 +1,38 @@
 
 import glob
+import logging
+import multiprocessing
 import os
-from .geom_utils import read_xyz_file, create_pyg_graph, correct_edges
-from tqdm import tqdm
-import pandas as pd
+import subprocess as sp
+
+import networkx as nx
 import numpy as np
-import itertools
+import pandas as pd
+import torch
+from ase.data import covalent_radii
+from openbabel import pybel
+from posebusters import PoseBusters
+from rdkit import Chem
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
-import networkx as nx
-import torch
-import subprocess as sp
-from rdkit import Chem
+from tqdm import tqdm
 
-
-from ase.data import  covalent_radii
-from cosymlib import Geometry
 from .geom_constant import (
-    degree_angles_ref, 
-    vertices_labels, 
+    allow_n_bonds,
     allowed_shape,
-    allow_n_bonds, 
-    valid_valencies
+    degree_angles_ref,
+    valid_valencies,
+    vertices_labels,
 )
+from .geom_utils import correct_edges, create_pyg_graph, read_xyz_file
 
-from posebusters import PoseBusters
-from openbabel import pybel
-import logging
+try:
+    from cosymlib import Geometry
+    is_cosymlib_available = True
+except ImportError:
+    is_cosymlib_available = False
+    Geometry = None
+    
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -41,7 +47,18 @@ SCALE_FACTOR = 1.2
 
 #%%
 def check_neutrality(filename):
+    """
+    Checks if a molecule (specified by an XYZ file) is neutral by running an xTB calculation.
     
+    It runs 'xtb <filename> --ptb' and checks the output log for messages indicating
+    a mismatch between electrons and spin multiplicity.
+    
+    Args:
+        filename (str): Path to the XYZ file containing the molecule.
+        
+    Returns:
+        bool: True if the molecule is neutral (no mismatch found), False otherwise.
+    """
     neutral_mol = True
     execution = ["xtb", filename, "--ptb"]
     try:
@@ -94,12 +111,15 @@ def compare_graph_topology(graph1, graph2):
 def is_fully_connected(edge_index, num_nodes):
     """
     Determines if the graph is fully connected.
+    
     Args:
         edge_index (torch.Tensor): The edge indices of the graph.
         num_nodes (int): The number of nodes in the graph.
+        
     Returns:
-        bool: True if the graph is fully connected, False otherwise.
-        int: The number of connected components in the graph.
+        tuple: (bool, int)
+            - bool: True if the graph is fully connected, False otherwise.
+            - int: The number of connected components in the graph.
     """
     G = to_networkx(Data(edge_index=edge_index, num_nodes=num_nodes), to_undirected=True)
     try:
@@ -117,13 +137,13 @@ def check_validity_v0(data,
                    verbose=False):
     
     """
-    Validate a molecular structure based on atomic distances and angles.
+    Validate a molecular structure based on atomic distances and angles (Version 0).
 
     Args:
         data: A dictionary containing molecular information.
             - 'atomic_numbers': List of integers representing the atomic number of each atom.
             - 'positions': List of tuples (x, y, z) representing the position of each atom.
-        angle_relax (float): Tolerance allowed for bond angles in degrees. Default is 5.0.
+        angle_relax (float): Tolerance allowed for bond angles in degrees. Default is 10.0.
         scale_factor (float): The scaling factor to apply to the covalent radii. Default is 1.3.
         verbose (bool): Whether to print debug messages during validation. Default is False.
 
@@ -238,7 +258,7 @@ def check_validity_v1(data,
                    verbose=False):
     
     """
-    Validate a molecular structure based on atomic distances and angles.
+    Validate a molecular structure based on atomic distances and angles (Version 1).
 
     Args:
         data: A dictionary containing molecular information.
@@ -246,7 +266,7 @@ def check_validity_v1(data,
             - 'positions': List of tuples (x, y, z) representing the position of each atom.
         score_threshold (float): Tolerance allowed for shape values. Default is 3.0.
         scale_factor (float): The scaling factor to apply to the covalent radii. Default is 1.3.
-        check_strain (bool): Whether to compute for strained geometries (only for fully-connected graph). Default is False.
+        skip_indices (list): List of atom indices to skip during validation.
         verbose (bool): Whether to print debug messages during validation. Default is False.
 
     Returns:
@@ -254,8 +274,8 @@ def check_validity_v1(data,
             - is_valid (bool): Boolean indicating if the structure is valid.
             - percent_atom_valid (float): Percentage of atoms that meet the criteria.
             - num_components (int): Number of connected components in the molecular graph.
-            - bad_atoms (list): List of indices for atoms that do not meet the criteria.
-            - needs_rechecking (bool): Whether further checks are needed due to borderline cases or special conditions.
+            - bad_atom_chem (list): List of indices for atoms that do not meet chemical valency criteria.
+            - bad_atom_distort (list): List of indices for atoms that are geometrically distorted.
 
     Notes:
         This function assumes that 'data' contains valid atomic numbers and positions. 
@@ -263,6 +283,9 @@ def check_validity_v1(data,
         Special handling is applied for atoms with certain atomic numbers, such as carbon (atomic number 6), which may require different criteria due to their bonding behavior.
 
     """
+    
+    if not(is_cosymlib_available):
+        raise ImportError("Cosymlib is not available, do use different metrics")
     atomic_numbers = data.x.view(-1).int().tolist()
     edge_index = data.edge_index
     good_atoms = []
@@ -446,6 +469,20 @@ def check_chem_validity(mol_list,
     )
     
 def smilify_wrapper(xyzs, xyz2mol):
+    """
+    Convert a list of XYZ files to SMILES strings using a provided xyz2mol function.
+    
+    Args:
+        xyzs (list of str): List of paths to XYZ files.
+        xyz2mol (callable): A function that takes an XYZ file path and returns (smiles, mol).
+        
+    Returns:
+        tuple: (validity, smiles_list, mol_list, dicts)
+            - validity (float): Fraction of successful conversions.
+            - smiles_list (list of str): List of SMILES strings (None for failures).
+            - mol_list (list of RDKit Mol): List of RDKit Mol objects (None for failures).
+            - dicts (dict): Dictionary with 'smiles' and 'filename' lists.
+    """
     smiles_list = []
     mol_list = []
     dicts = {"smiles": [], "filename": []}
@@ -476,7 +513,13 @@ def smilify_wrapper(xyzs, xyz2mol):
 #%% postbuster
 
 def xyz_to_pdb(xyz_file_path, pdb_file_path):
-    """Converts an XYZ file to a PDB file using OpenBabel."""
+    """
+    Converts an XYZ file to a PDB file using OpenBabel (via pybel).
+    
+    Args:
+        xyz_file_path (str): Path to input XYZ file.
+        pdb_file_path (str): Path to output PDB file.
+    """
     try:
         mol = next(pybel.readfile("xyz", xyz_file_path))
         mol.write("pdb", pdb_file_path, overwrite=True)
@@ -485,7 +528,19 @@ def xyz_to_pdb(xyz_file_path, pdb_file_path):
 
 
 def load_molecules_from_xyz(xyz_dir):
-    """Converts all XYZ files in a directory to RDKit Mol objects."""
+    """
+    Converts all XYZ files in a directory to RDKit Mol objects.
+    
+    It first converts XYZ files to PDB using OpenBabel, then loads the PDBs into RDKit.
+    
+    Args:
+        xyz_dir (str): Directory containing XYZ files.
+        
+    Returns:
+        tuple: (valid_molecules, pass_xyz_files)
+            - valid_molecules (list of RDKit Mol): Successfully loaded molecules.
+            - pass_xyz_files (list of str): Filenames of the successfully loaded molecules.
+    """
     xyz_files = glob.glob(os.path.join(xyz_dir, "*.xyz"))
     valid_molecules = []
     pass_xyz_files = []
@@ -511,10 +566,15 @@ def load_molecules_from_xyz(xyz_dir):
     return valid_molecules, pass_xyz_files
 
 
-import multiprocessing
 
 def _run_buster(mols, queue):
-    """Helper function to run PoseBusters in a separate process."""
+    """
+    Helper function to run PoseBusters on a list of molecules in a separate process.
+    
+    Args:
+        mols (list of RDKit Mol): List of molecules to process.
+        queue (multiprocessing.Queue): Queue to put the result (DataFrame or Exception).
+    """
     try:
         buster = PoseBusters(config="mol")
         results = buster.bust(mols)
@@ -523,36 +583,85 @@ def _run_buster(mols, queue):
         queue.put(e)
 
 
-def run_postbuster(mols, timeout=60):
+def run_postbuster(mols, timeout=60, batch_size=None):
     """
-    Run PoseBusters on a list of RDKit molecules with a timeout.
+    Run PoseBusters on a list of RDKit molecules, optionally in batches, with a timeout per batch.
+    
+    This function processes molecules using the PoseBusters library to compute various geometric checks.
+    Processing happens in separate processes to enforce timeouts.
+    
+    Args:
+        mols (list of RDKit Mol): List of molecules to evaluate.
+        timeout (int, optional): Maximum time (in seconds) allowed for each batch calculation. Default is 60.
+        batch_size (int, optional): Number of molecules to process in a single batch. 
+                                    If None, processes all molecules in one batch. Default is None.
+                                    
+    Returns:
+        pd.DataFrame or None: DataFrame containing PoseBusters results for all processed molecules.
+                              Returns None if no results could be obtained.
     """
     if not mols:
         logger.warning("No valid molecules loaded. Exiting.")
         return None
 
-    queue = multiprocessing.Queue()
-    process = multiprocessing.Process(target=_run_buster, args=(mols, queue))
-    process.start()
-    process.join(timeout)
+    if batch_size is None:
+        batch_size = len(mols)
 
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        logger.warning(f"PoseBusters timed out after {timeout} seconds.")
-        return None
-
-    result = queue.get()
-    if isinstance(result, Exception):
-        logger.error(f"PoseBusters failed with an exception: {result}")
-        return None
+    all_results = []
+    num_batches = (len(mols) + batch_size - 1) // batch_size
     
-    return result
+    for i in tqdm(range(num_batches), desc="Processing PoseBusters batches"):
+        batch_mols = mols[i * batch_size : (i + 1) * batch_size]
+        
+        queue = multiprocessing.Queue()
+        process = multiprocessing.Process(target=_run_buster, args=(batch_mols, queue))
+        process.start()
+        process.join(timeout)
+
+        if process.is_alive():
+            process.terminate()
+            process.join()
+            logger.warning(f"PoseBusters timed out after {timeout} seconds (Batch {i+1}/{num_batches}). Skipping batch.")
+            continue
+        
+        try:
+            result = queue.get(timeout=5)
+        except Exception:
+            logger.error(f"PoseBusters failed to return result (Batch {i+1}/{num_batches}). Skipping batch.")
+            continue
+
+        if isinstance(result, Exception):
+            logger.error(f"PoseBusters failed with an exception: {result}. Skipping batch.")
+            continue
+        
+        all_results.append(result)
+
+    if not all_results:
+        return None
+
+    try:
+        final_df = pd.concat(all_results, ignore_index=True)
+        return final_df
+    except Exception as e:
+        logger.error(f"Error concatenating batch results: {e}")
+        return None
 
 
 #%% All
 def runner(args):
+    """
+    Main runner function to process a directory of XYZ files, compute geometric metrics, 
+    check validity, and optionally run strain and diversity checks.
     
+    Args:
+        args (argparse.Namespace): Arguments containing:
+            - input (str): Input directory path containing .xyz files.
+            - output (str, optional): Output CSV file path.
+            - recheck_topo (bool): Whether to recheck topology.
+            - check_strain (bool): Whether to check strain energy.
+            - check_diversity (bool): Whether to compute diversity scores.
+            - skip_atoms (list of int, optional): Atom indices to skip during checks.
+    """
     xyz_dir = args.input
     recheck_topo = args.recheck_topo
     check_strain = args.check_strain

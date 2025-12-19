@@ -5,6 +5,7 @@ import shutil
 from tqdm import tqdm
 import argparse
 import torch
+import pandas as pd
 
 from MolecularDiffusion.utils import create_pyg_graph, correct_edges
 from MolecularDiffusion.utils.geom_utils import read_xyz_file
@@ -159,7 +160,9 @@ def get_xtb_optimized_xyz(
     level: str = "gfn1",
     timeout: int = 240,
     scale_factor: float = 1.3,
-    optimize_all: bool = True
+    optimize_all: bool = True,
+    csv_path: str = None,
+    filter_column: str = None
 ) -> list[str]:
     """
     Optimizes all XYZ files in a given input directory using xTB and saves them
@@ -180,6 +183,8 @@ def get_xtb_optimized_xyz(
         timeout (int, optional): The maximum time in seconds to wait for each xTB process. Defaults to 240.
         scale_factor (float, optional): The scaling factor for covalent radii in edge correction. Defaults to 1.3.
         optimize_all (bool, optional): If True, optimizes all files regardless of existing optimized versions.
+        csv_path (str, optional): Path to a CSV file to filter which XYZ files to optimize.
+        filter_column (str, optional): The column name in the CSV to filter by (values must be 1).
 
     Returns:
         list[str]: A list of paths to the successfully optimized XYZ files.
@@ -189,7 +194,49 @@ def get_xtb_optimized_xyz(
 
     os.makedirs(output_directory, exist_ok=True)
 
-    xyz_files = glob.glob(os.path.join(input_directory, "*.xyz"))
+    xyz_files = []
+    if csv_path:
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+        
+        df = pd.read_csv(csv_path)
+        
+        fname_col = None
+        for col in ["xyz_file", "filename", "filepath"]:
+            if col in df.columns:
+                fname_col = col
+                break
+        
+        if fname_col is None:
+             raise ValueError("CSV must contain 'xyz_file', 'filename', or 'filepath' column.")
+        
+        if filter_column:
+            if filter_column not in df.columns:
+                raise ValueError(f"Filter column '{filter_column}' not found in CSV.")
+            # Filter rows where the value is 1 (as integer or string)
+            filtered_df = df[df[filter_column].isin(['1', '1.0', True, 1])]
+        else:
+            filtered_df = df
+
+        for _, row in filtered_df.iterrows():
+            fname = str(row[fname_col])
+            # Handle potential missing extension if it's just a name
+            if not fname.lower().endswith('.xyz'):
+                 fname += '.xyz'
+            
+            if os.path.isabs(fname):
+                full_path = fname
+            else:
+                full_path = os.path.join(input_directory, fname)
+            
+            if os.path.exists(full_path):
+                xyz_files.append(full_path)
+            else:
+                print(f"Warning: File from CSV not found: {full_path}")
+                
+    else:
+        xyz_files = glob.glob(os.path.join(input_directory, "*.xyz"))
+
     optimized_files = []
 
     for xyz_file in tqdm(xyz_files, desc="Optimizing XYZ files", total=len(xyz_files)):
@@ -260,6 +307,18 @@ if __name__ == "__main__":
         default=1.3,
         help="Scaling factor for covalent radii in edge correction. Defaults to 1.3."
     )
+    parser.add_argument(
+        "--csv_path",
+        type=str,
+        default=None,
+        help="Path to CSV file for filtering which files to optimize."
+    )
+    parser.add_argument(
+        "--filter_column",
+        type=str,
+        default=None,
+        help="Column name in CSV to filter by (values must be 1 to process)."
+    )
 
     args = parser.parse_args()
 
@@ -272,7 +331,9 @@ if __name__ == "__main__":
         charge=args.charge,
         level=args.level,
         timeout=args.timeout,
-        scale_factor=args.scale_factor
+        scale_factor=args.scale_factor,
+        csv_path=args.csv_path,
+        filter_column=args.filter_column
     )
 
     print(f"Successfully optimized {len(optimized_files)} XYZ files and saved them in '{output_dir}'.")

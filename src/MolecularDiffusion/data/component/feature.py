@@ -1,25 +1,28 @@
 import warnings
-
-import torch
 from itertools import combinations
 
 import ase
+import networkx as nx
+import numpy as np
+import scipy.spatial
+import torch
 from ase import Atoms, neighborlist
 from ase.data import covalent_radii
 from ase.data.vdw_alvarez import vdw_radii
-from cosymlib import Geometry
-import networkx as nx
-import numpy as np
-from rdkit import Chem
-from rdkit.Chem import AllChem
-import numpy as np
-import scipy.spatial
-from ase.io.extxyz import read_xyz
 from morfeus import SASA
 from networkx.algorithms import community as nx_comm
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 from cell2mol.elementdata import ElementData
 
+try:
+    from cosymlib import Geometry
+    is_cosymlib_available = True
+except ImportError:
+    is_cosymlib_available = False
+    Geometry = None
+    
 # less than 4 bonds
 # 0 for S, 180 for SP, 120 for SP2, 109.5 for SP3
 hybridization_dicts = {
@@ -730,6 +733,8 @@ def atom_geom_opt(z, coords, scale_factor = 1.3):
 
 def atom_geom_shape(z, coords, scale_factor = 1.3):
 
+    if not(is_cosymlib_available):
+        raise ImportError("Cosymlib is not available, do use different featurizer")
     device = coords.device
     N = coords.size(0)
 
