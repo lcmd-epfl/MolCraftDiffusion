@@ -17,7 +17,7 @@ The unified generative‑AI framework that streamline training the 3D molecular 
 
 
 [![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
-[![Code](https://img.shields.io/badge/Code-GitHub-red)](https://github.com/pregHosh/MolCraftDiffusion)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18121166.svg)](https://zenodo.org/records/18121166)
 [![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
 [![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
 
