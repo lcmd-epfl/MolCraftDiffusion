@@ -83,13 +83,15 @@ Make sure you have installed the package in editable mode as described above, an
 *   `generate`: Run a molecule generation job.
 *   `predict`: Run prediction with a trained model.
 *   `eval_predict`: Evaluate predictions.
+*   `analyze`: Perform analysis and post-processing on generated molecules.
 
 **Command Syntax:**
 
-    MolCraftDiff [COMMAND] [CONFIG_NAME]
+    MolCraftDiff [COMMAND] [CONFIG_NAME/ARGUMENTS]
 
-*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval_predict`.
+*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval_predict`, or `analyze`.
 *   `[CONFIG_NAME]`: The name of the configuration file from the `configs/` directory (e.g., `train`, `example_diffusion_config`).
+*   `[ARGUMENTS]`: Additional command-line arguments to override configuration settings.
 
 **Examples:**
 
@@ -98,6 +100,10 @@ Make sure you have installed the package in editable mode as described above, an
 
     # Generate molecules using the 'my_generation_config.yaml' configuration
     MolCraftDiff generate my_generation_config
+
+    # Predict properties using a trained model
+    MolCraftDiff predict my_prediction_config
+
 
 **Getting Help:**
 
@@ -130,13 +136,29 @@ where INTERFERENCE is one of the following: `gen_cfg`, `gen_cfggg`, `gen_conditi
     python scripts/predict.py
 
 
-### 3. Post-processing the Generated 3D Molecules                                                                                      
- The `scripts/applications/utils/` directory contains various utilities for post-processing generated 3D molecules, including:                                      
-*   **XTB Optimization:** Optimize molecular geometries using the GFN-xTB method (`xtb_optimization.py`).                                                         
- *   **XYZ to RDKit Conversion:** Convert XYZ coordinate files to RDKit molecular objects (`xyz2mol.py`).                                                           
-*   **Metric Computation:** Compute various quality and diversity metrics for generated molecules (`compute_metrics.py`).                                          
-*   **RMSD Calculation:** Calculate Root Mean Square Deviation (RMSD) for structural comparison (`compute_rmsd.py`).                                               
-*   **Molecular Similarity:** Assess molecular similarity using different algorithms (`compute_similarity.py`).   
+### 3. Analysis & Post-processing
+
+The `analyze` command provides a suite of tools for processing and evaluating generated molecules.
+
+**Subcommands:**
+*   `optimize`: Optimize molecular geometries using GFN-xTB.
+*   `metrics`: Compute validity and connectivity metrics.
+*   `compare`: Calculate RMSD, energy differences, and geometric properties (bonds/angles) between generated and reference structures.
+*   `xyz2mol`: Convert XYZ files to SMILES and extract fingerprints/scaffolds.
+
+**Examples:**
+
+    # Optimize geometries in a directory
+    MolCraftDiff analyze optimize -i generated_molecules/
+
+    # Compute validity metrics
+    MolCraftDiff analyze metrics -i generated_molecules/
+
+    # Compare generated structures with ground truth (requires optimized counterparts)
+    MolCraftDiff analyze compare generated_molecules/ --bonds
+
+    # Convert XYZ to SMILES
+    MolCraftDiff analyze xyz2mol -x generated_molecules/
 
 
 Visualization
@@ -163,52 +185,29 @@ Project Structure
 ├── pyproject.toml
 ├── README.md
 ├── setup.py
-├── configs
-│   ├── generate.yaml
-│   ├── predict.yaml
-│   ├── train.yaml
-│   ├── data
-│   │   └── mol_dataset.yaml
-│   ├── hydra
-│   │   └── default.yaml
-│   ├── interference
-│   │   ├── gen_cfg.yaml
-│   │   ├── gen_cfggg.yaml
-│   │   ├── gen_conditional.yaml
-│   │   ├── gen_gg.yaml
-│   │   ├── gen_inpaint.yaml
-│   │   ├── gen_outpaint.yaml
-│   │   ├── gen_outpaintft.yaml
-│   │   ├── gen_unconditional.yaml
-│   │   └── prediction.yaml
-│   ├── logger
-│   │   └── default.yaml
-│   ├── tasks
-│   │   ├── diffusion.yaml
-│   │   ├── diffusion_egt.yaml
-│   │   ├── guidance.yaml
-│   │   └── regression.yaml
-│   └── trainer
-│       ├── default.yaml
-│       └── regression.yaml
-├── data
-│   └── template_structures
-├── scripts
-│   ├── generate.py
-│   ├── predict.py
-│   ├── train.py
-│   └── gradient_guidance
-│       ├── scheduler.py
-│       └── sf_energy_score.py
 └── src
     └── MolecularDiffusion
        ├── __init__.py
        ├── _version.py
-       ├── cli.py
        ├── molcraftdiff.py
        ├── callbacks
        │   ├── __init__.py
        │   └── train_helper.py
+       ├── cli
+       │   ├── __init__.py
+       │   ├── analyze.py
+       │   ├── eval_predict.py
+       │   ├── generate.py
+       │   ├── main.py
+       │   ├── predict.py
+       │   └── train.py
+       ├── configs
+       │   ├── data
+       │   ├── hydra
+       │   ├── interference
+       │   ├── logger
+       │   ├── tasks
+       │   └── trainer
        ├── core
        │   ├── __init__.py
        │   ├── core.py
@@ -220,42 +219,15 @@ Project Structure
        │   ├── dataloader.py
        │   ├── dataset.py
        │   └── component
-       │       ├── __init__.py
-       │       ├── dataset.py
-       │       ├── feature.py
-       │       └── pointcloud.py
        ├── modules
        │   ├── __init__.py
        │   ├── layers
-       │   │   ├── __init__.py
-       │   │   ├── common.py
-       │   │   ├── conv.py
-       │   │   └── functional.py
        │   ├── models
-       │   │   ├── __init__.py
-       │   │   ├── egcl.py
-       │   │   ├── egt.py
-       │   │   ├── en_diffusion.py
-       │   │   └── noisemodel.py
        │   └── tasks
-       │       ├── __init__.py
-       │       ├── diffusion.py
-       │       ├── metrics.py
-       │       ├── regression.py
-       │       └── task.py
        ├── runmodes
        │   ├── __init__.py
        │   ├── generate
-       │   │   ├── __init__.py
-       │   │   └── tasks_generate.py
        │   └── train
-       │       ├── __init__.py
-       │       ├── data.py
-       │       ├── eval.py
-       │       ├── logger.py
-       │       ├── tasks_egcl.py
-       │       ├── tasks_egt.py
-       │       └── trainer.py
        └── utils
            ├── __init__.py
            ├── comm.py
