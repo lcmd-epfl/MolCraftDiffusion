@@ -1,0 +1,36 @@
+_target_: MolecularDiffusion.runmodes.train.ModelTaskFactory_EGCL
+task_type: guidance
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+hidden_size: 512
+act_fn:
+  _target_: torch.nn.ReLU
+num_layers: 1
+attention: True
+tanh: True
+num_sublayers: 5
+sin_embedding: False
+aggregation_method: "sum"
+dropout: 0.0
+normalization: False
+include_cosine: True
+norm_constant: 1.0
+normalization_factor: 1.0
+chkpt_path: null
+
+# specific to diffusion
+task_learn: [S1_exc,T1_exc]
+criterion: mse
+metric: [mae]
+num_mlp_layer: 3
+mlp_dropout: 0.2
+diffusion_steps: 900
+diffusion_noise_precision: 1e-5
+nu_arr: [2,2,2]
+mapping: ["pos", "categorical", "integer"]
+weight_classes: null
+norm_values: [1,4,10]
+t_max: 0.7
+
+
+

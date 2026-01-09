@@ -3,7 +3,7 @@ from typing import Tuple
 from torch_geometric.nn import radius_graph
 from torch_geometric.data import Data
 from ase.io import read
-from ase.data import covalent_radii
+from ase.data import covalent_radii, chemical_symbols
 import numpy as np
 import os
 import shutil
@@ -353,4 +353,69 @@ def save_xyz_file(
             if os.path.exists(filename):
                 shutil.move(filename, path)
         except Exception:
+            pass
+        
+
+def save_xyz_file_atomic_numbers(
+    path: str,
+    positions: torch.Tensor,
+    atomic_numbers: torch.Tensor,
+    id_from: int = 0,
+    name: str = "molecule",
+    node_mask: torch.Tensor | None = None,
+    idxs=None,
+    tol: float = 1e-4,
+):
+    """
+    Save XYZ files for a batch of molecules, writing ATOMIC SYMBOLS in the first column.
+
+    Args:
+        path: output directory
+        positions: (B, N, 3) tensor
+        atomic_numbers: (B, N) long tensor
+        id_from: starting index for filenames
+        name: filename prefix
+        node_mask: optional (B, N) mask; if provided, considers first sum(mask) atoms per molecule
+        idxs: optional iterable of indices (len B) to use in filenames
+        tol: atoms with coords ~ (0,0,0) are skipped (|coord| <= tol in all dims)
+    """
+    os.makedirs(path, exist_ok=True)
+
+    if positions.ndim != 3 or positions.size(-1) != 3:
+        raise ValueError("`positions` must have shape (B, N, 3).")
+    if atomic_numbers.ndim != 2 or atomic_numbers.shape[:2] != positions.shape[:2]:
+        raise ValueError("`atomic_numbers` must have shape (B, N) matching positions' (B, N, 3).")
+
+    B, N, _ = positions.shape
+
+    # How many atoms per mol to consider
+    if node_mask is not None:
+        atomsxmol = torch.sum(node_mask, dim=1).to(torch.long)  # (B,)
+    else:
+        atomsxmol = torch.full((B,), N, dtype=torch.long, device=positions.device)
+
+    for batch_i in range(B):
+        try:
+            idx = (batch_i + id_from) if idxs is None else int(idxs[batch_i])
+            filename = f"{name}_{idx:03d}.xyz"
+            outpath = os.path.join(path, filename)
+
+            n_atoms = int(atomsxmol[batch_i].item())
+            coords = positions[batch_i, :n_atoms]                      # (n_atoms, 3)
+            Z = atomic_numbers[batch_i, :n_atoms].to(torch.long)       # (n_atoms,)
+
+            # Filter out atoms near origin
+            keep = torch.any(torch.abs(coords) > tol, dim=1)
+            coords = coords[keep]
+            Z = Z[keep]
+            n_valid = int(Z.numel())
+
+            with open(outpath, "w", encoding="utf-8") as f:
+                f.write(f"{n_valid}\n\n")
+                for zi, pos in zip(Z.tolist(), coords.tolist()):
+                    symbol = chemical_symbols[zi]
+                    f.write(f"{symbol} {pos[0]:.9f} {pos[1]:.9f} {pos[2]:.9f}\n")
+
+        except Exception as e:
+            # keep behavior similar to your original (skip failures quietly)
             pass

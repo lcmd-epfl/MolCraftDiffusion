@@ -17,6 +17,7 @@ maintainers = [
 ]
 
 dependencies = [
+    "click>=8.0.0",
     "fire",
     "decorator",
     "numpy==1.26.4",
@@ -34,7 +35,9 @@ dependencies = [
     "morfeus-ml",
     "wandb",
     "hydra-colorlog",
+    "hydra-core>=1.3.0",
     "rootutils",
+    "psutil",
 ]
 
 [project.optional-dependencies]
@@ -65,14 +68,17 @@ Documentation = "https://moleculardiffusion.readthedocs.io"
 "Bug Tracker" = "https://github.com/pregHosh/MolecularDiffusion/issues"
 
 [project.scripts]
-moleculardiffusion = "MolecularDiffusion.cli:main"
-MolCraftDiff = "MolecularDiffusion.molcraftdiff:main"
+MolCraftDiff = "MolecularDiffusion.cli.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"MolecularDiffusion" = ["*.py", "*.txt", "*.rst", "*.md"]
+"MolecularDiffusion" = [
+    "*.py", "*.txt", "*.rst", "*.md",
+    "data/**/*.json",
+    "configs/**/*.yaml",
+]
 
 [tool.setuptools_scm]
 write_to = "src/MolecularDiffusion/_version.py"

@@ -71,91 +71,102 @@ class TimeoutException(Exception):
 def _timeout_handler(signum, frame):
     raise TimeoutException()
 
-def smilify_cell2mol(filename, z=None, coordinates=None, timeout=30):
-    if timeout is not None:
-        signal.signal(signal.SIGALRM, _timeout_handler)
+
+def _smilify_cell2mol_worker(filename, z, coordinates, result_queue):
+    """Worker function for multiprocessing-based timeout."""
+    try:
+        smiles, mol = _smilify_cell2mol_core(filename, z, coordinates)
+        result_queue.put((smiles, mol))
+    except Exception as e:
+        result_queue.put((None, None))
+
+
+def _smilify_cell2mol_core(filename, z=None, coordinates=None):
+    """Core cell2mol logic without timeout handling."""
     covalent_factors = [1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
     ok = False
+    smiles = None
+    mol = None
+    atoms = None
     
-    try:
-        for covalent_factor in covalent_factors:
+    for covalent_factor in covalent_factors:
+        if (z is None) and (coordinates is None):
+            assert filename.endswith(".xyz"), "Input file must be an .xyz"
+            mol = next(read_xyz(open(filename)))
+            charge = 0
+            atoms = mol.get_chemical_symbols()
+            z = [int(zi) for zi in mol.get_atomic_numbers()]
+            coordinates = mol.get_positions()
 
-            if (z is None) and (coordinates is None):
-                assert filename.endswith(".xyz"), "Input file must be an .xyz"
-                mol = next(read_xyz(open(filename)))
-                # initial charge from file, but default to 0 for neutral guess
-                charge = sum(mol.get_initial_charges())
-                charge = 0
-                atoms = mol.get_chemical_symbols()
-                z = [int(zi) for zi in mol.get_atomic_numbers()]
-                coordinates = mol.get_positions()
+        cutoff = get_cutoffs(z, radii=ase.data.covalent_radii, mult=covalent_factor)
+        nl = neighborlist.NeighborList(cutoff, self_interaction=False, bothways=True)
+        nl.update(mol)
+        AC = nl.get_connectivity_matrix(sparse=False)
 
-            cutoff = get_cutoffs(z, radii=ase.data.covalent_radii, mult=covalent_factor)
-            nl = neighborlist.NeighborList(cutoff, self_interaction=False, bothways=True)
-            nl.update(mol)
-            AC = nl.get_connectivity_matrix(sparse=False)
+        try:
+            assert check_connected(AC) and check_symmetric(AC)
+            mol = xyz2mol(
+                z, coordinates, AC, covalent_factor,
+                charge=charge, use_graph=True, allow_charged_fragments=True,
+                embed_chiral=True, use_huckel=True,
+            )
+            if isinstance(mol, list):
+                mol = mol[0]
 
-            try:
-                assert check_connected(AC) and check_symmetric(AC)
-                # attempt mol generation, possibly multiple times
-                mol = xyz2mol(
-                    z,
-                    coordinates,
-                    AC,
-                    covalent_factor,
-                    charge=charge,
-                    use_graph=True,
-                    allow_charged_fragments=True,
-                    embed_chiral=True,
-                    use_huckel=True,
-                )
-                if isinstance(mol, list):
-                    mol = mol[0]
+            Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL, catchErrors=True)
+            fcharges = [atom.GetFormalCharge() for atom in mol.GetAtoms()]
+            heavy_atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1]
+            n_fcharge_nonzero = sum(1 for fc in fcharges if fc != 0)
+        
+            if n_fcharge_nonzero > len(heavy_atoms)/2:
+                best = _pick_best_charge(z, coordinates, AC, covalent_factor)
+                mol, charge = best
 
-                # sanitize and check formal charges
-                Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL, catchErrors=True)
-                # check for pathological case: every atom has nonzero formal charge
-                fcharges = [atom.GetFormalCharge() for atom in mol.GetAtoms()]
-                heavy_atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1]
-                n_fcharge_nonzero = sum(1 for fc in fcharges if fc != 0)
-            
-                if n_fcharge_nonzero > len(heavy_atoms)/2: # If more than half of heavy atoms are charged, it is probably charge
-                    best = _pick_best_charge(z, coordinates, AC, covalent_factor)
-                    mol, charge = best
+            smiles = mol2smi(mol)
+            if isinstance(smiles, list):
+                smiles = smiles[0]
 
-                smiles = mol2smi(mol)
-                if isinstance(smiles, list):
-                    smiles = smiles[0]
+            if mol is None:
+                ok = False
+            else:
+                match_idx = simple_idx_match_check(mol, atoms)
+                if not match_idx:
+                    return None, None
+            ok = True
+            break
 
-                # final checks
-                if mol is None:
-                    warnings.warn(f"{filename}: RDKit failed to convert to mol. Skipping.")
-                    ok = False
-                else:
-                    match_idx = simple_idx_match_check(mol, atoms)
-                    if not match_idx:
-                        warnings.warn(
-                            f"{filename}: Index mismatch between RDKit and ASE atoms. Skipping."
-                        )
-                        return None, None
-                ok = True
-                # print("Yay passed with covalent factor", covalent_factor)
-                break
+        except Exception as e:
+            print("Attempt failed for factor", covalent_factor, "error:", e)
+            continue
+    
+    return (smiles, mol) if ok else (None, None)
 
-            except Exception as e:
-                print("Attempt failed for factor", covalent_factor, "error:", e) # verb
-                continue
-    except TimeoutException:
+
+def smilify_cell2mol(filename, z=None, coordinates=None, timeout=30):
+    """Convert XYZ to mol using cell2mol with optional timeout."""
+    if timeout is None:
+        return _smilify_cell2mol_core(filename, z, coordinates)
+    
+    import multiprocessing
+    result_queue = multiprocessing.Queue()
+    process = multiprocessing.Process(
+        target=_smilify_cell2mol_worker,
+        args=(filename, z, coordinates, result_queue)
+    )
+    process.start()
+    process.join(timeout=timeout)
+    
+    if process.is_alive():
+        process.terminate()
+        process.join()
         print(f"{filename}: timed out after {timeout} seconds")
         return None, None
-    finally:
-        # make sure no alarm is left pending
-        if timeout is not None:
-            signal.alarm(0)
-
-    return (smiles, mol) if ok else (None, None)
     
-def _singlepoint_energy(z, coords, charge, tmp_prefix="xtb"):
+    if not result_queue.empty():
+        return result_queue.get()
+    return None, None
+    
+def _singlepoint_energy(z, coords, charge, tmp_prefix="xtb", timeout=30):
     """Helper: write XYZ, run xtb --sp, parse and return energy (Hartree)."""
     # 1) dump XYZ
     with tempfile.NamedTemporaryFile(prefix=tmp_prefix, suffix=".xyz", delete=False) as tmp:
@@ -166,18 +177,22 @@ def _singlepoint_energy(z, coords, charge, tmp_prefix="xtb"):
         tmp.write("\n".join(lines).encode("utf-8"))
 
     try:
-        # 2) call xtb
+        # 2) call xtb with timeout
         res = subprocess.run(
             ["xtb", fname, "--sp", "--chrg", str(charge)],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=timeout
         )
         # 3) parse energy
         m = re.search(r"TOTAL ENERGY\s+(-?\d+\.\d+)", res.stdout)
         if not m:
             raise RuntimeError("Unable to parse xtb energy")
         return float(m.group(1))
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"xTB timed out after {timeout} seconds")
     finally:
-        os.remove(fname)
+        if os.path.exists(fname):
+            os.remove(fname)
 
 
 def _pick_best_charge(z, coords, adj, covalent_factor):

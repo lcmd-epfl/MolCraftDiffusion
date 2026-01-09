@@ -1,0 +1,24 @@
+_target_: MolecularDiffusion.runmodes.train.OptimSchedulerFactory
+optimizer_choice: "adamw" # adam, adamw, amsgrad, radam, 
+lr: 2e-4
+eps: 1e-8
+weight_decay: 1e-12
+betas: [0.9, 0.999]
+foreach: False
+num_epochs: 200
+scheduler: cosineannealing # None, steplr, multisteplr, exponentiarlr, cosineannealing, caws, onecyclelr, reducelronplateau        elif sch == "exponentiarlr":
+scheduler_kwargs:
+  T_max: ${trainer.num_epochs}
+  eta_min: 1e-6
+validation_interval: 3
+batch_size: ${data.batch_size}
+queue_size: 100
+init_grad_norm: 300
+ema_decay: 0.9999
+gradient_clip_mode: "value" # value or norm
+grad_clip_value: 1.0
+chkpt_path: 
+output_path: logs
+precision: 32 # 16, 32, bf16
+save_top_k: 3
+save_every_val_epoch: False
