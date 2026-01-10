@@ -117,40 +117,100 @@ def check_xyz(filename: str, connector_dicts: dict = None, scale_factor: float =
     return is_connected, num_components, match_n_degree
 
 
-def xyz2mol_xtb(filename: str, charge: int, level: str, timeout: int) -> str | None:
+def optimize_molecule(filename: str, charge: int, level: str, timeout: int) -> str | None:
     """
-    Optimizes the geometry of a molecule from an XYZ file using xTB.
+    Optimizes the geometry of a molecule from an XYZ file using xTB or OpenBabel.
 
     This function attempts to optimize the molecule with a specified charge and
-    xTB calculation level. If the optimization is successful, it moves the
-    `xtbopt.xyz` output file to a new name based on the input filename.
+    calculation level. If the optimization is successful, it moves the
+    output file to a new name based on the input filename.
 
     Args:
         filename (str): The path to the input XYZ file.
-        charge (int): The molecular charge to use for the xTB calculation.
-        level (str): The xTB calculation level (e.g., "gfn1", "gfn2", "gfn-ff").
-        timeout (int): The maximum time in seconds to wait for the xTB process to complete.
+        charge (int): The molecular charge to use for the calculation (xTB only).
+        level (str): The calculation level (e.g., "gfn1", "gfn2", "gfn-ff", "mmff94").
+        timeout (int): The maximum time in seconds to wait for the process to complete.
 
     Returns:
         str | None: The path to the optimized XYZ file if successful,
-                    otherwise None if xTB times out or fails to produce output.
+                    otherwise None if it times out or fails to produce output.
     """
-    execution_command = ["xtb", filename, "--opt", "crude", "-c", str(charge), f"-{level}"]
+    base_filename = os.path.basename(filename).split(".")[0]
+    optimized_filename = f"{base_filename}_opt.xyz"
 
-    try:
-        sp.call(execution_command, stdout=sp.DEVNULL, stderr=sp.STDOUT, timeout=timeout)
-    except sp.TimeoutExpired:
-        print(f"xTB optimization timed out for {filename}.")
-        return None
+    if level == "mmff94":
+        # simple check for obminimize
+        if shutil.which("obminimize") is None:
+             print("Error: obminimize not found in PATH.")
+             return None
+        # obminimize, by default, outputs PDB format. We need to convert this to XYZ.
+        # We chain obminimize -> obabel -ipdb -oxyz
+        
+        try:
+            # 1. Run obminimize
+            min_command = ["obminimize", "-ff", "MMFF94", "-n", "2500", filename]
+            min_process = sp.Popen(min_command, stdout=sp.PIPE, stderr=sp.PIPE, text=True)
+            min_stdout, min_stderr = min_process.communicate(timeout=timeout)
+            
+            if min_process.returncode != 0:
+                 # Check if the failure is due to force field setup
+                 if "could not setup force field" in min_stderr or "COULD NOT FIND" in min_stderr:
+                     print(f"obminimize failed for {filename} (Force Field Error):")
+                     print(min_stderr.strip())
+                 else:
+                     print(f"obminimize failed for {filename} with return code {min_process.returncode}:")
+                     print(min_stderr.strip())
+                 return None
 
-    if os.path.exists("xtbopt.xyz"):
-        base_filename = os.path.basename(filename).split(".")[0]
-        optimized_filename = f"{base_filename}_opt.xyz"
-        shutil.move("xtbopt.xyz", optimized_filename)
-        return optimized_filename
+            # 2. Convert output to XYZ using obabel
+            # Note: obminimize output is in PDB format (HETATM...)
+            obabel_command = ["obabel", "-i", "pdb", "-o", "xyz"]
+            obabel_process = sp.Popen(obabel_command, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE, text=True)
+            xyz_stdout, xyz_stderr = obabel_process.communicate(input=min_stdout, timeout=timeout)
+            
+            if obabel_process.returncode != 0:
+                print(f"obabel conversion failed for {filename}:")
+                print(xyz_stderr)
+                return None
+                
+            # Write converted stdout to file
+            with open(optimized_filename, "w") as f:
+                f.write(xyz_stdout)
+            
+            # Check if file is not empty and looks like XYZ
+            if os.path.getsize(optimized_filename) > 0:
+                 return optimized_filename
+            else:
+                 print(f"Optimization produced empty output for {filename}.")
+                 return None
+
+        except sp.TimeoutExpired:
+            print(f"Optimization timed out for {filename}.")
+            if os.path.exists(optimized_filename):
+                 os.remove(optimized_filename)
+            return None
+        except Exception as e:
+            print(f"Optimization failed for {filename}: {e}")
+            if os.path.exists(optimized_filename):
+                 os.remove(optimized_filename)
+            return None
+
     else:
-        print(f"xTB optimization failed to produce output for {filename}.")
-        return None
+        # xTB optimization
+        execution_command = ["xtb", filename, "--opt", "crude", "-c", str(charge), f"-{level}"]
+    
+        try:
+            sp.call(execution_command, stdout=sp.DEVNULL, stderr=sp.STDOUT, timeout=timeout)
+        except sp.TimeoutExpired:
+            print(f"xTB optimization timed out for {filename}.")
+            return None
+    
+        if os.path.exists("xtbopt.xyz"):
+            shutil.move("xtbopt.xyz", optimized_filename)
+            return optimized_filename
+        else:
+            print(f"xTB optimization failed to produce output for {filename}.")
+            return None
 
 
 def get_xtb_optimized_xyz(
@@ -165,12 +225,12 @@ def get_xtb_optimized_xyz(
     filter_column: str = None
 ) -> list[str]:
     """
-    Optimizes all XYZ files in a given input directory using xTB and saves them
+    Optimizes all XYZ files in a given input directory using xTB or OpenBabel and saves them
     to an output directory.
 
     This function iterates through all `.xyz` files, performs initial structural
     checks (connectivity, zero coordinates, and optional degree checks), and then
-    attempts to optimize valid structures using `xyz2mol_xtb`. It skips files
+    attempts to optimize valid structures using `optimize_molecule`. It skips files
     that already have an optimized counterpart in the output directory.
 
     Args:
@@ -179,7 +239,7 @@ def get_xtb_optimized_xyz(
             XYZ files will be saved. If None, optimized files are saved in the
             `input_directory`. Defaults to None.
         charge (int, optional): The molecular charge to use for xTB optimizations. Defaults to -1.
-        level (str, optional): The xTB calculation level (e.g., "gfn1", "gfn2", "gfn-ff"). Defaults to "gfn1".
+        level (str, optional): The calculation level (e.g., "gfn1", "gfn2", "gfn-ff", "mmff94"). Defaults to "gfn1".
         timeout (int, optional): The maximum time in seconds to wait for each xTB process. Defaults to 240.
         scale_factor (float, optional): The scaling factor for covalent radii in edge correction. Defaults to 1.3.
         optimize_all (bool, optional): If True, optimizes all files regardless of existing optimized versions.
@@ -251,7 +311,7 @@ def get_xtb_optimized_xyz(
         good_xyz =is_neutral and is_connected and (num_components == 1) and match_n_degree
 
         if good_xyz or optimize_all:
-            optimized_file_basename = xyz2mol_xtb(xyz_file, charge, level, timeout)
+            optimized_file_basename = optimize_molecule(xyz_file, charge, level, timeout)
             if optimized_file_basename is not None:
                 shutil.move(optimized_file_basename, output_file_path)
                 optimized_files.append(output_file_path)
@@ -291,7 +351,7 @@ if __name__ == "__main__":
         "-l",
         type=str,
         default="gfn1",
-        help="xTB calculation level (e.g., 'gfn1', 'gfn2', 'gfn-ff'). Defaults to 'gfn1'."
+        help="Calculation level (e.g., 'gfn1', 'gfn2', 'gfn-ff', 'mmff94'). Defaults to 'gfn1'."
     )
     parser.add_argument(
         "--timeout",
