@@ -226,6 +226,13 @@ Project Structure
        │   └── tasks
        ├── runmodes
        │   ├── __init__.py
+       │   ├── analyze
+       │   │   ├── __init__.py
+       │   │   ├── compute_energy_rmsd.py
+       │   │   ├── compute_metrics.py
+       │   │   ├── compute_pair_geometry.py
+       │   │   ├── xtb_optimization.py
+       │   │   └── xyz2mol.py
        │   ├── generate
        │   └── train
        └── utils

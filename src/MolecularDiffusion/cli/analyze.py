@@ -60,7 +60,7 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
         MolCraftDiff analyze optimize -i gen_xyz/
         MolCraftDiff analyze optimize -i gen_xyz/ -o optimized/ --level gfn2
     """
-    from scripts.applications.utils.xtb_optimization import get_xtb_optimized_xyz
+    from MolecularDiffusion.runmodes.analyze.xtb_optimization import get_xtb_optimized_xyz
     
     output_dir = output_dir or os.path.join(input_dir, "optimized_xyz")
     
@@ -91,29 +91,57 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
               help="Input directory containing XYZ files")
 @click.option("-o", "--output", default=None, type=click.Path(),
               help="Output CSV file for results")
+@click.option("--metrics", "metrics_type", default="all",
+              type=click.Choice(["all", "core", "posebuster", "geom_revised"]),
+              help="Which metrics to compute (default: all)")
+@click.option("--recheck-topo", is_flag=True, default=False,
+              help="Recheck topology using RDKit")
+@click.option("--check-strain", is_flag=True, default=False,
+              help="Check strain via XTB optimization")
+@click.option("--portion", default=1.0, type=float,
+              help="Portion of XYZ files to process (default: 1.0 = all)")
+@click.option("--mol-converter", default="cell2mol",
+              type=click.Choice(["cell2mol", "openbabel"]),
+              help="XYZ to mol converter (default: cell2mol)")
+@click.option("--skip-atoms", multiple=True, type=int,
+              help="Atom indices to skip in validation")
 @click.option("--n-subsets", default=5, type=int,
               help="Number of subsets for std calculation (default: 5)")
-@click.option("--scale-factor", default=1.2, type=float,
-              help="Scale factor for edge detection (default: 1.2)")
-def metrics(input_dir, output, n_subsets, scale_factor):
+@click.option("-t", "--timeout", default=10, type=int,
+              help="Timeout per xyz2mol conversion in seconds (default: 10)")
+def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, n_subsets, timeout):
     """Compute validity and connectivity metrics for XYZ files.
+    
+    \b
+    Metrics types:
+      all          Run all metrics (core + posebuster + geom_revised)
+      core         Basic validity checks (connectivity, atom stability)
+      posebuster   PoseBusters checks (bond lengths, angles, clashes)
+      geom_revised Aromatic-aware stability metrics
     
     \b
     Examples:
         MolCraftDiff analyze metrics -i gen_xyz/
-        MolCraftDiff analyze metrics -i gen_xyz/ --n-subsets 10
+        MolCraftDiff analyze metrics -i gen_xyz/ --metrics posebuster
+        MolCraftDiff analyze metrics -i gen_xyz/ --metrics geom_revised --mol-converter openbabel
     """
     import argparse
-    from scripts.analyze.compute_metrics import runner
+    from MolecularDiffusion.runmodes.analyze.compute_metrics import runner
     
     args = argparse.Namespace(
         input=input_dir,
-        output=output or os.path.join(input_dir, "metrics_results.csv"),
+        output=output,
+        metrics=metrics_type,
+        recheck_topo=recheck_topo,
+        check_strain=check_strain,
+        portion=portion,
+        mol_converter=mol_converter,
+        skip_atoms=list(skip_atoms) if skip_atoms else None,
         n_subsets=n_subsets,
-        scale_factor=scale_factor,
+        timeout=timeout,
     )
     
-    click.echo(f"Computing metrics for: {input_dir}")
+    click.echo(f"Computing {metrics_type} metrics for: {input_dir}")
     runner(args)
 
 
@@ -160,7 +188,7 @@ def compare(directory, bonds, n_subsets, csv_path, charge, level, timeout):
     # ==================== RMSD + ENERGY ====================
     click.echo(f"Loading XYZ pairs from: {directory}")
     
-    from scripts.analyze.compute_energy_rmsd import load_pairs, compute_metrics_for_pairs, split_into_subsets
+    from MolecularDiffusion.runmodes.analyze.compute_energy_rmsd import load_pairs, compute_metrics_for_pairs, split_into_subsets
     
     pairs = load_pairs(directory)
     click.echo(f"Found {len(pairs)} XYZ pairs.\n")
@@ -211,7 +239,7 @@ def compare(directory, bonds, n_subsets, csv_path, charge, level, timeout):
         click.echo("BOND/ANGLE/TORSION ANALYSIS")
         click.echo("=" * 50)
         
-        from scripts.analyze.compute_pair_geometry import (
+        from MolecularDiffusion.runmodes.analyze.compute_pair_geometry import (
             load_mol_pairs_bond_mode, run_bond_analysis, summarize_bond_results,
             run_subsets_bond_analysis
         )
@@ -279,7 +307,7 @@ def xyz2mol(xyz_dir, input_csv, label, timeout, bits, verbose):
     import json
     import logging
     
-    from scripts.applications.utils.xyz2mol import (
+    from MolecularDiffusion.runmodes.analyze.xyz2mol import (
         load_file_list_from_dir, run_processing, extract_scaffold_and_fingerprints
     )
     
