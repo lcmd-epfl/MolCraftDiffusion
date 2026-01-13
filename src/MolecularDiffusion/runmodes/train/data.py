@@ -15,7 +15,7 @@ class DataModule:
             task_type="diffusion",
             atom_vocab=atom_vocab_list,
             with_hydrogen=True,
-            node_feature="geom",
+            node_feature_choice="geom",
             max_atom=50,
             xyz_dir="xyz/",
             coord_file="coords.csv",
@@ -37,11 +37,10 @@ class DataModule:
         task_type: str,
         atom_vocab: list,
         with_hydrogen: bool,
-        node_feature: str,
-        max_atom: int,
+        node_feature_choice = None,
+        max_atom: int = 200,
         target_fields: list = None,
-        node_feature_choice: list = None,
-        consider_global_attributes: bool = True,
+
         xyz_dir: str = None,
         coord_file: str = None,
         natoms_file: str = None,
@@ -59,13 +58,14 @@ class DataModule:
         edge_type: str = "fully_connected",
         radius: float = 4.0,
         n_neigh: int = 5,
+        use_ohe_feature: bool = True,
     ):
         self.root = root
         self.filename = filename
         self.task_type = task_type
         self.atom_vocab = atom_vocab
         self.with_hydrogen = with_hydrogen
-        self.node_feature = node_feature
+        self.node_feature_choice = node_feature_choice
         self.max_atom = max_atom
         self.xyz_dir = xyz_dir
         self.coord_file = coord_file
@@ -78,8 +78,7 @@ class DataModule:
         self.data_type = data_type.lower()
         self.dataset_name = dataset_name
         self.ase_db_path = ase_db_path
-        self.node_feature_choice = node_feature_choice
-        self.consider_global_attributes = consider_global_attributes
+
         self.target_fields = target_fields
         self.allow_unknown = allow_unknown
         self.train_set = None
@@ -87,7 +86,9 @@ class DataModule:
         self.test_set = None
         self.edge_type = edge_type
         self.radius = radius
+
         self.n_neigh = n_neigh
+        self.use_ohe_feature = use_ohe_feature
         
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -124,7 +125,9 @@ class DataModule:
                     root=self.root,
                     dataset_name=self.dataset_name,
                     max_atom=self.max_atom,
+
                     allow_unknown=self.allow_unknown,
+                    use_ohe_feature=self.use_ohe_feature,
                 )
 
             dataset.max_atom = self.max_atom
@@ -134,7 +137,7 @@ class DataModule:
                 def __init__(self, with_hydrogen, node_feature, max_atom):
                     self.config_dict = {
                         "with_hydrogen": with_hydrogen,
-                        "atom_feature": node_feature,
+                        "atom_feature": node_feature_choice,
                         "max_atom": max_atom,
                     }
 
@@ -142,12 +145,12 @@ class DataModule:
                     return self.config_dict
 
             dataset.config_dict = Config(
-                self.with_hydrogen, self.node_feature, self.max_atom
+                self.with_hydrogen, self.node_feature_choice, self.max_atom
             )
         else:
             # instantiate dataset for task
             verbose_level = int(is_main_process)
-            if self.task_type == "diffusion":
+            if self.task_type in ("diffusion", "diffusion_hybrid", "diffusion_pyg", "diffusion_tabasco", "vae_transformer", "vae_equiformer", "ldm_dit"):
                 if self.data_type == "pyg":
                     dataset = pointcloud_dataset_pyG(
                         root=self.root,
@@ -157,9 +160,8 @@ class DataModule:
                         natoms_file=self.natoms_file,
                         ase_db_path=self.ase_db_path,
                         max_atom=self.max_atom,
-                        node_feature=self.node_feature,
                         node_feature_choice=self.node_feature_choice,
-                        consider_global_attributes=self.consider_global_attributes,
+
                         atom_vocab=self.atom_vocab,
                         with_hydrogen=self.with_hydrogen,
                         forbidden_atoms=self.forbidden_atom,
@@ -171,6 +173,7 @@ class DataModule:
                         edge_type=self.edge_type,
                         radius=self.radius,
                         n_neigh=self.n_neigh,
+                        use_ohe_feature=self.use_ohe_feature,
                     )
                 else:
                     dataset = pointcloud_dataset(
@@ -181,9 +184,8 @@ class DataModule:
                         natoms_file=self.natoms_file,
                         ase_db_path=self.ase_db_path,
                         max_atom=self.max_atom,
-                        node_feature=self.node_feature,
                         node_feature_choice=self.node_feature_choice,
-                        consider_global_attributes=self.consider_global_attributes,
+
                         atom_vocab=self.atom_vocab,
                         with_hydrogen=self.with_hydrogen,
                         forbidden_atoms=self.forbidden_atom,
@@ -202,9 +204,8 @@ class DataModule:
                     natoms_file=self.natoms_file,
                     ase_db_path=self.ase_db_path,
                     max_atom=self.max_atom,
-                    node_feature=self.node_feature,
                     node_feature_choice=self.node_feature_choice,
-                    consider_global_attributes=self.consider_global_attributes,
+
                     atom_vocab=self.atom_vocab,
                     with_hydrogen=self.with_hydrogen,
                     forbidden_atoms=self.forbidden_atom,
@@ -216,10 +217,11 @@ class DataModule:
                     edge_type=self.edge_type,
                     radius=self.radius,
                     n_neigh=self.n_neigh,
+                    use_ohe_feature=self.use_ohe_feature,
                 )
             else:
                 raise ValueError(
-                    f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'regression', or 'guidance'."
+                    f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'diffusion_hybrid', 'diffusion_pyg', 'diffusion_tabasco', 'vae_transformer', 'vae_equiformer', 'ldm_dit', 'regression', or 'guidance'."
                 )
 
         # split
@@ -233,13 +235,14 @@ class DataModule:
 
         # attach metadata
         for subset in (self.train_set, self.valid_set, self.test_set):
-            subset.atom_types = dataset.atom_types
-            subset.targets = dataset.targets
-        if self.task_type == "diffusion":
+            subset.atom_types = getattr(dataset, "atom_types", [])
+            subset.targets = getattr(dataset, "targets", [])
+        if self.task_type in ("diffusion", "diffusion_hybrid", "diffusion_pyg"):
             for subset in (self.train_set, self.valid_set, self.test_set):
-                subset.smiles_list = dataset.smiles_list
-                subset.num_atoms = dataset.num_atoms
-                subset.get_property = dataset.get_property
+                subset.smiles_list = getattr(dataset, "smiles_list", [])
+                subset.num_atoms = getattr(dataset, "num_atoms", None)
+                subset.get_property = getattr(dataset, "get_property", None)
+
 
         if is_main_process:
             print(

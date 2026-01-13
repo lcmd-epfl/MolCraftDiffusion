@@ -143,6 +143,152 @@ def onehot(x, vocab, allow_unknown=False):
 
     return feature
 
+
+class NodeFeaturizer:
+    """
+    Unified node featurization for both GraphDataset and PointCloudDataset.
+    
+    Supports:
+    - OHE (one-hot encoding) of atom types
+    - Geom-based features from atomic numbers and coordinates
+    
+    Usage:
+        featurizer = NodeFeaturizer(atom_vocab, use_ohe=True, geom_feature="geometric_fast")
+        features = featurizer.featurize_all(atom_symbols, charges, coords)
+    """
+    
+    # Feature name -> function mapping
+    # Includes both intuitive names and legacy aliases
+    GEOM_FEATURES = None  # Populated after function definitions
+    
+    @classmethod
+    def _init_features(cls):
+        """Initialize feature mapping after functions are defined."""
+        if cls.GEOM_FEATURES is None:
+            cls.GEOM_FEATURES = {
+                # Intuitive names
+                "topological": atom_topological,
+                "geometric": atom_geom,
+                "geometric_full": atom_geom_v2,
+                "geometric_fast": atom_geom_compact,
+                "geometric_hybrid": atom_geom_opt,
+                # Legacy aliases (backward compat)
+                "atom_topological": atom_topological,
+                "atom_geom": atom_geom,
+                "atom_geom_v2": atom_geom_v2,
+                "atom_geom_v2_trun": atom_geom_v2_trun,
+                "atom_geom_opt": atom_geom_opt,
+                "atom_geom_compact": atom_geom_compact,
+            }
+    
+    @classmethod
+    def available_features(cls) -> list:
+        """Return list of available feature names."""
+        cls._init_features()
+        return list(cls.GEOM_FEATURES.keys())
+    
+    def __init__(
+        self,
+        atom_vocab: list,
+        use_ohe: bool = True,
+        geom_feature: str = None,
+        allow_unknown: bool = False,
+    ):
+        """
+        Args:
+            atom_vocab: List of atom symbols for OHE encoding
+            use_ohe: Whether to include one-hot encoding of atom type
+            geom_feature: Name of geom feature type (None for OHE only)
+            allow_unknown: Whether to allow unknown atoms in OHE
+        """
+        self._init_features()
+        self.atom_vocab = atom_vocab
+        self.use_ohe = use_ohe
+        self.geom_feature = geom_feature
+        self.allow_unknown = allow_unknown
+        
+        if geom_feature is not None and geom_feature not in self.GEOM_FEATURES:
+            raise ValueError(
+                f"Unknown geom feature type '{geom_feature}'. "
+                f"Available: {list(self.GEOM_FEATURES.keys())}"
+            )
+        self._geom_fn = self.GEOM_FEATURES.get(geom_feature) if geom_feature else None
+    
+    def compute_ohe(self, atom_symbols: list) -> torch.Tensor:
+        """
+        Compute one-hot encoding for atom symbols.
+        
+        Args:
+            atom_symbols: List of atom symbols (e.g., ['C', 'H', 'O'])
+            
+        Returns:
+            OHE tensor (N, len(vocab)) or (N, len(vocab)+1) if allow_unknown
+        """
+        features = []
+        for symbol in atom_symbols:
+            features.append(onehot(symbol, self.atom_vocab, allow_unknown=self.allow_unknown))
+        return torch.tensor(features, dtype=torch.float32)
+    
+    def compute_geom(
+        self,
+        charges: torch.Tensor,
+        coords: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute geom features from atomic numbers and coordinates.
+        
+        Args:
+            charges: Atomic numbers tensor (N,)
+            coords: Coordinates tensor (N, 3)
+            
+        Returns:
+            Geom features tensor (N, F)
+        """
+        if self._geom_fn is None:
+            raise ValueError("No geom feature specified")
+        return self._geom_fn(charges, coords)
+    
+    def featurize_all(
+        self,
+        atom_symbols: list,
+        charges: torch.Tensor,
+        coords: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute all features: OHE + geom (if specified).
+        
+        Args:
+            atom_symbols: List of atom symbols
+            charges: Atomic numbers tensor (N,)
+            coords: Coordinates tensor (N, 3)
+            
+        Returns:
+            Combined features tensor (N, total_dim) or None if no features
+        """
+        features = None
+        
+        if self.use_ohe:
+            features = self.compute_ohe(atom_symbols)
+        
+        if self._geom_fn is not None:
+            geom_feats = self.compute_geom(charges, coords)
+            if features is not None:
+                features = torch.cat([features, geom_feats], dim=1)
+            else:
+                features = geom_feats
+        
+        return features
+    
+    # Legacy method for backward compatibility
+    def featurize(
+        self,
+        charges: torch.Tensor,
+        coords: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute geom features only (legacy interface)."""
+        return self.compute_geom(charges, coords)
+
+
 #%% RDKIT
 def atom_default(atom):
     """Default atom feature.
@@ -860,6 +1006,8 @@ def atom_geom_v2(z, coords):
 
 
 __all__ = [
+    "NodeFeaturizer",
+    "onehot",
     "atom_default",
     "atom_center_identification",
     "atom_synthon_completion",
@@ -884,3 +1032,4 @@ __all__ = [
     "molecule_default",
     "ECFP",
 ]
+

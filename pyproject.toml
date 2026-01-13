@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "MolecularDiffusion"
-version = "0.1.0"
+version = "1.0.0"
 description = "A molecular diffusion framework for machine learning applications"
 readme = "README.rst"
 requires-python = ">=3.10"

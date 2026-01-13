@@ -31,7 +31,6 @@ class pointcloud_dataset(data.PointCloudDataset):
         with_hydrogen=True,
         forbidden_atoms=[],
         verbose=1,
-        node_feature=None,
         node_feature_choice=None,
         target_fields=None,
         pad_data=False,
@@ -95,19 +94,31 @@ class pointcloud_dataset(data.PointCloudDataset):
 
                 logging.info("Processing data and saving to pickle file")
                 if (coord_file is not None) and (natoms_file is not None):
-                    logging.info("Reading from coordinates from npy files")
-                    self.load_csv_npy(
-                        df_path,
-                        coord_file,
-                        natoms_file,
-                        smiles_field=smiles_field,
-                        verbose=verbose,
-                        target_fields=target_fields,
+                    logging.info("Reading coordinates from npy files")
+                    import numpy as np
+                    import torch
+                    from collections import defaultdict
+                    
+                    # Load npy files
+                    coords = torch.tensor(np.load(coord_file), dtype=torch.float32)
+                    natoms = torch.tensor(np.load(natoms_file), dtype=torch.long)
+                    
+                    # Extract smiles and targets from CSV
+                    smiles_list = df[smiles_field].tolist() if smiles_field in df.columns else []
+                    targets = {col: df[col].tolist() for col in target_fields if col in df.columns}
+                    
+                    self.load_npy(
+                        coords,
+                        natoms,
+                        smiles_list,
+                        targets,
+                        atom_vocab=kwargs.get('atom_vocab', []),
                         with_hydrogen=with_hydrogen,
                         max_atom=self.max_atom,
                         forbidden_atoms=forbidden_atoms,
-                        node_feature=node_feature,
+                        node_feature_choice=node_feature_choice,
                         pad_data=pad_data,
+                        verbose=verbose,
                         allow_unknown=allow_unknown,
                         **kwargs,
                     )
@@ -123,7 +134,7 @@ class pointcloud_dataset(data.PointCloudDataset):
                         with_hydrogen=with_hydrogen,
                         max_atom=self.max_atom,
                         forbidden_atoms=forbidden_atoms,
-                        node_feature=node_feature,
+                        node_feature_choice=node_feature_choice,
                         pad_data=pad_data,
                         allow_unknown=allow_unknown,
                         **kwargs,
@@ -147,7 +158,6 @@ class pointcloud_dataset_pyG(data.GraphDataset):
         with_hydrogen=True,
         forbidden_atoms=[],
         verbose=1,
-        node_feature=None,
         node_feature_choice=None,
         target_fields=None,
         pad_data=False,
@@ -225,7 +235,7 @@ class pointcloud_dataset_pyG(data.GraphDataset):
                     with_hydrogen=with_hydrogen,
                     max_atom=self.max_atom,
                     forbidden_atoms=forbidden_atoms,
-                    node_feature=node_feature,
+                    node_feature_choice=node_feature_choice,
                     pad_data=pad_data,
                     edge_type=edge_type,
                     radius=radius,
