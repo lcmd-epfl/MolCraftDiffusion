@@ -1,7 +1,7 @@
 MolecularDiffusion
 ==================
 
-The unified generative‑AI framework that streamline training the 3D molecular diffusion models to their deployment in data-driven computational chemistry pipelines
+The unified generative‑AI framework that streamline training the 3D molecular diffusion models to their deployment in data-driven computational chemistry pipelines. 
 
 ![workflow](./images/overview.png)
 
@@ -22,6 +22,7 @@ The unified generative‑AI framework that streamline training the 3D molecular 
 [![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
 
 
+Try our interactive demo for molecular generation: [MolCraftDiffusion-demo](https://huggingface.co/spaces/pregH/MolCraftDiffusion-demo)
 
 Installation
 -----------
