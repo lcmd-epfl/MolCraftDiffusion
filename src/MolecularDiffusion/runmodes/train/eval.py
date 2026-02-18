@@ -9,6 +9,7 @@ import torch.distributed
 from tqdm import tqdm
 import wandb
 import numpy as np
+from ase.data import atomic_numbers
 
 from MolecularDiffusion.core import Engine
 from MolecularDiffusion.utils.geom_analyzer import (
@@ -17,7 +18,7 @@ from MolecularDiffusion.utils.geom_analyzer import (
 )
 from MolecularDiffusion.utils.geom_metrics import check_validity_v0, load_molecules_from_xyz, run_postbuster
 from MolecularDiffusion.utils.geom_utils import (
-    read_xyz_file, save_xyz_file)
+    read_xyz_file, save_xyz_file, save_xyz_file_atomic_numbers)
 
 DIST_THRESHOLD = 3
 DIST_RELAX_BOND = 0.25
@@ -36,6 +37,40 @@ logging.basicConfig(
     level=logging.INFO,  # Change to DEBUG, WARNING, ERROR, or CRITICAL as needed
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+
+def get_versioned_output_path(base_output_path: str) -> str:
+    """
+    Get next available version folder (engine_logs/version_X).
+    
+    This mimics Lightning's behavior of creating version_0, version_1, etc.
+    
+    Parameters:
+        base_output_path (str): The base output directory (e.g., training_outputs/my_model)
+    
+    Returns:
+        str: Path to the versioned checkpoint folder (e.g., training_outputs/my_model/engine_logs/version_0)
+    """
+    logs_dir = os.path.join(base_output_path, "engine_logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    # Find highest existing version
+    existing = [d for d in os.listdir(logs_dir) if d.startswith("version_") and os.path.isdir(os.path.join(logs_dir, d))]
+    if existing:
+        versions = []
+        for d in existing:
+            try:
+                versions.append(int(d.split("_")[1]))
+            except (ValueError, IndexError):
+                continue
+        next_version = max(versions) + 1 if versions else 0
+    else:
+        next_version = 0
+    
+    version_path = os.path.join(logs_dir, f"version_{next_version}")
+    os.makedirs(version_path, exist_ok=True)
+    logging.info(f"Checkpoint version folder: {version_path}")
+    return version_path
 
 def _manage_best_checkpoints(
     metric_value: float,
@@ -65,7 +100,7 @@ def _manage_best_checkpoints(
     if is_top_k:
         checkpoint_name = f"{task_name}-epoch={epoch}-metric={metric_value:.4f}.pkl"
         new_checkpoint_path = os.path.join(output_path, checkpoint_name)
-        solver.save(new_checkpoint_path)
+        solver.save(new_checkpoint_path, compact=False, full_state=True)
         print(f"\033[92m🚀 Saved new top-k checkpoint: {new_checkpoint_path}\033[0m")
 
         best_checkpoints.append((metric_value, new_checkpoint_path))
@@ -126,14 +161,14 @@ def evaluate(
 
     if output_path:
         last_path = os.path.join(output_path, "last.pkl")
-        solver.save(last_path)
+        solver.save(last_path, compact=False, full_state=True)
         if is_main_process:
             logging.info(f"Saved last model checkpoint to {last_path}")
 
     save_top_k = kwargs.get("save_top_k", 3)
     save_every_val_epoch = kwargs.get("save_every_val_epoch", False)
 
-    if task == "diffusion":
+    if task in ("diffusion", "diffusion_hybrid", "diffusion_pyg", "diffusion_tabasco"):
         output_generated_dir = kwargs.get("output_generated_dir", None)
         if output_generated_dir is None:
             output_generated_dir = "generated_molecules"
@@ -167,7 +202,7 @@ def evaluate(
             if save_every_val_epoch and is_main_process:
                 checkpoint_name = f"edm-gen-epoch={epoch}-metric={metrics:.4f}.pkl"
                 checkpoint_path = os.path.join(output_path, checkpoint_name)
-                solver.save(checkpoint_path)
+                solver.save(checkpoint_path, compact=False, full_state=True)
                 logging.info(f"Saved checkpoint for epoch {epoch} with metric {metrics:.4f} at {checkpoint_path}")
             if metrics > current_best_metric:
                 if is_main_process:
@@ -316,15 +351,45 @@ def analyze_and_save(
     fail_count = 0
     progress_bar = tqdm(range(n_batches), desc="Sampling molecules", leave=True)
     for i in progress_bar:
-        nodesxsample = model.node_dist_model.sample(batch_size)
-        if model.prop_dist_model:
+        # Unwrap EngineLightning or other wrappers
+        if hasattr(model, "task"):
+            model = model.task
+
+        # Check for Tabasco model first to avoid node_dist_model access
+        if hasattr(model, "task_type") and model.task_type == "diffusion_tabasco":
+             nodesxsample = None # Not used for Tabasco here
+        else:
+             nodesxsample = model.node_dist_model.sample(batch_size)
+
+        if getattr(model, "prop_dist_model", None):
             size = nodesxsample[0].item()
             target_value = model.prop_dist_model.sample(size)
             target_value = model.prop_dist_model.sample(size)
-            if "distortion_d" in model.condition: # only sample clean molecules during the interference
+            if "distortion_d" in getattr(model, "condition", []): # only sample clean molecules during the interference
                 target_value[-2] = 0
         try:
-            if model.prop_dist_model:
+            if hasattr(model, "task_type") and model.task_type == "diffusion_tabasco":
+                # TABASCO specific sampling - now returns tuple (one_hot, charges, coords, node_mask)
+                one_hot, charges, x, node_mask = model.sample(batch_size=batch_size)
+                x = x.detach().cpu()
+                charges = charges.detach().cpu()
+                one_hot = one_hot.detach().cpu()
+                node_mask = node_mask.detach().cpu()
+                
+                # Map internal indices to actual atomic numbers
+                if hasattr(model, "atom_vocab") and model.atom_vocab is not None:
+                    # Create mapping tensor (e.g., [1, 6, 7, 8, 9] for QM9)
+                    mapping = torch.tensor(
+                        [atomic_numbers.get(s, 0) for s in model.atom_vocab],
+                        dtype=torch.long
+                    )
+                    # charges are currently indices 0..N-1
+                    # we map them to atomic numbers
+                    charges_indices = charges.long()
+                    charges = mapping[charges_indices]
+
+                
+            elif model.prop_dist_model:
                 if model.model.context_mask_rate > 0:
                     one_hot, charges, x, node_mask = model.sample_guidance_conitional(
                                                                 nodesxsample=nodesxsample,
@@ -337,15 +402,25 @@ def analyze_and_save(
                                                                 target_value=target_value,)
             else:
                 one_hot, charges, x, node_mask = model.sample(nodesxsample=nodesxsample)
-            # keep = (charges > 0).squeeze()
-            # one_hot = one_hot[ keep, :]
-            # x = x[ keep, :]
+                # keep = (charges > 0).squeeze()
+                # one_hot = one_hot[ keep, :]
+                # x = x[ keep, :]
 
-            molecules["one_hot"].append(one_hot.detach().cpu().squeeze(0))
-            molecules["x"].append(x.detach().cpu().squeeze(0))
-            molecules["node_mask"].append(node_mask.detach().cpu().squeeze(0))
+            molecules["one_hot"].append(one_hot.squeeze(0) if one_hot.ndim > 2 else one_hot)
+            molecules["x"].append(x.squeeze(0) if x.ndim > 2 else x)
+            molecules["node_mask"].append(node_mask.squeeze(0) if node_mask.ndim > 2 else node_mask)
 
-            save_xyz_file(path_save, one_hot, x, atom_decoder=model.atom_vocab)
+            if torch.all(one_hot == 0) or getattr(model, "atom_vocab", None) is None:
+                save_xyz_file_atomic_numbers(path_save, x, charges)
+            else:
+                # Pass atomic_numbers (charges) and use_unknown_fallback for proper unknown atom handling
+                use_fallback = getattr(model.model, 'use_unknown_fallback', False) if hasattr(model, 'model') else False
+                save_xyz_file(
+                    path_save, one_hot, x, 
+                    atom_decoder=model.atom_vocab,
+                    atomic_numbers=charges.squeeze(-1) if charges is not None else None,
+                    use_unknown_fallback=use_fallback,
+                )
 
             for j in range(current_batch_size):
                 path_xyz = os.path.join(path_save, f"molecule_{str(j).zfill(3)}.xyz")
@@ -354,8 +429,7 @@ def analyze_and_save(
                     path_xyz,
                     os.path.join(path_save, f"molecule_{str(idx).zfill(4)}.xyz"),
                 )
-                
-
+    
         except Exception as e:
             fail_count += 1
             tqdm.write(f"[Batch {i}] Sampling failed: {e}")

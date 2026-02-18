@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "MolecularDiffusion"
-version = "1.0.0"
+version = "1.1.0"
 description = "A molecular diffusion framework for machine learning applications"
-readme = "README.rst"
-requires-python = ">=3.10"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
 license = {text = "MIT"}
 authors = [
     {name = "Thanapat Worakul", email = "thanapat.worakul@epfl.ch"},
@@ -20,12 +20,14 @@ dependencies = [
     "click>=8.0.0",
     "fire",
     "decorator",
-    "numpy==1.26.4",
+    "numpy",
     "scipy",
     "rdkit-pypi",
-    "posebusters",
+    "posebusters==0.5.1",
     "networkx",
     "matplotlib",
+    "seaborn",
+    "torch_geometric",
     "pandas",
     "scikit-learn",
     "tqdm",
@@ -33,14 +35,31 @@ dependencies = [
     "omegaconf",
     "ase",
     "morfeus-ml",
+    "rmsd",
+    "tensordict",
+    "rich",
+    "lightning",
     "wandb",
     "hydra-colorlog",
-    "hydra-core>=1.3.0",
+    "hydra-core>=1.0.0",
     "rootutils",
     "psutil",
+    "xtb>=22.1",
+    "mendeleev",
 ]
 
 [project.optional-dependencies]
+torch = [
+    "torch==2.4.0",
+    "torchvision==0.19.0",
+    "torchaudio==2.4.0",
+]
+pyg = [
+    "torch_geometric",
+]
+cell2mol = [
+    "cell2mol @ git+https://github.com/lcmd-epfl/cell2mol.git",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
@@ -125,6 +144,12 @@ check_untyped_defs = true
 disallow_untyped_decorators = true
 warn_unreachable = true
 disallow_any_generics = true
+
+[tool.uv]
+environments = [
+  'python_full_version == "3.11.*" and sys_platform == "linux"',
+  'python_full_version == "3.11.*" and sys_platform == "darwin"',
+]
 
 [[tool.mypy.overrides]]
 module = []

@@ -8,8 +8,6 @@ Provides subcommands for:
 """
 
 import os
-from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -87,7 +85,7 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
 
 @analyze.command("metrics", context_settings=CONTEXT_SETTINGS)
 @click.argument("input_dir", type=click.Path(exists=True))
-@click.option("-o", "--o", "--output", "--output-csv", default=None, type=click.Path(),
+@click.option("--output", "-o", "--o", "--output-csv", default=None, type=click.Path(),
               help="Output CSV file for results")
 @click.option("--metrics", "-m", "--m", "metrics_type", default="all",
               type=click.Choice(["all", "core", "posebuster", "geom_revised"]),
@@ -270,3 +268,113 @@ def xyz2mol(xyz_dir, input_csv, label, timeout, bits, verbose):
     click.echo(f"Failed FP extraction: {n_fail}")
     click.echo(f"Unique substructures: {len(substruct_counts)}")
     click.echo(f"Outputs saved to: {two_d_reprs_dir}")
+
+
+# ============================================================================
+# XTB-ELECTRONIC: Compute XTB electronic properties
+# ============================================================================
+
+@analyze.command("xtb-electronic", context_settings=CONTEXT_SETTINGS)
+@click.argument("input_dir", type=click.Path(exists=True))
+@click.option("--output", "--o", "-o", default=None, type=click.Path(),
+              help="Output file path (without extension for 'all' format)")
+@click.option("--method", "--m", "-m", default="2", type=click.Choice(["1", "2", "ptb"]),
+              help="XTB method: 1=GFN1, 2=GFN2, ptb=PTB (default: 2)")
+@click.option("--charge", "--c", "-c", default=0, type=int,
+              help="Molecular charge (default: 0)")
+@click.option("--n-unpaired", "--unpaired", default=0, type=int,
+              help="Number of unpaired electrons (default: 0)")
+@click.option("--solvent", "--s", "-s", default=None, type=str,
+              help="Solvent for solvation calculations (e.g., 'water', 'thf', 'chcl3')")
+@click.option("--properties", "--prop", "-p", multiple=True, 
+              type=click.Choice(["energy", "dipole", "reactivity", "global", 
+                                  "charges", "fukui", "bond_orders", "all"]),
+              help="Property groups to compute (default: energy)")
+@click.option("--corrected/--no-corrected", default=True,
+              help="Apply empirical IP/EA correction (default: True)")
+@click.option("--timeout", "--t", "-t", default=120, type=int,
+              help="Timeout per molecule in seconds (default: 120)")
+@click.option("--n-jobs", "--jobs", "-j", default=1, type=int,
+              help="Number of parallel jobs (default: 1)")
+@click.option("--format", "--fmt", "-f", "output_format", default="csv", 
+              type=click.Choice(["csv", "json", "ase", "all"]),
+              help="Output format: csv, json, ase (.db), or all (default: csv)")
+def xtb_electronic(input_dir, output, method, charge, n_unpaired, 
+                   solvent, properties, corrected, timeout, n_jobs, output_format):
+    """Compute XTB electronic properties for XYZ files.
+    
+    Uses morfeus to calculate quantum-chemical descriptors at the GFN-xTB level.
+    
+    \b
+    Property groups (molecular-level):
+      energy      Total energy, HOMO, LUMO, gap, Fermi level
+      dipole      Dipole moment and vector
+      reactivity  IP, EA, electronegativity, hardness, softness
+      global      Electrophilicity, nucleophilicity, fugalities
+      solvation   Solvation energy, H-bond correction (requires --solvent)
+    
+    \b
+    Property groups (atomic-level):
+      charges     Atomic charges (Mulliken)
+      fukui       Fukui indices (f+, f-, f, dual)
+      bond_orders Bond orders between atom pairs
+    
+    \b
+    Output formats:
+      csv   Molecular-level properties only (one row per molecule)
+      json  Full data including atomic-level properties
+      ase   ASE database with properties in atoms.info/arrays
+      all   Generate all three formats
+    
+    \b
+    Examples:
+        MolCraftDiff analyze xtb-electronic gen_xyz/
+        MolCraftDiff analyze xtb-electronic gen_xyz/ -p energy -p reactivity
+        MolCraftDiff analyze xtb-electronic gen_xyz/ -s water -p solvation
+        MolCraftDiff analyze xtb-electronic gen_xyz/ -p all -f ase -o results.db
+    """
+    from MolecularDiffusion.runmodes.analyze.xtb_electronic import batch_xtb_electronic
+    
+    # Parse method
+    if method in ["1", "2"]:
+        method = int(method)
+    
+    # Default properties
+    if not properties:
+        properties = ["energy"]
+    
+    # Default output path
+    if output is None:
+        output = os.path.join(input_dir, "xtb_electronic")
+    
+    click.echo(f"Computing XTB electronic properties for: {input_dir}")
+    click.echo(f"Method: GFN{method}-xTB" if method != "ptb" else "Method: PTB")
+    click.echo(f"Charge: {charge}, Unpaired: {n_unpaired}")
+    if solvent:
+        click.echo(f"Solvent: {solvent}")
+    click.echo(f"Properties: {', '.join(properties)}")
+    click.echo(f"Output format: {output_format}")
+    
+    df = batch_xtb_electronic(
+        input_dir=input_dir,
+        output_path=output,
+        output_format=output_format,
+        method=method,
+        charge=charge,
+        n_unpaired=n_unpaired,
+        solvent=solvent,
+        properties=list(properties),
+        corrected=corrected,
+        timeout=timeout,
+        n_jobs=n_jobs,
+    )
+    
+    n_success = df["success"].sum() if "success" in df.columns else len(df)
+    n_total = len(df)
+    
+    click.echo(f"\n--- Summary ---")
+    click.echo(f"Processed: {n_total} molecules")
+    click.echo(f"Successful: {n_success}")
+    click.echo(f"Failed: {n_total - n_success}")
+    click.echo(f"Output saved to: {output}")
+

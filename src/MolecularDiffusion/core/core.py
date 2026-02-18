@@ -248,7 +248,7 @@ class _Configurable(type):
 
         cls = getattr(self, "_registry_key", self.__class__.__name__)
         config = {"class": cls}
-        for k, v in self._config.items():
+        for k, v in getattr(self, "_config", {}).items():
             config[k] = unroll_config_dict(v)
         return config
 

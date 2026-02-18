@@ -477,7 +477,8 @@ class GraphDataset(torch_data.Dataset):
             **kwargs
         """
         if Chem is None and node_feature_choice is not None:
-            raise ImportError("RDKit is required for node_feature_choice. Please install it.")
+            if not (isinstance(node_feature_choice, str) and node_feature_choice in ["geometric_heuristic", "atom_geom_heuristic", "geometric_fast", "geometric", "geometric_full", "geometric_hybrid"]):
+                raise ImportError("RDKit is required for node_feature_choice. Please install it.")
 
         if not atom_vocab:
             atom_vocab = BASE_ATOM_VOCAB

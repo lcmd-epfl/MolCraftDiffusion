@@ -72,67 +72,73 @@ def _timeout_handler(signum, frame):
     raise TimeoutException()
 
 
-def _smilify_cell2mol_worker(filename, z, coordinates, result_queue):
+def _smilify_cell2mol_worker(filename, z, coordinates, result_queue, total_charge=0):
     """Worker function for multiprocessing-based timeout."""
     try:
-        smiles, mol = _smilify_cell2mol_core(filename, z, coordinates)
+        smiles, mol = _smilify_cell2mol_core(filename, z, coordinates, total_charge=total_charge)
         result_queue.put((smiles, mol))
     except Exception as e:
         result_queue.put((None, None))
 
 
-def _smilify_cell2mol_core(filename, z=None, coordinates=None):
+def _smilify_cell2mol_core(filename, z=None, coordinates=None, total_charge=0):
     """Core cell2mol logic without timeout handling."""
     covalent_factors = [1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
     ok = False
     smiles = None
     mol = None
-    atoms = None
     
     for covalent_factor in covalent_factors:
         if (z is None) and (coordinates is None):
             assert filename.endswith(".xyz"), "Input file must be an .xyz"
-            mol = next(read_xyz(open(filename)))
-            charge = 0
-            atoms = mol.get_chemical_symbols()
-            z = [int(zi) for zi in mol.get_atomic_numbers()]
-            coordinates = mol.get_positions()
+            ase_atoms = next(read_xyz(open(filename)))
+            charge = total_charge
+            atom_symbols = ase_atoms.get_chemical_symbols()
+            z = [int(zi) for zi in ase_atoms.get_atomic_numbers()]
+            coordinates = ase_atoms.get_positions()
+        else:
+            charge = total_charge
+            atom_symbols = [data.chemical_symbols[zi] for zi in z]
+            from ase import Atoms
+            ase_atoms = Atoms(numbers=z, positions=coordinates)
 
         cutoff = get_cutoffs(z, radii=ase.data.covalent_radii, mult=covalent_factor)
         nl = neighborlist.NeighborList(cutoff, self_interaction=False, bothways=True)
-        nl.update(mol)
+        nl.update(ase_atoms)
+        
         AC = nl.get_connectivity_matrix(sparse=False)
 
         try:
             assert check_connected(AC) and check_symmetric(AC)
-            mol = xyz2mol(
+            rd_mol = xyz2mol(
                 z, coordinates, AC, covalent_factor,
                 charge=charge, use_graph=True, allow_charged_fragments=True,
                 embed_chiral=True, use_huckel=True,
             )
-            if isinstance(mol, list):
-                mol = mol[0]
+            if isinstance(rd_mol, list):
+                rd_mol = rd_mol[0]
 
-            Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL, catchErrors=True)
-            fcharges = [atom.GetFormalCharge() for atom in mol.GetAtoms()]
-            heavy_atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1]
+            Chem.SanitizeMol(rd_mol, Chem.SanitizeFlags.SANITIZE_ALL, catchErrors=True)
+            fcharges = [atom.GetFormalCharge() for atom in rd_mol.GetAtoms()]
+            heavy_atoms = [atom for atom in rd_mol.GetAtoms() if atom.GetAtomicNum() > 1]
             n_fcharge_nonzero = sum(1 for fc in fcharges if fc != 0)
         
-            if n_fcharge_nonzero > len(heavy_atoms)/2:
+            if total_charge == 0 and n_fcharge_nonzero > len(heavy_atoms)/2:
                 best = _pick_best_charge(z, coordinates, AC, covalent_factor)
-                mol, charge = best
+                rd_mol, charge = best
 
-            smiles = mol2smi(mol)
+            smiles = mol2smi(rd_mol)
             if isinstance(smiles, list):
                 smiles = smiles[0]
 
-            if mol is None:
+            if rd_mol is None:
                 ok = False
             else:
-                match_idx = simple_idx_match_check(mol, atoms)
+                match_idx = simple_idx_match_check(rd_mol, atom_symbols)
                 if not match_idx:
                     return None, None
             ok = True
+            mol = rd_mol # Final result
             break
 
         except Exception as e:
@@ -142,16 +148,16 @@ def _smilify_cell2mol_core(filename, z=None, coordinates=None):
     return (smiles, mol) if ok else (None, None)
 
 
-def smilify_cell2mol(filename, z=None, coordinates=None, timeout=30):
+def smilify_cell2mol(filename, z=None, coordinates=None, timeout=30, total_charge=0):
     """Convert XYZ to mol using cell2mol with optional timeout."""
     if timeout is None:
-        return _smilify_cell2mol_core(filename, z, coordinates)
+        return _smilify_cell2mol_core(filename, z, coordinates, total_charge=total_charge)
     
     import multiprocessing
     result_queue = multiprocessing.Queue()
     process = multiprocessing.Process(
         target=_smilify_cell2mol_worker,
-        args=(filename, z, coordinates, result_queue)
+        args=(filename, z, coordinates, result_queue, total_charge)
     )
     process.start()
     process.join(timeout=timeout)

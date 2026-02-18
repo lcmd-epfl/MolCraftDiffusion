@@ -187,6 +187,10 @@ def eval_predict(config: str, overrides: tuple):
 from MolecularDiffusion.cli.analyze import analyze
 cli.add_command(analyze)
 
+# Register data subcommand group
+from MolecularDiffusion.cli.data import data
+cli.add_command(data)
+
 
 def main():
     """Entry point."""

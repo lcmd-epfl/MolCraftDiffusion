@@ -5,4 +5,9 @@ from .tasks_egt import ModelTaskFactory as ModelTaskFactory_EGT
 from .trainer import OptimSchedulerFactory
 from .eval import evaluate
 
-__all__ = ['DataModule', 'Logger', 'ModelTaskFactory_EGCL', 'ModelTaskFactory_EGT', 'OptimSchedulerFactory', 'evaluate']
+__all__ = ['DataModule', 
+           'Logger',
+           'ModelTaskFactory_EGCL',
+           'ModelTaskFactory_EGT', 
+           'OptimSchedulerFactory', 
+           'evaluate']

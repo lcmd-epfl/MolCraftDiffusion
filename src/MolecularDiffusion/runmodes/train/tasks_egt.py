@@ -122,19 +122,20 @@ class ModelTaskFactory:
             or not torch.distributed.is_initialized()
             or torch.distributed.get_rank() == 0
         )
-        # Construct shared EGNN dynamics
-        dynamics_model = EGT_dynamics(
-            in_node_nf=self.dynamics_in_node_nf,
-            in_edge_nf=1,
-            in_global_nf=1,
-            n_layers=self.num_layers,
-            hidden_mlp_dims=self.hidden_mlp_dims,
-            hidden_dims=self.hidden_dims,
-            context_node_nf=self.context_node_nf,
-            n_dims=3,
-            condition_time=True,
-            model=self.model_class,
-        )
+        # Construct shared EGT dynamics (skip for diffusion_pyg which uses EGT_dynamics_PyG)
+        if self.task_type != "diffusion_pyg":
+            dynamics_model = EGT_dynamics(
+                in_node_nf=self.dynamics_in_node_nf,
+                in_edge_nf=1,
+                in_global_nf=1,
+                n_layers=self.num_layers,
+                hidden_mlp_dims=self.hidden_mlp_dims,
+                hidden_dims=self.hidden_dims,
+                context_node_nf=self.context_node_nf,
+                n_dims=3,
+                condition_time=True,
+                model=self.model_class,
+            )
         
 
         if self.task_type == "diffusion":
@@ -173,10 +174,10 @@ class ModelTaskFactory:
                 model,
                 augment_noise=self.kwargs.get("augment_noise", False),
                 data_augmentation=self.kwargs.get("data_augmentation", False),
-                condition=self.task_names, # CFG and conditional
+                condition=self.task_names,
                 sp_regularizer=sp_reg,
                 normalize_condition=self.kwargs.get("normalize_condition", None),
-                reference_indices=self.kwargs.get("reference_indices", None), # outpaint task
+                reference_indices=self.kwargs.get("reference_indices", None),
             )
 
         elif self.task_type == "regression":
@@ -248,8 +249,11 @@ class ModelTaskFactory:
         
         if self.chkpt_path:    
             try:
-                ckpt = torch.load(self.chkpt_path)
-                chk_point = getattr(ckpt, "ema_model", ckpt["model"])
+                ckpt = torch.load(self.chkpt_path, weights_only=False)
+                chk_point = ckpt.get("ema_model") or ckpt.get("model")
+                if chk_point is None:
+                    raise KeyError("Checkpoint missing both 'ema_model' and 'model'")
+                
                 if is_main_process:
                     logger.info(f"Loading checkpoint from {self.chkpt_path}")
                 
@@ -261,6 +265,8 @@ class ModelTaskFactory:
                             logger.warning(f"\033[93mMissing keys ({len(load_result.missing_keys)}): {load_result.missing_keys}\033[0m")
                         if load_result.unexpected_keys:
                             logger.warning(f"\033[93mUnexpected keys ({len(load_result.unexpected_keys)}): {load_result.unexpected_keys}\033[0m")
+                #TODO implement adaptor module for EGT
+                #TODO adapt module names for EGT
                 except RuntimeError as e:
                     n_dim_pretrain = chk_point["model.dynamics.egnn.embedding.layers.0.weight"].shape[1] 
                     n_extra_dim = self.dynamics_in_node_nf - n_dim_pretrain + len(self.condition_names)

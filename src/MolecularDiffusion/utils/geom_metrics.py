@@ -583,7 +583,7 @@ def _run_buster(mols, queue):
         queue.put(e)
 
 
-def run_postbuster(mols, timeout=60, batch_size=None):
+def run_postbuster(mols, timeout=60, batch_size=1):
     """
     Run PoseBusters on a list of RDKit molecules, optionally in batches, with a timeout per batch.
     

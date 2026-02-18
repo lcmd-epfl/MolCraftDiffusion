@@ -1,0 +1,27 @@
+# Example configuration for running electronic analysis
+# This can be used as a template for batch analysis workflows
+
+# Input directory containing XYZ files
+input_dir: "test_xyz/"
+
+# Output settings
+output_path: "analysis_results/electronic"
+output_format: "all"  # csv, json, ase, or all
+
+# XTB calculation settings
+method: 2        # 1=GFN1, 2=GFN2, ptb=PTB
+charge: 0        # Molecular charge
+n_unpaired: 0    # Number of unpaired electrons
+
+# Property groups to compute
+# Molecular-level: energy, dipole, reactivity, global
+# Atomic-level: charges, fukui, bond_orders
+properties:
+  - energy
+  - reactivity
+  - charges
+
+# Computation settings
+corrected: true   # Apply empirical IP/EA correction
+timeout: 120      # Per-molecule timeout (seconds)
+n_jobs: 1         # Number of parallel workers

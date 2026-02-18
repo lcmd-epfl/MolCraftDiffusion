@@ -59,12 +59,14 @@ class OptimSchedulerFactory:
         init_grad_norm: float = 3000,
         ema_decay: float = 0.9999,
         gradient_clip_mode: str = "value", # value or norm
+        gradient_clip_algorithm: str = "adaptive", # adaptive, lightning, or null
         grad_clip_value: float = 1.0,
         chkpt_path: str = None,
         output_path: str = None,
         precision: int | str = 32,
         save_top_k: int = 3,
-        save_every_val_epoch: bool = False
+        save_every_val_epoch: bool = False,
+        **kwargs # Allow extra parameters (e.g. from Lightning config)
     ):
         self.parameters = parameters
         self.optimizer_choice = optimizer_choice.lower()
@@ -91,6 +93,7 @@ class OptimSchedulerFactory:
 
         self.ema_decay = ema_decay
         self.gradient_clip_mode = gradient_clip_mode
+        self.gradient_clip_algorithm = gradient_clip_algorithm
         self.validation_interval = validation_interval
         # If init_grad_norm is None, grad_clip_value is used directly for clipping,
         # but the queue is still initialized for consistency.

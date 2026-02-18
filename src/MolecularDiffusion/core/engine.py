@@ -213,7 +213,16 @@ class Engine(core.Configurable):
         self.meter = core.Meter(
             log_interval=log_interval, silent=self.rank > 0, logger=logger
         )
-        # self.meter.log_config(self.config_dict())
+        
+        # Log key config to wandb (if active)
+        if self.rank == 0:
+            key_config = self.sanitized_config_dict()
+            # Add some additional useful info
+            if hasattr(self.model, '__class__'):
+                key_config['model_class'] = self.model.__class__.__name__
+            if hasattr(self.model, 'model') and hasattr(self.model.model, 'T'):
+                key_config['diffusion_steps'] = self.model.model.T
+            self.meter.log_config(key_config)
 
     def train(self, num_epoch=1, batch_per_epoch=1, use_amp=False, precision="bf16"):
         """
@@ -540,7 +549,7 @@ class Engine(core.Configurable):
             Engine: Fully reconstructed Engine with model, optimizer, and scheduler states.
         """
         checkpoint_path = os.path.expanduser(checkpoint_path)
-        state = torch.load(checkpoint_path, map_location="cpu")  # CPU for safe loading
+        state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)  # CPU for safe loading
 
         # Reconstruct the Engine using saved hyperparameters
         if "hyperparameters" not in state:
@@ -548,6 +557,11 @@ class Engine(core.Configurable):
         config_dict = state["hyperparameters"]
         optimizer_state = state.get("optimizer", None)
         
+        # Ensure datasets are present (might have been removed in compact mode)
+        config_dict.setdefault("train_set", None)
+        config_dict.setdefault("valid_set", None)
+        config_dict.setdefault("test_set", None)
+
         if interference_mode:
             config_dict["train_set"] = None
             config_dict["valid_set"] = None
@@ -556,7 +570,12 @@ class Engine(core.Configurable):
 
         # Filter out extra keys that are not arguments of Engine.__init__
         # to avoid TypeError in load_config_dict
-        extra_keys = ["atom_vocab", "data_type", "node_feature", "with_hydrogen", "edge_type", "radius", "n_neigh"]
+        extra_keys = [
+            "atom_vocab", "data_type", "node_feature", "with_hydrogen", 
+            "edge_type", "radius", "n_neigh",
+            # Hybrid diffusion-specific
+            "discrete_schedule", "num_atom_classes", "discrete_loss_weight", "diffusion_timesteps"
+        ]
         engine_config = config_dict.copy()
         extras = {}
         for k in extra_keys:
@@ -612,7 +631,7 @@ class Engine(core.Configurable):
         if comm.get_rank() == 0:
             logger.warning("Load checkpoint from %s" % checkpoint)
         checkpoint = os.path.expanduser(checkpoint)
-        state = torch.load(checkpoint, map_location=self.device)
+        state = torch.load(checkpoint, map_location=self.device, weights_only=False)
 
         if "ema_model" in state:
             self.model.load_state_dict(state["ema_model"], strict=strict)
@@ -639,12 +658,84 @@ class Engine(core.Configurable):
 
         comm.synchronize()
 
-    def save(self, checkpoint):
+    def resume(self, checkpoint, strict=True):
+        """
+        Resume training from a checkpoint (loads full training state).
+
+        This loads model weights, optimizer, scheduler, epoch counter, and gradnorm queue.
+        Use this to continue training from where it left off.
+
+        Parameters:
+            checkpoint (file-like): checkpoint file path
+            strict (bool, optional): whether to strictly check the checkpoint matches the model parameters
+        
+        Returns:
+            int: The epoch to resume from (for adjusting training loop)
+        """
+        if comm.get_rank() == 0:
+            logger.warning("Resuming from checkpoint: %s" % checkpoint)
+        checkpoint = os.path.expanduser(checkpoint)
+        state = torch.load(checkpoint, map_location=self.device, weights_only=False)
+
+        # Load model weights (prefer EMA if available)
+        if "ema_model" in state:
+            self.model.load_state_dict(state["ema_model"], strict=strict)
+        else:
+            self.model.load_state_dict(state["model"], strict=strict)
+
+        # Load EMA model
+        if self.ema_decay > 0:
+            if "ema_model" in state:
+                self.ema_model.load_state_dict(state["ema_model"], strict=strict)
+            else:
+                self.ema_model = copy.deepcopy(self.model)
+            self.ema_model.eval()
+            for param in self.ema_model.parameters():
+                param.requires_grad = False
+
+        # Load optimizer state
+        if "optimizer" in state and state["optimizer"] is not None and self.optimizer is not None:
+            self.optimizer.load_state_dict(state["optimizer"])
+            for opt_state in self.optimizer.state.values():
+                for k, v in opt_state.items():
+                    if isinstance(v, torch.Tensor):
+                        opt_state[k] = v.to(self.device)
+            if comm.get_rank() == 0:
+                logger.info("Loaded optimizer state")
+
+        # Load scheduler state
+        if "scheduler" in state and self.scheduler is not None:
+            self.scheduler.load_state_dict(state["scheduler"])
+            if comm.get_rank() == 0:
+                logger.info("Loaded scheduler state")
+
+        # Load epoch counter
+        resume_epoch = 0
+        if "epoch" in state:
+            resume_epoch = state["epoch"]
+            self.meter.set_epoch(resume_epoch)  # Use set_epoch to properly pad internal lists
+            if comm.get_rank() == 0:
+                logger.info(f"Resuming from epoch {resume_epoch}")
+
+        # Load gradnorm queue
+        if "gradnorm_queue" in state and type(self.clip_value) == Queue:
+            queue_data = state["gradnorm_queue"]
+            self.clip_value.items = queue_data["data"]
+            self.clip_value.max_len = queue_data["maxlen"]
+            if comm.get_rank() == 0:
+                logger.info("Loaded gradnorm queue state")
+
+        comm.synchronize()
+        return resume_epoch
+
+    def save(self, checkpoint, compact=True, full_state=False):
         """
         Save checkpoint to file.
 
         Parameters:
             checkpoint (file-like): checkpoint file
+            compact (bool, optional): whether to save a lightweight checkpoint (no optimizer state).
+            full_state (bool, optional): save full training state for resumption (epoch, scheduler, etc.).
         """
         if comm.get_rank() == 0:
             logger.warning("Save checkpoint to %s" % checkpoint)
@@ -711,14 +802,37 @@ class Engine(core.Configurable):
                 elif "pointcloud" in ds_cls_name.lower() or "PointCloudDataset" in ds_cls_name:
                     hyperparameters["data_type"] = "pointcloud"
 
+            # === Save hybrid diffusion-specific hyperparameters ===
+            # These are saved from the model directly since they are model config
+            if hasattr(self.model, "discrete_diffusion"):
+                # This is a hybrid diffusion model
+                discrete_diff = self.model.discrete_diffusion
+                hyperparameters["discrete_schedule"] = getattr(discrete_diff, "schedule", None)
+                hyperparameters["num_atom_classes"] = getattr(self.model, "num_atom_classes", None)
+                hyperparameters["discrete_loss_weight"] = getattr(self.model, "discrete_loss_weight", None)
+                hyperparameters["diffusion_timesteps"] = getattr(self.model, "T", None)
+
             state = {
                 "model": self.model.state_dict(),
                 "ema_model": self.ema_model.state_dict(),
-                "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
                 "hyperparameters": hyperparameters, # Save full config dictionary
             }
-            # if self.scheduler is not None:
-            #     state["scheduler"] = self.scheduler.state_dict()
+            
+            if not compact:
+                 state["optimizer"] = self.optimizer.state_dict() if self.optimizer is not None else None
+            
+            # Save full training state for resumption
+            if full_state:
+                state["epoch"] = self.meter.epoch_id
+                if self.scheduler is not None:
+                    state["scheduler"] = self.scheduler.state_dict()
+                # Save gradnorm queue if using adaptive clipping
+                if type(self.clip_value) == Queue:
+                    state["gradnorm_queue"] = {
+                        "data": list(self.clip_value.items),
+                        "maxlen": self.clip_value.max_len,
+                    }
+                    
             torch.save(state, checkpoint)
 
     @classmethod

@@ -37,6 +37,7 @@ from .geom_constraint import (
 
 from .diffusion_utils import (
     prepare_context,
+    prepare_context_pyG,
     compute_mean_mad_from_dataloader
 )
 
@@ -84,6 +85,20 @@ from .smilify import (
     smilify_openbabel,
 )
 
+from .geom_stability import (
+    compute_molecules_stability,
+    compute_molecules_stability_from_graph,
+    load_valency_table,
+    is_valid as is_valid_mol,
+    compute_rmsd,
+    compute_mmff_energy_drop,
+    compute_bond_lengths_diff,
+    compute_bond_angles_diff,
+    compute_torsion_angles_diff,
+    compute_differences,
+    bond_type_to_symbol,
+)
+
 __all__ = [
     "coord2diff",
     "remove_mean",
@@ -112,7 +127,9 @@ __all__ = [
     "check_connected",
     "check_quality",
     "check_stability",
+    "check_stability",
     "prepare_context",
+    "prepare_context_pyG",
     "compute_mean_mad_from_dataloader",
     "cpu",
     "cuda", 

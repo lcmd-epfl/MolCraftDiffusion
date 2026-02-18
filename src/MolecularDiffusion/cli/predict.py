@@ -45,12 +45,109 @@ def is_rank_zero():
     return True
 
 
-def load_model(chkpt_path):
-    """Load a pre-trained model from checkpoint."""
-    engine = Engine(None, None, None, None, None)
-    engine = engine.load_from_checkpoint(chkpt_path, interference_mode=True)
-    engine.model.eval()
-    return engine
+def load_model(chkpt_path, task_config=None, atom_vocab=None):
+    """Load a pre-trained model from checkpoint with auto-detection."""
+    log.info(f"Loading checkpoint from: {chkpt_path}")
+    
+    # Try loading as Lightning checkpoint first if it has .ckpt extension
+    if chkpt_path.endswith('.ckpt'):
+        try:
+            from MolecularDiffusion.core.engine_lightning import EngineLightning
+            wrapper = EngineLightning.load_from_checkpoint(chkpt_path, map_location="cpu")
+            log.info("Successfully loaded model using EngineLightning.load_from_checkpoint")
+            
+            # Need to return something that has a .model attribute for backward compatibility
+            class SolverWrapper:
+                def __init__(self, task):
+                    self.model = task
+            
+            solver = SolverWrapper(wrapper.task)
+            solver.model.eval()
+            return solver
+        except Exception as e:
+            log.warning(f"EngineLightning.load_from_checkpoint failed ({type(e).__name__}: {e}). Trying manual fallback.")
+
+    # Manual fallback or original engine (.pkl/no extension)
+    checkpoint = torch.load(chkpt_path, map_location="cpu", weights_only=False)
+    
+    # Check if it's a Lightning checkpoint dictionary
+    if "hyper_parameters" in checkpoint:
+        log.info("Detected Lightning checkpoint dictionary.")
+        hparams = checkpoint.get("hyper_parameters", {})
+        
+        # Try to get model_config from checkpoint
+        model_config = hparams.get("model_config", task_config)
+        if model_config is None:
+             raise ValueError("Lightning checkpoint lacks 'model_config' and no 'task_config' provided.")
+             
+        # Instantiate task
+        if isinstance(model_config, dict):
+            model_config = OmegaConf.create(model_config)
+        
+        # Ensure we have atom_vocab if needed
+        if atom_vocab is not None and ('atom_vocab' not in model_config or model_config.atom_vocab is None):
+            OmegaConf.set_struct(model_config, False)
+            model_config.atom_vocab = atom_vocab
+
+        task_factory = hydra.utils.instantiate(model_config)
+        task = task_factory.build()
+        
+        # Load weights
+        state_dict = checkpoint.get("state_dict", {})
+        cleaned_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("task."):
+                cleaned_state_dict[k[5:]] = v
+            else:
+                cleaned_state_dict[k] = v
+        
+        task.load_state_dict(cleaned_state_dict, strict=False)
+        log.info(f"Loaded {len(cleaned_state_dict)} parameters from state_dict")
+
+        # Try to recover mean/std if they are in the checkpoint root or state_dict but not as buffers
+        for key in ["mean", "std", "weight"]:
+            val = None
+            if key in checkpoint:
+                 val = checkpoint[key]
+            elif f"task.{key}" in state_dict:
+                 val = state_dict[f"task.{key}"]
+            elif key in state_dict:
+                 val = state_dict[key]
+            
+            if val is not None:
+                if not isinstance(val, torch.Tensor):
+                    val = torch.as_tensor(val, dtype=torch.float32)
+                
+                # Register as buffer to ensure it moves with the model to the correct device
+                if key in task._buffers:
+                    task._buffers[key].copy_(val)
+                else:
+                    task.register_buffer(key, val)
+        
+        # Ensure task has a device attribute
+        if not hasattr(task, 'device'):
+            task.device = next(task.parameters()).device if list(task.parameters()) else torch.device('cpu')
+
+        class SolverWrapper:
+            def __init__(self, task):
+                self.model = task
+        
+        solver = SolverWrapper(task)
+        solver.model.eval()
+        # Ensure task.device is updated to the actual device solver is using
+        if hasattr(solver.model, 'device') and solver.model.device != next(solver.model.parameters()).device:
+             solver.model.device = next(solver.model.parameters()).device if list(solver.model.parameters()) else torch.device('cpu')
+        elif not hasattr(solver.model, 'device'):
+             solver.model.device = next(solver.model.parameters()).device if list(solver.model.parameters()) else torch.device('cpu')
+        return solver
+    else:
+        # Original Engine checkpoint
+        engine = Engine(None, None, None, None, None)
+        solver = engine.load_from_checkpoint(chkpt_path, interference_mode=True)
+        solver.model.eval()
+        # Ensure task.device is updated to the actual device solver is using
+        solver.model.device = solver.device
+        return solver
 
 
 def xyz2mol(xyz_file, atom_vocab, node_feature, edge_type="fully_connected", 
@@ -142,9 +239,9 @@ def count_atoms_from_xyz(path: str) -> int:
         return 0
 
 
-def _runner(solver, xyz_paths: list, max_atoms: int = 100):
-    """Run predictions on XYZ files."""
-    device = solver.model.device
+def _runner(solver, xyz_paths: list, max_atoms: int = 100) -> torch.Tensor:
+    """Runs predictions on a list of XYZ files."""
+    device = getattr(solver.model, 'device', next(solver.model.parameters()).device if list(solver.model.parameters()) else torch.device('cpu'))
     task_names = list(solver.model.task.keys())
     num_molecules = len(xyz_paths)
 
@@ -193,15 +290,22 @@ def runner(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         seed_everything(cfg.seed, workers=True)
 
     log.info(f"Instantiating diffusion task and loading the model <{cfg.tasks._target_}>")
-    solver = load_model(cfg.chkpt_directory)
+    solver = load_model(cfg.chkpt_directory, task_config=cfg.tasks, atom_vocab=cfg.atom_vocab)
    
     task_names = list(solver.model.task.keys())
     
-    if not hasattr(solver.model, 'std'):
+    if not hasattr(solver.model, 'std') or solver.model.std is None:
         chkpt = torch.load(cfg.chkpt_directory, weights_only=False)
-        solver.model.std = chkpt["model"]["std"].to(solver.model.device)
-        solver.model.weight = chkpt["model"]["weight"].to(solver.model.device)
-        solver.model.mean = chkpt["model"]["mean"].to(solver.model.device)
+        if "model" in chkpt:
+            solver.model.std = chkpt["model"].get("std", torch.ones(1)).to(solver.model.device)
+            solver.model.weight = chkpt["model"].get("weight", torch.ones(1)).to(solver.model.device)
+            solver.model.mean = chkpt["model"].get("mean", torch.zeros(1)).to(solver.model.device)
+        elif "state_dict" in chkpt:
+            # Fallback for Lightning if not already loaded by load_model
+            sd = chkpt["state_dict"]
+            solver.model.std = sd.get("task.std", sd.get("std", torch.ones(1))).to(solver.model.device)
+            solver.model.weight = sd.get("task.weight", sd.get("weight", torch.ones(1))).to(solver.model.device)
+            solver.model.mean = sd.get("task.mean", sd.get("mean", torch.zeros(1))).to(solver.model.device)
         
     if not hasattr(solver.model, 'atom_vocab'):
         solver.model.atom_vocab = cfg.atom_vocab

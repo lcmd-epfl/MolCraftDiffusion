@@ -143,9 +143,13 @@ class ModelTaskFactory:
             or not torch.distributed.is_initialized()
             or torch.distributed.get_rank() == 0
         )
+        
+
+        dynamics_in_node_nf = self.dynamics_in_node_nf
+        
         # Construct shared EGNN dynamics
         dynamics_model = EGNN_dynamics(
-            in_node_nf=self.dynamics_in_node_nf,
+            in_node_nf=dynamics_in_node_nf,
             context_node_nf=self.context_node_nf,
             n_dims=3,
             hidden_nf=self.hidden_size,
@@ -179,6 +183,8 @@ class ModelTaskFactory:
                 extra_norm_values=self.kwargs.get("extra_norm_values", []),
                 context_mask_rate=self.kwargs.get("context_mask_rate", 0.15),
                 mask_value=self.kwargs.get("mask_value", None), # CFG
+                use_unknown_fallback=self.kwargs.get("use_unknown_fallback", False),
+                atom_vocab=self.atom_vocab,
             )
             
             if self.kwargs.get("sp_regularizer_deploy", False):
@@ -231,10 +237,12 @@ class ModelTaskFactory:
                 criterion=self.kwargs.get("criterion", "mse"),
                 metric=self.kwargs.get("metric", "mae"),
                 num_mlp_layer=self.kwargs.get("num_mlp_layer", 2),
-                mlp_batch_norm=self.normalization,
+                mlp_batch_norm=self.kwargs.get("mlp_batch_norm", None),  # Options: None, 'layernorm', 'batchnorm'
                 mlp_dropout=self.kwargs.get("mlp_dropout", 0.0),
-                normalization=self.normalization,
-                num_class=len(self.kwargs.get("task_learn", ""))
+                normalization=self.kwargs.get("target_normalization", True),  # Normalize targets by mean/std
+                num_class=len(self.kwargs.get("task_learn", "")),
+                prediction_mlp_type=self.kwargs.get("prediction_mlp_type", "pernode"),
+                prediction_activation=self.kwargs.get("prediction_activation", "relu"),
             )
 
         elif self.task_type == "guidance":
@@ -260,9 +268,8 @@ class ModelTaskFactory:
                 nu_arr=self.kwargs.get("nu_arr"),
                 mapping=self.kwargs.get("mapping"),
             )
-            self.task = GuidanceModelPrediction(
-                model,
-                noise_model,
+            # Select task class based on dense_mode flag
+            task_kwargs = dict(
                 task=self.kwargs.get("task_learn", ""),
                 include_charge=True,
                 metric=self.kwargs.get("metric", "mae"),
@@ -273,8 +280,11 @@ class ModelTaskFactory:
                 weight_classes=self.kwargs.get("weight_classes"),
                 norm_values=self.kwargs.get("norm_values"),
                 t_max=self.kwargs.get("t_max"),
-                num_class=len(self.kwargs.get("task_learn", ""))
+                num_class=len(self.kwargs.get("task_learn", "")),
+                loss_weighting=self.kwargs.get("loss_weighting", "none")
             )
+            
+            self.task = GuidanceModelPrediction(model, noise_model, **task_kwargs)
 
         else:
             raise ValueError(f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'regression', or 'guidance'.")
@@ -285,8 +295,11 @@ class ModelTaskFactory:
 
         if self.chkpt_path:    
             try:
-                ckpt = torch.load(self.chkpt_path)
-                chk_point = getattr(ckpt, "ema_model", ckpt["model"])
+                ckpt = torch.load(self.chkpt_path, weights_only=False)
+                chk_point = ckpt.get("ema_model") or ckpt.get("model")
+                if chk_point is None:
+                    raise KeyError("Checkpoint missing both 'ema_model' and 'model'")
+
                 if is_main_process:
                     logger.info(f"Loading checkpoint from {self.chkpt_path}")
                 
@@ -300,26 +313,53 @@ class ModelTaskFactory:
                             if load_result.unexpected_keys:
                                 logger.warning(f"\033[93mUnexpected keys ({len(load_result.unexpected_keys)}): {load_result.unexpected_keys}\033[0m")
                 except RuntimeError as e:
-                    n_dim_pretrain = chk_point["model.dynamics.egnn.embedding.layers.0.weight"].shape[1] 
-                    n_extra_dim = self.dynamics_in_node_nf - n_dim_pretrain + len(self.condition_names)
+                    use_adapter_module = self.kwargs.get("use_adapter_module", False)
+                    n_dim_pretrain = chk_point["model.dynamics.egnn.embedding.layers.0.weight"].shape[1]
+                    n_extra_dim = self.dynamics_in_node_nf - n_dim_pretrain
+                    if not use_adapter_module:
+                        n_extra_dim += len(self.condition_names)
+
+                    made_adjustment = False
 
                     if n_extra_dim > 0:
                         if is_main_process:
-                            logger.info("Adding dimensions to the EGNN...")
+                            logger.info("Adding dimensions to the EGNN input embedding...")
                         chk_point["model.dynamics.egnn.embedding.layers.0.weight"] = adjust_weights(
-                            chk_point["model.dynamics.egnn.embedding.layers.0.weight"], (self.hidden_size, 
-                                                                                        n_dim_pretrain + n_extra_dim)
+                            chk_point["model.dynamics.egnn.embedding.layers.0.weight"],
+                            (self.hidden_size, n_dim_pretrain + n_extra_dim),
                         )
 
                         chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"] = adjust_weights(
-                            chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"], (n_dim_pretrain + n_extra_dim, 
-                                                                                            self.hidden_size)
+                            chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"],
+                            (n_dim_pretrain + n_extra_dim, self.hidden_size),
                         )
-    
+
                         chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"] = adjust_bias(
-                        chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"], (n_dim_pretrain + n_extra_dim,)
-                        )      
-                        res = self.task.load_state_dict(chk_point, strict=False) 
+                            chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"],
+                            (n_dim_pretrain + n_extra_dim,),
+                        )
+                        made_adjustment = True
+
+                    if use_adapter_module:
+                        emb_c_in_w_keys = [
+                            k for k in chk_point.keys()
+                            if k.endswith("model.dynamics.egnn.emb_c_in.layers.0.weight")
+                        ]
+                        if emb_c_in_w_keys:
+                            emb_c_in_w_key = emb_c_in_w_keys[0]
+                            n_context_pretrain = chk_point[emb_c_in_w_key].shape[1]
+                            n_context_extra = self.context_node_nf - n_context_pretrain
+                            if n_context_extra > 0:
+                                if is_main_process:
+                                    logger.info("Adding dimensions to the adapter context embedding...")
+                                chk_point[emb_c_in_w_key] = adjust_weights(
+                                    chk_point[emb_c_in_w_key],
+                                    (self.hidden_size, n_context_pretrain + n_context_extra),
+                                )
+                                made_adjustment = True
+
+                    if made_adjustment:
+                        res = self.task.load_state_dict(chk_point, strict=False)
                         if res.missing_keys or res.unexpected_keys:
                             if is_main_process:
                                 logger.warning(f"\033[93mCheckpoint loaded with mismatched keys after adjustment.\033[0m")
@@ -341,4 +381,3 @@ class ModelTaskFactory:
         self.task.atom_vocab = self.atom_vocab
             
         return self.task
-

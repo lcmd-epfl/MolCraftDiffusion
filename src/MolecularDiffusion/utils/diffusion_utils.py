@@ -66,3 +66,48 @@ def prepare_context(task_names, minibatch, property_norms, normalization_method=
     assert context.size(2) == context_node_nf
     return context
 
+
+def prepare_context_pyG(task_names, minibatch, property_norms, normalization_method="maxmin"):
+    mol_graph = minibatch["graph"]
+    batch_idx = mol_graph.batch
+    
+    context_list = []
+    for key in task_names:
+        properties = minibatch[key]
+        if normalization_method is not None:
+            if normalization_method == "mad":
+                properties = (properties - property_norms[key]["mean"]) / property_norms[key][
+                    "mad"
+                ]
+            elif normalization_method == "maxmin": # [-1, 1]
+                properties = 2*(properties - property_norms[key]["min"]) / (  
+                    property_norms[key]["max"] - property_norms[key]["min"]
+                ) - 1
+            elif "value" in normalization_method: # "value_n where n is the value to normalize"
+                value = float(normalization_method.split("_")[1])
+                properties = properties / value
+            else:
+                raise ValueError(f"Unknown normalization method: {normalization_method}")
+    
+        if len(properties.size()) == 1:
+            # Global feature.
+            # Expand to (num_nodes, 1) using batch_idx
+            expanded = properties[batch_idx].unsqueeze(1)
+            context_list.append(expanded)
+        elif len(properties.size()) == 2:
+             # Global feature with extra dim (batch_size, 1)
+            if properties.size(1) == 1:
+                expanded = properties[batch_idx]
+                context_list.append(expanded)
+            else:
+                 # Assume global feature with vector value (batch_size, feat_dim)
+                 expanded = properties[batch_idx]
+                 context_list.append(expanded)
+        else:
+            raise ValueError("Invalid tensor size for PyG context, expected 1D or 2D global properties.")
+            
+    if not context_list:
+        return None
+        
+    context = torch.cat(context_list, dim=1)
+    return context

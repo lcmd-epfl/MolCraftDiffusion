@@ -320,8 +320,24 @@ def save_xyz_file(
     node_mask=None,
     idxs=None,
     tol=1e-4,
+    atomic_numbers=None,
+    use_unknown_fallback=False,
 ):
-    """Save XYZ files for a batch of molecules, skipping atoms near (0,0,0)."""
+    """Save XYZ files for a batch of molecules, skipping atoms near (0,0,0).
+    
+    Args:
+        path: Output directory
+        one_hot: [B, N, C] one-hot encoding
+        positions: [B, N, 3] coordinates
+        atom_decoder: List mapping indices to atom symbols
+        id_from: Starting index for filenames
+        name: Filename prefix
+        node_mask: Optional [B, N] or [B, N, 1] mask
+        idxs: Optional indices for filenames
+        tol: Tolerance for filtering atoms near origin
+        atomic_numbers: Optional [B, N] atomic numbers for fallback
+        use_unknown_fallback: If True and argmax hits unknown column, use atomic_numbers
+    """
     os.makedirs(path, exist_ok=True)
 
     if node_mask is not None:
@@ -343,11 +359,39 @@ def save_xyz_file(
             filtered_atoms = atoms[mask]
             filtered_coords = coords[mask]
             n_valid = filtered_atoms.size(0)
+            
+            # Get atomic numbers for fallback if available
+            if atomic_numbers is not None:
+                filtered_Z = atomic_numbers[batch_i, :n_atoms][mask]
+            else:
+                filtered_Z = None
 
             with open(filename, "w") as f:
                 f.write(f"{n_valid}\n\n")
-                for atom, pos in zip(filtered_atoms, filtered_coords):
-                    symbol = atom_decoder[atom.item()]
+                for i, (atom, pos) in enumerate(zip(filtered_atoms, filtered_coords)):
+                    atom_idx = atom.item()
+                    
+                    # Get symbol from decoder
+                    if atom_idx < len(atom_decoder):
+                        symbol = atom_decoder[atom_idx]
+                    else:
+                        symbol = None  # Unknown index
+                    
+                    # Use atomic number fallback when:
+                    # 1. use_unknown_fallback is True AND
+                    # 2. (symbol is invalid/placeholder OR atom_idx >= len(atom_decoder))
+                    is_invalid_symbol = (symbol is None or 
+                                        symbol not in chemical_symbols or 
+                                        symbol in ("Suisei", "X", "UNK", "?"))
+                    
+                    if use_unknown_fallback and is_invalid_symbol:
+                        if filtered_Z is not None:
+                            symbol = chemical_symbols[int(filtered_Z[i].item())]
+                        else:
+                            symbol = "X"  # Last resort fallback
+                    elif symbol is None:
+                        symbol = "X"
+                        
                     f.write(f"{symbol} {pos[0]:.9f} {pos[1]:.9f} {pos[2]:.9f}\n")
 
             if os.path.exists(filename):

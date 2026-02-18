@@ -83,6 +83,29 @@ class Meter(object):
                 v = v.item()
             self.records[k].append(v)
 
+    def set_epoch(self, epoch_id):
+        """
+        Set the epoch counter for resuming from a checkpoint.
+        
+        This method properly pads the internal time and epoch2batch lists
+        to handle the case where training is resumed from an intermediate epoch.
+        
+        Parameters:
+            epoch_id (int): The epoch to resume from.
+        """
+        if epoch_id > self.epoch_id:
+            # Pad the time list with copies of the last timestamp
+            current_time = time.time()
+            while len(self.time) <= epoch_id:
+                self.time.append(current_time)
+            
+            # Pad the epoch2batch list with copies of the last batch count
+            last_batch = self.epoch2batch[-1] if self.epoch2batch else 0
+            while len(self.epoch2batch) <= epoch_id:
+                self.epoch2batch.append(last_batch)
+        
+        self.epoch_id = epoch_id
+
     def step(self):
         """
         Step an epoch for this meter.

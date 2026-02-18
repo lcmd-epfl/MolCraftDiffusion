@@ -33,6 +33,73 @@ def is_rank_zero():
     return True
 
 
+def load_checkpoint_weights(task, chkpt_path):
+    """Load weights from checkpoint with support for Engine and Lightning formats."""
+    log.info(f"Loading weights from: {chkpt_path}")
+    
+    checkpoint = torch.load(chkpt_path, map_location="cpu", weights_only=False)
+    
+    # Check if it's a Lightning checkpoint
+    if "state_dict" in checkpoint:
+        log.info("Detected Lightning checkpoint.")
+        state_dict = checkpoint["state_dict"]
+        cleaned_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("task."):
+                cleaned_state_dict[k[5:]] = v
+            else:
+                cleaned_state_dict[k] = v
+        
+        load_result = task.load_state_dict(cleaned_state_dict, strict=False)
+        log.info(f"Loaded {len(cleaned_state_dict)} parameters from state_dict")
+        if load_result.missing_keys:
+            log.warning(f"Missing keys: {load_result.missing_keys}")
+        
+        # Recover statistics
+        for key in ["mean", "std", "weight"]:
+            val = None
+            if key in checkpoint:
+                 val = checkpoint[key]
+            elif f"task.{key}" in state_dict:
+                 val = state_dict[f"task.{key}"]
+            elif key in state_dict:
+                 val = state_dict[key]
+            
+            if val is not None:
+                if not isinstance(val, torch.Tensor):
+                    val = torch.as_tensor(val, dtype=torch.float32)
+                
+                # Register as buffer to ensure it moves with the model to the correct device
+                if key in task._buffers:
+                    task._buffers[key].copy_(val)
+                else:
+                    task.register_buffer(key, val)
+    elif "model" in checkpoint:
+        log.info("Detected original Engine checkpoint.")
+        task.load_state_dict(checkpoint["model"], strict=False)
+        # Recover statistics
+        for key in ["mean", "std", "weight"]:
+            if key in checkpoint["model"]:
+                val = checkpoint["model"][key]
+                if not isinstance(val, torch.Tensor):
+                    val = torch.as_tensor(val, dtype=torch.float32)
+                
+                # Register as buffer to ensure it moves with the model to the correct device
+                if key in task._buffers:
+                    task._buffers[key].copy_(val)
+                else:
+                    task.register_buffer(key, val)
+    else:
+        # Fallback for unexpected formats
+        log.warning("Unknown checkpoint format. Attempting direct load.")
+        task.load_state_dict(checkpoint, strict=False)
+
+    # Ensure task has a device attribute for initial loading, 
+    # but don't hardcode it if it's about to be moved by Engine
+    if not hasattr(task, 'device'):
+        task.device = next(task.parameters()).device if list(task.parameters()) else torch.device('cpu')
+
+
 def engine_wrapper(task_module, data_module, trainer_module):
     """Run evaluation with Engine."""
     trainer_module.get_optimizer()
@@ -48,6 +115,8 @@ def engine_wrapper(task_module, data_module, trainer_module):
         collate_fn=data_module.collate_fn,
         logger="logging",
     )
+    # Ensure task.device is updated to the actual device solver is using
+    task_module.task.device = solver.device
 
     _, preds_test, targets_test = solver.evaluate("test")
     y_preds = torch.cat(preds_test, dim=0)
@@ -68,8 +137,22 @@ def predict(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     
     log.info(f"Instantiating task <{cfg.tasks._target_}>")
     act_fn = hydra.utils.instantiate(cfg.tasks.act_fn)
-    task_module: ModelTaskFactory_EGCL = hydra.utils.instantiate(cfg.tasks, act_fn=act_fn)
+    
+    # Store checkpoint path and temporarily disable it for task_module.build()
+    # to avoid the factory's internal (legacy) loading.
+    chkpt_path = cfg.tasks.get("chkpt_path")
+    
+    # Create a copy of the config to modify safely
+    tasks_cfg = OmegaConf.to_container(cfg.tasks, resolve=True)
+    tasks_cfg['chkpt_path'] = None
+    tasks_cfg = OmegaConf.create(tasks_cfg)
+    
+    task_module: ModelTaskFactory_EGCL = hydra.utils.instantiate(tasks_cfg, act_fn=act_fn)
     task_module.build()
+    
+    # Manually load weights using our robust loader
+    if chkpt_path:
+        load_checkpoint_weights(task_module.task, chkpt_path)
     
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     trainer_module: OptimSchedulerFactory = hydra.utils.instantiate(
