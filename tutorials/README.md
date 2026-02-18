@@ -4,7 +4,7 @@ This directory, available at `/tutorials`, contains a series of tutorials for us
 
 ## Table of Contents
 
-0.  [Data Module Guide](./00_data_module.md) - Supported formats, featurization, preprocessing
+0.  [Data Module Guide](./00_data_module/README.md) - Supported formats, featurization, preprocessing
 1.  [Training a Diffusion Model](./01_training_diffusion/README.md)
 2.  [Training a Regressor Model](./02_training_regressor/README.md)
 3.  [Training a Guidance Model](./03_training_guidance/README.md)
@@ -14,3 +14,4 @@ This directory, available at `/tutorials`, contains a series of tutorials for us
 7.  [Property-Directed Generation (CFG/GG/Hybrid)](./07_property_directed_generation/README.md)
 8.  [Prediction and Evaluation Modes](./08_eval_predict/README.md)
 9.  [Analyze Module](./09_analyze/README.md)
+10. [Data Preparation CLI](./10_data_preparation/README.md) - Compilation, augmentation, and dataset operations

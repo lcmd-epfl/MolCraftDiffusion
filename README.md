@@ -85,12 +85,13 @@ Make sure you have installed the package in editable mode as described above, an
 *   `predict`: Run prediction with a trained model.
 *   `eval_predict`: Evaluate predictions.
 *   `analyze`: Perform analysis and post-processing on generated molecules.
+*   `data`: Data processing utilities (preparation, augmentation, and dataset operations).
 
 **Command Syntax:**
 
     MolCraftDiff [COMMAND] [CONFIG_NAME/ARGUMENTS]
 
-*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval_predict`, or `analyze`.
+*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval_predict`, `analyze`, or `data`.
 *   `[CONFIG_NAME]`: The name of the configuration file from the `configs/` directory (e.g., `train`, `example_diffusion_config`).
 *   `[ARGUMENTS]`: Additional command-line arguments to override configuration settings.
 
@@ -104,6 +105,9 @@ Make sure you have installed the package in editable mode as described above, an
 
     # Predict properties using a trained model
     MolCraftDiff predict my_prediction_config
+
+    # Compile molecular data into an ASE database
+    MolCraftDiff data prepare compile -s data_dir/ -d dataset.db
 
 
 **Getting Help:**
