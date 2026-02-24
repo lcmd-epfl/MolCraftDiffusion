@@ -1,0 +1,4 @@
+# Use the original custom Engine class
+engine_type: original
+
+# Engine is instantiated inline in train.py using engine_wrapper()
