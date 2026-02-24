@@ -13,14 +13,14 @@ Use this mode when you have a folder of geometry files (e.g., `.xyz`) and want t
 
 ### 1. Configuration
 
-Create a configuration file (e.g., `configs/my_prediction.yaml`) to specify your input files and model checkpoint.
+Create a configuration file (e.g., `my_prediction.yaml`) to specify your input files and model checkpoint. You can create this file in any directory.
 
 ```yaml
 # @package _global_
 
 defaults:
-  - tasks: guidance
-  - interference: prediction
+  - tasks: guidance      # Base template bundled with package
+  - interference: prediction # Base template bundled with package
   - _self_
 
 # 1. Run Name (used for logging)
@@ -51,7 +51,7 @@ max_atoms: 100
 
 ### 2. Running the Command
 
-Execute the prediction using the `MolCraftDiff` CLI:
+Execute the prediction using the `MolCraftDiff` CLI, pointing to your config file:
 
 ```bash
 MolCraftDiff predict my_prediction
@@ -76,14 +76,14 @@ Use this mode when you have a labeled dataset (ground truth) and want to quantif
 
 ### 1. Configuration
 
-Create a configuration file (e.g., `configs/my_evaluation.yaml`). This looks more like a training config because it needs to load a full dataset object.
+Create a configuration file (e.g., `my_evaluation.yaml`). This looks more like a training config because it needs to load a full dataset object.
 
 ```yaml
 # @package _global_
 
 defaults:
-  - data: mol_dataset  
-  - tasks: guidance # or 'regression', depending on your model type
+  - data: mol_dataset    # Base template bundled with package
+  - tasks: guidance      # Base template bundled with package
   - trainer: default
   - hydra: default
   - _self_
@@ -126,7 +126,7 @@ seed: 9
 
 ### 2. Running the Command
 
-Execute the evaluation using the `MolCraftDiff` CLI:
+Execute the evaluation using the `MolCraftDiff` CLI, pointing to your config file:
 
 ```bash
 MolCraftDiff eval_predict my_evaluation

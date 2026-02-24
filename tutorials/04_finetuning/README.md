@@ -14,12 +14,10 @@ Fine-tuning is a powerful technique where you take a pre-trained model and conti
 >
 > If the architectures do not match, PyTorch will be unable to load the weights from the checkpoint, and the fine-tuning process will fail. Always ensure your model configuration YAML file matches the settings of the pre-trained model.
 
-If you are adapting from our pre-trained diffusion model, please use the config file `configs/tasks/diffusion_pretrained.yaml` for the tasks
+If you are adapting from our pre-trained diffusion model, please use the config template `diffusion_pretrained` for the tasks (it is bundled with the package).
 
 
 ## The Core Concepts of Fine-Tuning
-
-**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
 
 Fine-tuning is activated by one key parameter: `tasks.chkpt_path`. By providing a path to a pre-trained model checkpoint here, you tell the trainer to load those weights instead of starting from scratch.
 
@@ -32,7 +30,7 @@ Another universal best practice for fine-tuning is to use a **very low learning 
 > 
 > You can use the path to one of these downloaded models in your `tasks.chkpt_path` to start fine-tuning immediately.
 
-This tutorial covers three common fine-tuning scenarios.
+This tutorial covers three common fine-tuning scenarios. You can create your experiment configuration files in any directory.
 
 ### Data Configuration for Fine-Tuning
 
@@ -168,7 +166,7 @@ tasks:
 
 ### Run Your Fine-Tuning Job
 
-For any of these scenarios, you launch the training with the same `MolCraftDiff train` command:
+For any of these scenarios, you launch the training with the same `MolCraftDiff train` command, pointing to your experiment config file:
 
 ```bash
 # Example for Scenario 2

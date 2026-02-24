@@ -6,22 +6,20 @@ This tutorial explains how to train a model to predict specific molecular proper
 
 We will follow the same workflow as before: all configuration will be done in a single experiment file that overrides a set of default templates.
 
-**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
-
 ### Step 1: Create Your Experiment File
 
-Let's create a new configuration file for our regression experiment.
+Let's create a new configuration file for our regression experiment. You can create it anywhere, but for this tutorial, we will create it in the current directory.
 
 ```bash
 # You can start with a copy of a general training config
-cp configs/train.yaml configs/my_regressor_run.yaml
+cp configs/train.yaml my_regressor_run.yaml
 ```
 
-Now, open `configs/my_regressor_run.yaml` to begin editing.
+Now, open `my_regressor_run.yaml` to begin editing.
 
 ### Step 2: Set the `defaults` for Regression
 
-This is the most important change. We need to tell Hydra to use the `regression` task and its corresponding trainer settings, which are optimized for this task.
+This is the most important change. We need to tell Hydra to use the `regression` task and its corresponding trainer settings, which are optimized for this task and bundled with the package.
 
 ```yaml
 # In my_regressor_run.yaml

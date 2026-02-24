@@ -183,8 +183,6 @@ class ModelTaskFactory:
                 extra_norm_values=self.kwargs.get("extra_norm_values", []),
                 context_mask_rate=self.kwargs.get("context_mask_rate", 0.15),
                 mask_value=self.kwargs.get("mask_value", None), # CFG
-                use_unknown_fallback=self.kwargs.get("use_unknown_fallback", False),
-                atom_vocab=self.atom_vocab,
             )
             
             if self.kwargs.get("sp_regularizer_deploy", False):

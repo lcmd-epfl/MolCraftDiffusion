@@ -13,9 +13,7 @@ This tutorial covers advanced generation techniques that steer the process towar
 
 ## 1. Introduction
 
-**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
-
-Property-directed generation allows you to guide the diffusion model to generate molecules with specific desired properties. This is achieved by providing an additional signal to the model during the sampling process. This tutorial covers three main techniques for property-directed generation.
+Property-directed generation allows you to guide the diffusion model to generate molecules with specific desired properties. This is achieved by providing an additional signal to the model during the sampling process. This tutorial covers three main techniques for property-directed generation. You can create your experiment configuration files in any directory, as the base templates are bundled with the package.
 
 ## 2. Classifier-Free Guidance (CFG)
 
@@ -23,7 +21,7 @@ Classifier-Free Guidance is a technique that amplifies the learned conditional d
 
 ### Configuration
 
-The configuration for CFG is in `configs/interference/gen_cfg.yaml`.
+The configuration for CFG typically inherits from the `interference: gen_cfg` template.
 
 | Parameter | Description |
 | :--- | :--- |
@@ -32,13 +30,12 @@ The configuration for CFG is in `configs/interference/gen_cfg.yaml`.
 | `property_names`| A list of property names that the model was trained on. |
 | `cfg_scale` | A scaling factor that controls the strength of the guidance. A higher value will result in a stronger push towards the target properties. |
 
-### Example `gen_cfg.yaml`
+### Example `my_cfg.yaml`
 
 ```yaml
-
 defaults:
   - tasks: diffusion
-  - interference: gen_cfg
+  - interference: gen_cfg # Base template bundled with package
   - _self_
 
 name: "akatsuki"
@@ -48,16 +45,9 @@ diffusion_steps: 600
 seed: 9
 
 interference:
-  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
-  task_type: conditional
-  sampling_mode: "ddpm"
   num_generate: 100
-  mol_size:  [0,0]
   target_values: [3,1.5]
   property_names: ["S1_exc", "T1_exc"]
-  batch_size: 1
-  seed: 86
-  visualize_trajectory: False
   output_path: generated_mol
   condition_configs:
     cfg_scale: 1
@@ -66,7 +56,7 @@ interference:
 ### Running CFG Generation
 
 ```bash
-MolCraftDiff generate [config_file]
+MolCraftDiff generate my_cfg
 ```
 
 ## 3. Gradient Guidance (GG)
@@ -75,12 +65,12 @@ Gradient Guidance uses a separate, pre-trained regressor model (like the one fro
 
 ### Configuration
 
-The configuration for GG is in `configs/interference/gen_gg.yaml`.
+The configuration for GG typically inherits from the `interference: gen_gg` template.
 
 | Parameter | Description |
 | :--- | :--- |
 | `task_type` | Must be set to `gradient_guidance`. |
-| `target_function` | Specifies the guidance model to use. This is configured using Hydra's instantiation syntax. `_target_` points to a callable class that will be instantiated to guide the generation. This class should accept the concatenated cartesian coordinates/atomic nodes and the current diffusion timestep to predict a score. The data representation must match the diffusion model. In the example, `chkpt_directory` is an argument passed to the `SFEnergyScore` class constructor, specifying the path to the pre-trained guidance model. |
+| `target_function` | Specifies the guidance model to use. This is configured using Hydra's instantiation syntax. `_target_` points to a callable class that will be instantiated to guide the generation. |
 | `gg_scale` | A scaling factor for the gradient. |
 | `max_norm` | The maximum norm of the gradient to prevent exploding gradients. |
 | `scheduler` | A learning rate scheduler for the guidance. |
@@ -89,12 +79,12 @@ The configuration for GG is in `configs/interference/gen_gg.yaml`.
 | `guidance_stop`| The timestep at which to stop applying the guidance. |
 | `n_backwards` | The number of backward steps to take for the guidance. |
 
-### Example `gen_gg.yaml`
+### Example `my_gg.yaml`
 
 ```yaml
 defaults:
   - tasks: diffusion
-  - interference: gen_gg
+  - interference: gen_gg # Base template bundled with package
   - _self_
 
 name: "akatsuki"
@@ -104,16 +94,7 @@ diffusion_steps: 600
 seed: 9
 
 interference:
-  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
-  task_type: gradient_guidance # gg
-  sampling_mode: "ddpm"
   num_generate: 100
-  mol_size:  [0,0]
-  target_values: []
-  property_names: []
-  batch_size: 1
-  seed: 86
-  visualize_trajectory: False
   output_path: generated_mol
   condition_configs:
     cfg_scale: 0
@@ -137,7 +118,7 @@ interference:
 ### Running GG Generation
 
 ```bash
-MolCraftDiff generate [config_file]
+MolCraftDiff generate my_gg
 ```
 
 ## 4. Hybrid CFG/GG Guidance
@@ -146,14 +127,14 @@ It is also possible to combine CFG and GG to guide the generation with both the 
 
 ### Configuration
 
-The configuration for hybrid CFG/GG is in `configs/interference/gen_cfggg.yaml`. It combines the parameters from both CFG and GG.
+The configuration for hybrid CFG/GG typically inherits from the `interference: gen_cfggg` template. It combines the parameters from both CFG and GG.
 
-### Example `gen_cfggg.yaml`
+### Example `my_cfggg.yaml`
 
 ```yaml
 defaults:
   - tasks: diffusion
-  - interference: gen_cfggg
+  - interference: gen_cfggg # Base template bundled with package
   - _self_
 
 name: "akatsuki"
@@ -163,16 +144,9 @@ diffusion_steps: 600
 seed: 9
 
 interference:
-  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
-  task_type: gradient_guidance # cfggg
-  sampling_mode: "ddpm"
   num_generate: 100
-  mol_size:  [0,0]
   target_values: [3,1.5]
   property_names: ["S1_exc", "T1_exc"]
-  batch_size: 1
-  seed: 86
-  visualize_trajectory: False
   output_path: generated_mol
   condition_configs:
     cfg_scale: 1
@@ -196,5 +170,5 @@ interference:
 ### Running Hybrid CFG/GG Generation
 
 ```bash
-MolCraftDiff generate [config_file]
+MolCraftDiff generate my_cfggg
 ```

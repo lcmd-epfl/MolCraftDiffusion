@@ -6,21 +6,19 @@ This tutorial explains how to configure and run a training job for a diffusion m
 
 This project uses a powerful configuration framework called [Hydra](https://hydra.cc/). The easiest and cleanest way to use it is to have **one single YAML file for your experiment** where you define all your custom settings.
 
-**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
-
 ### Step 1: Create Your Experiment File
 
-Your experiment file is your personal workspace. Start by copying the example template:
+Your experiment file is your personal workspace. You can create it anywhere, but for this tutorial, we will create it in the current directory. Start by copying an example template from the project:
 
 ```bash
-cp configs/example_diffusion_config.yaml configs/my_first_run.yaml
+cp configs/example_diffusion_config.yaml my_first_run.yaml
 ```
 
-Now, open `configs/my_first_run.yaml`. This is the only file you'll need to edit.
+Now, open `my_first_run.yaml`. This is the only file you'll need to edit.
 
 ### Step 2: Understand the `defaults` List
 
-The `defaults` list at the top of the file loads a set of pre-defined "templates" for each part of your experiment (data, model, trainer, etc.).
+The `defaults` list at the top of the file loads a set of pre-defined "templates" for each part of your experiment (data, model, trainer, etc.) that are bundled with the package.
 
 ```yaml
 defaults:
@@ -31,7 +29,7 @@ defaults:
   - _self_
 ```
 
-**Think of these default files as a reference manual.** You can look at them (e.g., in `configs/data/`, `configs/tasks/`) to see what parameters are available, but you should not edit them directly. All changes are made in `my_first_run.yaml`.
+**Think of these default files as a reference manual.** You can find the original base configurations in the `configs/` directory of the repository (e.g., in `configs/data/`, `configs/tasks/`) to see what parameters are available, but you should not edit them directly. All changes are made in your local `my_first_run.yaml`.
 
 ### Step 3: Set Your Key Parameters
 
@@ -154,4 +152,4 @@ Launch the training using the `MolCraftDiff` command-line tool. Provide the `tra
 MolCraftDiff train my_first_run
 ```
 
-The tool will automatically find `my_first_run.yaml` in your `configs` directory, build the full configuration from your defaults and overrides, and start the training. All results will be saved in the `trainer.output_path` you specified.
+The tool will automatically find `my_first_run.yaml` in your current directory, build the full configuration from your defaults and overrides, and start the training. All results will be saved in the `trainer.output_path` you specified.

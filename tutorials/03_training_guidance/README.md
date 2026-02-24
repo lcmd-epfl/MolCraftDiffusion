@@ -8,19 +8,19 @@ This process makes the model "time-aware," meaning it learns to predict properti
 
 We will follow the same workflow as before, using a single configuration file to set up the experiment.
 
-**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
-
 ### Step 1: Create Your Experiment File
 
+You can create your experiment file anywhere, but for this tutorial, we will create it in the current directory.
+
 ```bash
-cp configs/train.yaml configs/my_guidance_run.yaml
+cp configs/train.yaml my_guidance_run.yaml
 ```
 
-Open `configs/my_guidance_run.yaml` to begin editing.
+Open `my_guidance_run.yaml` to begin editing.
 
 ### Step 2: Set the `defaults` for Guidance Training
 
-We need to tell Hydra to use the `guidance` task. The trainer settings are often similar to regression, so we can start with the `regression` trainer.
+We need to tell Hydra to use the `guidance` task. The trainer settings are often similar to regression, so we can start with the `regression` trainer. Both are bundled with the package.
 
 ```yaml
 # In my_guidance_run.yaml
@@ -123,7 +123,7 @@ tasks:
 
 ### Step 5: Run Your Training
 
-Launch the training with the `MolCraftDiff train` command:
+Launch the training with the `MolCraftDiff train` command, pointing to your config file:
 
 ```bash
 MolCraftDiff train my_guidance_run

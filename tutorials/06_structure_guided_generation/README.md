@@ -11,14 +11,12 @@ This tutorial explains how to guide molecule generation using structural constra
 
 ## 1. Introduction
 
-**Important Note:** The configuration files for this tutorial must be placed in the `configs/` directory at the root of the project for the scripts to read the settings.
-
 Structure-guided generation allows you to influence the output of the diffusion model by providing a starting molecular structure. This is useful for tasks like:
 
 *   **Inpainting**: Completing a molecule where a part is missing.
 *   **Outpainting**: Extending a molecule from a given fragment.
 
-The process involves providing a reference structure in an XYZ file and specifying which parts of the structure to modify or keep fixed. **Note that all atom indices are 0-indexed.**
+The process involves providing a reference structure in an XYZ file and specifying which parts of the structure to modify or keep fixed. **Note that all atom indices are 0-indexed.** You can create your experiment configuration files in any directory, as the base templates are bundled with the package.
 
 ## 2. Inpainting
 
@@ -26,7 +24,7 @@ Inpainting is the process of filling in a missing part of a molecule. You provid
 
 ### Key Inpainting Parameters
 
-The `condition_configs` section for inpainting now uses a sub-dictionary called `inpaint_cfgs` to group all specific inpainting settings.
+The `condition_configs` section for inpainting uses a sub-dictionary called `inpaint_cfgs` to group all specific inpainting settings.
 
 | Parameter | Location | Description |
 | :--- | :--- | :--- |
@@ -43,15 +41,13 @@ The `condition_configs` section for inpainting now uses a sub-dictionary called 
 
 ### Configuration
 
-Here is an example of a complete configuration file for inpainting, which you can name `my_inpaint.yaml`:
+Here is an example of a complete configuration file for inpainting, which you can save as `my_inpaint.yaml` in your working directory:
 
 ```yaml
-# This file represents the combined configuration for inpainting generation.
-# In the actual project, this is composed from `configs/generate.yaml` and `configs/interference/my_inpaint.yaml`.
-
+# my_inpaint.yaml
 defaults:
   - tasks: diffusion
-  - interference: my_inpaint
+  - interference: gen_inpaint # Base template bundled with package
   - _self_
 
 name: "akatsuki"
@@ -61,18 +57,12 @@ diffusion_steps: 600
 seed: 9
 
 interference:
-  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
-  task_type: inpaint
-  sampling_mode: "ddpm"
   num_generate: 50
-  mol_size: [50, 60] # Target size of the generated molecule (top-level interference param)
+  mol_size: [50, 60] # Target size of the generated molecule
   output_path: "results/my_inpainting_run"
   condition_configs:
     reference_structure_path: "assets/BINOLCpHHH.xyz"
     condition_component: xh
-    n_frames: 0
-    n_retrys: 0
-    t_retry: 180
     inpaint_cfgs:
       # To vary the BINOL part of the molecule, we mask the following 0-indexed atoms:
       mask_node_index: [5, 30, 31, 6, 7, 45, 8, 32, 9, 10, 33, 11, 34, 12, 35, 13, 36, 14, 15, 16, 17, 18, 37, 19, 38, 20, 39, 21, 40, 22, 23, 41, 24, 44, 25, 26, 43, 42]
@@ -84,7 +74,7 @@ interference:
 Use the `MolCraftDiff generate` command with your configuration file:
 
 ```bash
-MolCraftDiff generate my_inpaint.yaml
+MolCraftDiff generate my_inpaint
 ```
 
 ## 3. Outpainting
@@ -93,7 +83,7 @@ Outpainting is the process of growing a molecule from a given fragment. You prov
 
 ### Key Outpainting Parameters
 
-The `condition_configs` section for outpainting now uses a sub-dictionary called `outpaint_cfgs` to group all specific outpainting settings.
+The `condition_configs` section for outpainting uses a sub-dictionary called `outpaint_cfgs` to group all specific outpainting settings.
 
 | Parameter | Location | Description |
 | :--- | :--- | :--- |
@@ -110,17 +100,13 @@ The `condition_configs` section for outpainting now uses a sub-dictionary called
 
 ### Configuration
 
-Here is an example of a complete configuration file for outpainting, which you can name `my_outpaint.yaml`:
-
-### Example `my_outpaint.yaml`
+Here is an example of a complete configuration file for outpainting, which you can save as `my_outpaint.yaml` in your working directory:
 
 ```yaml
-# This file represents the combined configuration for outpainting generation.
-# In the actual project, this is composed from `configs/generate.yaml` and `configs/interference/my_outpaint.yaml`.
-
+# my_outpaint.yaml
 defaults:
   - tasks: diffusion
-  - interference: my_outpaint
+  - interference: gen_outpaint # Base template bundled with package
   - _self_
 
 name: "akatsuki"
@@ -130,18 +116,12 @@ diffusion_steps: 600
 seed: 9
 
 interference:
-  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
-  task_type: outpaint
-  sampling_mode: "ddpm"
   num_generate: 50
-  mol_size: [30, 40] # Target size of the generated molecule (top-level interference param)
+  mol_size: [30, 40] # Target size of the generated molecule
   output_path: "results/my_outpainting_run"
   condition_configs:
     reference_structure_path: "assets/BINOLCp.xyz"
     condition_component: xh
-    n_frames: 0
-    n_retrys: 3
-    t_retry: 180
     outpaint_cfgs:
       # To decorate BINOL-Cp with substituents at 0-indexed atoms 1, 2, and 3, each with 3 bonds:
       connector_dicts:
@@ -156,7 +136,7 @@ interference:
 Use the `MolCraftDiff generate` command with your configuration file:
 
 ```bash
-MolCraftDiff generate my_outpaint.yaml
+MolCraftDiff generate my_outpaint
 ```
 
 ## 4. Geometric Control Settings for Inpainting and Outpainting
