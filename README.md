@@ -20,6 +20,7 @@ The unified generative‑AI framework that streamline training the 3D molecular 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18121166.svg)](https://zenodo.org/records/18121166)
 [![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
 [![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
+[![Tutorials](https://img.shields.io/badge/Tutorials-Docs-blue)](https://preghosh.github.io/MolCraftDiffusion/)
 
 
 Try our interactive demo for molecular generation: [MolCraftDiffusion-demo](https://huggingface.co/spaces/pregH/MolCraftDiffusion-demo)
@@ -177,7 +178,9 @@ We also recommend our in-house and lightweight X11 molecular viewer [V](https://
 Tutorials
 ---------
 
-A comprehensive set of tutorials is available in the [`tutorials/`](./tutorials/) directory, covering topics from basic model training to advanced generation techniques.
+Tutorials are now hosted in the docs site: https://preghosh.github.io/MolCraftDiffusion/
+
+The local `tutorials/` directory is deprecated and will be removed in a future release.
 
 
 
