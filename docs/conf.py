@@ -19,6 +19,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "autoapi.extension",
     "sphinx_copybutton",
+    "sphinx_sitemap",
 ]
 
 myst_enable_extensions = [
@@ -41,7 +42,7 @@ autoapi_member_order = "groupwise"
 autoapi_python_use_implicit_namespaces = True
 autoapi_add_toctree_entry = False   # we add it manually via api.md
 autoapi_ignore = [
-    "*/assets/*",          # vendored third-party code (scscore etc.)
+    "*/assets/*",  # vendored third-party code (scscore etc.)
 ]
 
 source_suffix = {
@@ -53,10 +54,14 @@ templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 suppress_warnings = [
-    "myst.xref_missing",        # broken links in copied tutorial files
+    "myst.xref_missing",
     "autoapi.python_import_resolution",
     "toc.not_readable",
 ]
+
+# Sitemap / SEO
+html_baseurl = "https://preghosh.github.io/MolCraftDiffusion/"
+sitemap_url_scheme = "{link}"
 
 # -- Options for HTML output ---------------------------------------------------
 html_theme = "furo"
@@ -69,6 +74,12 @@ if os.path.exists(_logo_path):
 
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+html_extra_path = ["google093a72c24f91da74.html"]
+
+html_meta = {
+    "description": "MolCraftDiffusion is a framework for 3D molecular generation using diffusion models for data-driven molecular design and computational chemistry.",
+    "keywords": "MolCraftDiffusion, 3D molecular generation, molecular generation, molecular design, diffusion models, computational chemistry, generative AI chemistry, drug design, drug discovery, cheminformatics",
+}
 
 html_theme_options = {
     "source_repository": "https://github.com/pregHosh/MolCraftDiffusion",
@@ -112,7 +123,4 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "torch": ("https://pytorch.org/docs/stable", None),
     "numpy": ("https://numpy.org/doc/stable", None),
-
 }
-
-html_extra_path = ["google093a72c24f91da74.html"]
