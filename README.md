@@ -1,4 +1,4 @@
-MolecularDiffusion
+MolCraftDiffusion
 ==================
 
 A unified generative AI framework for 3D molecular generation using diffusion models, designed to streamline the entire workflow from model training to deployment in data-driven computational chemistry pipelines.
