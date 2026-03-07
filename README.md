@@ -1,19 +1,23 @@
 MolecularDiffusion
 ==================
 
-The unified generative‑AI framework that streamline training the 3D molecular diffusion models to their deployment in data-driven computational chemistry pipelines. 
+A unified generative AI framework for 3D molecular generation using diffusion models, designed to streamline the entire workflow from model training to deployment in data-driven computational chemistry pipelines.
+
+MolCraftDiffusion enables researchers to train 3D molecular diffusion models, develop predictive models, and perform guided molecular generation for applications such as catalyst discovery, drug design, and exploration of chemical space.
 
 ![workflow](./images/overview.png)
 
 ## Key Features
 
+MolCraftDiffusion provides a complete pipeline for training/fine-tuning diffusion models, building predictive property models, and applying them to data-driven molecular generation tasks within a unified framework.
+
 *   **End-to-End 3D Molecular Generation Workflow:** Support training diffusion model, and preditive models, and utilize them for various molecular generation tasks, all within a unified framework.
 *   **Curriculum learning:** Efficient way for training and fine-tuning 3D molecular diffusion models
-*   **Guidance Tools:** Generate molecules with specific characteristics:
+*   **Guidance Tools:** MolCraftDiffusion includes several guidance mechanisms that enable the generation of molecules with desired structural or physicochemical properties.
     *   **Property-Targeted Generation:** Generate molecules with a target physicochemical or electronic properties (e.g., excitation energy, dipole moment)
     *   **Inpainting:** Systematically explore structural variants around reference molecules
     *   **Outpainting:** Extend a molecule by generating new parts.
-*   **Command-Line Interface:** A user-friendly CLI for training, generation, and prediction.
+*   **Command-Line Interface:** A simple and flexible CLI interface enables users to perform training, generation, prediction, and analysis tasks directly from the command line.
 
 
 [![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
