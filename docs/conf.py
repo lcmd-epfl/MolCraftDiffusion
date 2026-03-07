@@ -115,6 +115,4 @@ intersphinx_mapping = {
 
 }
 
-html_meta = {
-    "google-site-verification": "google-site-verification: google093a72c24f91da74.html"
-}
+html_extra_path = ["google093a72c24f91da74.html"]
