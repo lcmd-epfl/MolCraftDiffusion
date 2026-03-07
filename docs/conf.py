@@ -112,4 +112,9 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "torch": ("https://pytorch.org/docs/stable", None),
     "numpy": ("https://numpy.org/doc/stable", None),
+
+}
+
+html_meta = {
+    "google-site-verification": "google-site-verification: google093a72c24f91da74.html"
 }
