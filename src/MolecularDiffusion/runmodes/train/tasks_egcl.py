@@ -311,42 +311,50 @@ class ModelTaskFactory:
                             if load_result.unexpected_keys:
                                 logger.warning(f"\033[93mUnexpected keys ({len(load_result.unexpected_keys)}): {load_result.unexpected_keys}\033[0m")
                 except RuntimeError as e:
-                    use_adapter_module = self.kwargs.get("use_adapter_module", False)
-                    n_dim_pretrain = chk_point["model.dynamics.egnn.embedding.layers.0.weight"].shape[1]
-                    n_extra_dim = self.dynamics_in_node_nf - n_dim_pretrain
-                    if not use_adapter_module:
-                        n_extra_dim += len(self.condition_names)
-
                     made_adjustment = False
 
-                    if n_extra_dim > 0:
-                        if is_main_process:
-                            logger.info("Adding dimensions to the EGNN input embedding...")
-                        chk_point["model.dynamics.egnn.embedding.layers.0.weight"] = adjust_weights(
-                            chk_point["model.dynamics.egnn.embedding.layers.0.weight"],
-                            (self.hidden_size, n_dim_pretrain + n_extra_dim),
-                        )
+                    # Suffix-based key search: handles both direct (egnn.embedding...)
+                    # and PyGAdapter-wrapped (egnn_dynamics.egnn.embedding...) paths
+                    emb_in_keys = [k for k in chk_point.keys() if k.endswith("egnn.embedding.layers.0.weight")]
+                    emb_out_w_keys = [k for k in chk_point.keys() if k.endswith("egnn.embedding_out.layers.2.weight")]
+                    emb_out_b_keys = [k for k in chk_point.keys() if k.endswith("egnn.embedding_out.layers.2.bias")]
 
-                        chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"] = adjust_weights(
-                            chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"],
-                            (n_dim_pretrain + n_extra_dim, self.hidden_size),
-                        )
+                    if emb_in_keys and emb_out_w_keys and emb_out_b_keys:
+                        k_emb_in = emb_in_keys[0]
+                        k_emb_out_w = emb_out_w_keys[0]
+                        k_emb_out_b = emb_out_b_keys[0]
 
-                        chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"] = adjust_bias(
-                            chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"],
-                            (n_dim_pretrain + n_extra_dim,),
-                        )
-                        made_adjustment = True
+                        n_dim_pretrain = chk_point[k_emb_in].shape[1]
+                        n_extra_dim = self.dynamics_in_node_nf + self.n_concat_context - n_dim_pretrain
 
-                    if use_adapter_module:
+                        if n_extra_dim > 0:
+                            if is_main_process:
+                                logger.info("Adding dimensions to the EGNN input embedding...")
+                            chk_point[k_emb_in] = adjust_weights(
+                                chk_point[k_emb_in],
+                                (self.hidden_size, n_dim_pretrain + n_extra_dim),
+                            )
+
+                            chk_point[k_emb_out_w] = adjust_weights(
+                                chk_point[k_emb_out_w],
+                                (n_dim_pretrain + n_extra_dim, self.hidden_size),
+                            )
+
+                            chk_point[k_emb_out_b] = adjust_bias(
+                                chk_point[k_emb_out_b],
+                                (n_dim_pretrain + n_extra_dim,),
+                            )
+                            made_adjustment = True
+
+                    if self.n_adapter_context > 0:
                         emb_c_in_w_keys = [
                             k for k in chk_point.keys()
-                            if k.endswith("model.dynamics.egnn.emb_c_in.layers.0.weight")
+                            if k.endswith("egnn.emb_c_in.layers.0.weight")
                         ]
                         if emb_c_in_w_keys:
                             emb_c_in_w_key = emb_c_in_w_keys[0]
                             n_context_pretrain = chk_point[emb_c_in_w_key].shape[1]
-                            n_context_extra = self.context_node_nf - n_context_pretrain
+                            n_context_extra = self.n_adapter_context - n_context_pretrain
                             if n_context_extra > 0:
                                 if is_main_process:
                                     logger.info("Adding dimensions to the adapter context embedding...")
@@ -366,9 +374,9 @@ class ModelTaskFactory:
                                 if res.unexpected_keys:
                                     logger.warning(f"\033[93mUnexpected keys ({len(res.unexpected_keys)}): {res.unexpected_keys}\033[0m")
                     else:
-                        raise RuntimeError("The specified model configuration does not match with the checkpoint.")
-                                
-    
+                        raise RuntimeError(f"The specified model configuration does not match with the checkpoint. Original error: {e}")
+                    
+                    
                 if "mean" in chk_point and "std" in chk_point:
                     self.task.mean = chk_point["mean"]
                     self.task.std = chk_point["std"]                           

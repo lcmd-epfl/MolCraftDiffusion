@@ -17,6 +17,7 @@ import pandas as pd
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+HARTREE_TO_EV = 27.211386245988
 
 # Property group definitions (based on actual morfeus XTB API)
 # Available methods: get_homo, get_lumo, get_charges, get_dipole, get_ip, get_ea,
@@ -88,14 +89,13 @@ def compute_xtb_electronic(
     # Read XYZ file
     elements, coordinates = read_xyz(xyz_path)
     
-    # Initialize XTB (note: morfeus uses 'version' not 'method')
-    # Convert method to version string
-    version = str(method) if method != "ptb" else "ptb"
-    
+    # Morfeus XTB uses the `method` keyword (e.g. 1, 2, or "ptb").
+    xtb_method = str(method) if method == "ptb" else method
+
     xtb = XTB(
         elements=elements,
         coordinates=coordinates,
-        version=version,
+        method=xtb_method,
         charge=charge,
         n_unpaired=n_unpaired,
         solvent=solvent,
@@ -111,17 +111,23 @@ def compute_xtb_electronic(
     
     # Compute molecular-level properties
     try:
-        # Energy properties (HOMO, LUMO in Hartree)
+        # Energy properties are returned by Morfeus/XTB in Hartree.
         if "homo" in requested_props:
-            result["homo"] = xtb.get_homo()
+            homo = xtb.get_homo()
+            result["homo"] = homo
+            result["homo_ev"] = homo * HARTREE_TO_EV
         
         if "lumo" in requested_props:
-            result["lumo"] = xtb.get_lumo()
+            lumo = xtb.get_lumo()
+            result["lumo"] = lumo
+            result["lumo_ev"] = lumo * HARTREE_TO_EV
         
         if "homo_lumo_gap" in requested_props:
             homo = xtb.get_homo()
             lumo = xtb.get_lumo()
-            result["homo_lumo_gap"] = lumo - homo  # Gap in Hartree
+            gap = lumo - homo
+            result["homo_lumo_gap"] = gap
+            result["homo_lumo_gap_ev"] = gap * HARTREE_TO_EV
         
         # Dipole (in atomic units)
         if "dipole" in requested_props:
@@ -383,4 +389,4 @@ def _save_to_ase_db(results: list[dict], db_path: Path, input_dir: str):
                 mol_props[key] = value
         
         # Write to database
-        db.write(atoms, **mol_props)
+        db.write(atoms, data=mol_props)

@@ -10,31 +10,25 @@ import gzip
 import pickle
 import math
 import random
-import warnings
 import logging
 import tempfile
-import signal
+import csv
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Union
+from typing import List, Any, Union
 
 import numpy as np
-import pandas as pd
-import scipy as sp
 import torch
 from tqdm import tqdm
 
-from ase import Atoms, neighborlist
-from ase.data import atomic_numbers, covalent_radii
+from ase import Atoms
 from ase.io import read as ase_read
 from ase.io import write as ase_write
 from ase.db import connect
-from ase.io.extxyz import read_xyz
 
 try:
-    from rdkit import Chem, RDLogger
-    from rdkit.Chem import MolToSmiles as mol2smi, MolToMolBlock
-    from rdkit.Chem import rdchem, rdFingerprintGenerator, rdMolDescriptors
-    from rdkit.Geometry import Point3D
+    from rdkit import Chem
+    from rdkit.Chem import MolToSmiles as mol2smi
+    from rdkit.Chem import rdFingerprintGenerator, rdMolDescriptors
 except ImportError:
     Chem = None
 
@@ -335,8 +329,6 @@ def compile_to_asedb(
     csv_data_map = {}
     if csv_file:
         with open(csv_file, 'r', encoding='utf-8') as f:
-            reader = import_csv_reader(f) # Helper needed or just standard csv
-            import csv
             reader = csv.DictReader(f)
             if input_type == 'xyz':
                 if 'filename' not in reader.fieldnames:
@@ -520,32 +512,42 @@ def annotate_db(db_path: Path, tag: Union[str, List[str]], value: Union[Any, Lis
     processed_values = []
     for v in values:
         v_str = str(v)
+        # Try int first
         try:
-             # Try int then float
-            if '.' in v_str:
-                processed_values.append(float(v))
-            else:
-                processed_values.append(int(v))
+            processed_values.append(int(v_str))
+            continue
         except ValueError:
-             # Keep as string/bool string
-             if v_str.lower() == 'true':
-                 processed_values.append(True)
-             elif v_str.lower() == 'false':
-                 processed_values.append(False)
-             else:
-                 processed_values.append(v)
+            pass
+            
+        # Try float next
+        try:
+            processed_values.append(float(v_str))
+            continue
+        except ValueError:
+            pass
+            
+        # Keep as string/bool string
+        if v_str.lower() == 'true':
+            processed_values.append(True)
+        elif v_str.lower() == 'false':
+            processed_values.append(False)
+        else:
+            processed_values.append(v)
     
     db = connect(str(db_path))
     rows = db.select()
     if verbose: rows = tqdm(rows, total=len(db))
     
-    # We can optimize by constructing the update dict once
+    # Tags should be in row.data (BLOB) and not as top-level row attributes (KVPs)
+    # constructor of the update dictionary
     update_data = dict(zip(tags, processed_values))
+    # We also want to remove these keys from the key_value_pairs if they exist
+    delete_keys = list(tags)
     
     for row in rows:
-        db.update(row.id, data=update_data)
+        db.update(row.id, delete_keys=delete_keys, data=update_data)
         
-    logger.info(f"Annotated {len(db)} rows with {update_data}")
+    logger.info(f"Annotated {len(db)} rows with {update_data} in 'data' field.")
 
 
 # --- Generate Mol Block ---

@@ -265,28 +265,84 @@ class ModelTaskFactory:
                             logger.warning(f"\033[93mMissing keys ({len(load_result.missing_keys)}): {load_result.missing_keys}\033[0m")
                         if load_result.unexpected_keys:
                             logger.warning(f"\033[93mUnexpected keys ({len(load_result.unexpected_keys)}): {load_result.unexpected_keys}\033[0m")
-                #TODO implement adaptor module for EGT
-                #TODO adapt module names for EGT
+                
                 except RuntimeError as e:
-                    n_dim_pretrain = chk_point["model.dynamics.egnn.embedding.layers.0.weight"].shape[1] 
-                    n_extra_dim = self.dynamics_in_node_nf - n_dim_pretrain + len(self.condition_names)
+                    made_adjustment = False
+                    
+                    # Search for mlp_in_X key (could have prefixes like model.dynamics...)
+                    mlp_in_X_keys = [k for k in chk_point.keys() if k.endswith("dynamics.egnn.mlp_in_X.0.weight")]
+                    mlp_out_X_w_keys = [k for k in chk_point.keys() if k.endswith("dynamics.egnn.mlp_out_X.2.weight")]
+                    mlp_out_X_b_keys = [k for k in chk_point.keys() if k.endswith("dynamics.egnn.mlp_out_X.2.bias")]
+                    
+                    if mlp_in_X_keys and mlp_out_X_w_keys and mlp_out_X_b_keys:
+                        k_in_x = mlp_in_X_keys[0]
+                        k_out_w = mlp_out_X_w_keys[0]
+                        k_out_b = mlp_out_X_b_keys[0]
+                        
+                        n_dim_pretrain = chk_point[k_in_x].shape[1]
+                        n_extra_dim = self.dynamics_in_node_nf + self.n_concat_context - n_dim_pretrain
 
-                    if n_extra_dim > 0:
-                        if is_main_process:
-                            logger.info("Adding dimensions to the EGNN...")
-                        chk_point["model.dynamics.egnn.embedding.layers.0.weight"] = adjust_weights(
-                            chk_point["model.dynamics.egnn.embedding.layers.0.weight"], (self.hidden_size, 
-                                                                                        n_dim_pretrain + n_extra_dim)
-                        )
+                        if n_extra_dim > 0:
+                            if is_main_process:
+                                logger.info("Adding dimensions to the EGT node embedding...")
+                            
+                            hidden_mlp_x = chk_point[k_in_x].shape[0]
+                            
+                            chk_point[k_in_x] = adjust_weights(
+                                chk_point[k_in_x], 
+                                (hidden_mlp_x, n_dim_pretrain + n_extra_dim)
+                            )
 
-                        chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"] = adjust_weights(
-                            chk_point["model.dynamics.egnn.embedding_out.layers.2.weight"], (n_dim_pretrain + n_extra_dim, 
-                                                                                            self.hidden_size)
-                        )
-    
-                        chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"] = adjust_bias(
-                        chk_point["model.dynamics.egnn.embedding_out.layers.2.bias"], (n_dim_pretrain + n_extra_dim,)
-                        )      
+                            chk_point[k_out_w] = adjust_weights(
+                                chk_point[k_out_w], 
+                                (n_dim_pretrain + n_extra_dim, hidden_mlp_x)
+                            )
+        
+                            chk_point[k_out_b] = adjust_bias(
+                                chk_point[k_out_b], 
+                                (n_dim_pretrain + n_extra_dim,)
+                            )      
+                            made_adjustment = True
+
+                    mlp_in_y_keys = [k for k in chk_point.keys() if k.endswith("dynamics.egnn.mlp_in_y.0.weight")]
+                    if mlp_in_y_keys:
+                        k_in_y = mlp_in_y_keys[0]
+                        n_global_pretrain = chk_point[k_in_y].shape[1]
+                        
+                        # In PyG model, global_nf is NOT concatenated with context. 
+                        if "diffusion_pyg" in self.task_type:
+                            n_global_extra_dim = 1 - n_global_pretrain # Only time is expected in global
+                        else:
+                            n_global_extra_dim = 1 + self.n_concat_context - n_global_pretrain
+                            
+                        if n_global_extra_dim > 0:
+                            hidden_mlp_y = chk_point[k_in_y].shape[0]
+                            chk_point[k_in_y] = adjust_weights(
+                                chk_point[k_in_y], 
+                                (hidden_mlp_y, n_global_pretrain + n_global_extra_dim)
+                            )
+                            made_adjustment = True
+
+                    if self.n_adapter_context > 0:
+                        emb_c_in_w_keys = [
+                            k for k in chk_point.keys()
+                            if k.endswith("dynamics.emb_c_in.weight")
+                        ]
+                        if emb_c_in_w_keys:
+                            emb_c_in_w_key = emb_c_in_w_keys[0]
+                            n_context_pretrain = chk_point[emb_c_in_w_key].shape[1]
+                            n_context_extra = self.n_adapter_context - n_context_pretrain
+                            if n_context_extra > 0:
+                                if is_main_process:
+                                    logger.info("Adding dimensions to the adapter context embedding...")
+                                hidden_dx = chk_point[emb_c_in_w_key].shape[0]
+                                chk_point[emb_c_in_w_key] = adjust_weights(
+                                    chk_point[emb_c_in_w_key],
+                                    (hidden_dx, n_context_pretrain + n_context_extra),
+                                )
+                                made_adjustment = True
+
+                    if made_adjustment:
                         res = self.task.load_state_dict(chk_point, strict=False) 
                         if is_main_process and (res.missing_keys or res.unexpected_keys):
                             logger.warning(f"\033[93mCheckpoint loaded with mismatched keys after adjustment.\033[0m")
@@ -295,9 +351,8 @@ class ModelTaskFactory:
                             if res.unexpected_keys:
                                 logger.warning(f"\033[93mUnexpected keys ({len(res.unexpected_keys)}): {res.unexpected_keys}\033[0m")
                     else:
-                        raise RuntimeError("The specified model configuration does not match with the checkpoint.")
-                                
-    
+                        raise RuntimeError(f"The specified model configuration does not match with the checkpoint. Original error: {e}")
+                         
                 if "mean" in chk_point and "std" in chk_point:
                     self.task.mean = chk_point["mean"]
                     self.task.std = chk_point["std"]                           

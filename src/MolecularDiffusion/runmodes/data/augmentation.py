@@ -5,30 +5,21 @@ Handles random charge, distortion, and size augmentation.
 """
 
 import sys
-import os
 import random
 import logging
-import argparse
-import subprocess
-import shutil
-import glob
-import csv
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple,  Optional
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from ase import Atoms, data
 from ase.db import connect
 from ase.symbols import symbols2numbers
 from mendeleev import element
 
 # Try importing PyG dependencies (similar to random_charge.py)
 try:
-    from torch_geometric.data import Data
-    from torch_cluster import radius_graph
     from torch_geometric.utils import to_networkx
     import networkx as nx
 except ImportError:
@@ -303,7 +294,8 @@ def augment_distortion(
                 new_data['distortion_d'] = d
                 new_data['num_graph'] = num_graphs
                 
-                output_db.write(atoms=distorted_atoms, key_value_pairs=row.key_value_pairs.copy(), data=new_data)
+                # We keep existing KVPs but ensures new ones go to 'data'
+                output_db.write(atoms=distorted_atoms, key_value_pairs=row.key_value_pairs, data=new_data)
                 
             except Exception as e:
                 logger.error(f"Failed to process row {row.id}: {e}")

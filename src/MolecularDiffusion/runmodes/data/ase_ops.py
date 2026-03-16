@@ -5,13 +5,10 @@ ASE database operations module.
 Handles merging, inspecting, splitting, and sampling.
 """
 
-import sys
 import logging
-import argparse
 import random
 from pathlib import Path
 from tqdm import tqdm
-from functools import partial
 from typing import List
 
 from ase.db import connect
@@ -97,6 +94,7 @@ def merge_dbs(
                 if verify_datapoint(atoms, mol_block):
                     data = row.data.copy()
                     data['source_db'] = str(db_file)
+                    # Ensure no KVPs leak into write via kwargs
                     target_db.write(atoms, data=data)
                     seen_ids.add(uid)
                     merged_count += 1
@@ -142,7 +140,7 @@ def is_clean(row):
 def sample_db(
     input_db: Path,
     output: Path,
-    output_type: str = None, # 'db' or 'xyz', None = auto-detect
+    output_type: str = 'db',  # 'db', 'xyz', or 'npy'
     fraction: float = None,
     number: int = None,
     seed: int = None,
@@ -150,16 +148,29 @@ def sample_db(
 ):
     """
     Samples a random fraction or number of entries from an ASE database.
+
+    output_type:
+        'db'  – write to an ASE SQLite database (default)
+        'xyz' – write one XYZ file per molecule into the output directory
+        'npy' – write positions.npy (M,N,3), numbers.npy (M,N), and
+                natoms.npy (M,) arrays into the output directory, where
+                M is the number of sampled entries and N is padded to the
+                maximum atom count in the sample.
     """
     import random
+    import numpy as np
     from ase.io import write as ase_write
+
+    VALID_TYPES = ('db', 'xyz', 'npy')
+    if output_type not in VALID_TYPES:
+        raise ValueError(f"output_type must be one of {VALID_TYPES}, got '{output_type}'")
 
     if seed is not None:
         random.seed(seed)
-    
+
     source_db = connect(str(input_db))
     num_total = len(source_db)
-    
+
     if num_total == 0:
         logger.warning("Source database is empty.")
         return
@@ -171,65 +182,90 @@ def sample_db(
         num_to_sample = number
     else:
         raise ValueError("Either fraction or number must be provided.")
-        
-    if num_to_sample > num_total:
-         logger.warning(f"Requested {num_to_sample} but DB only has {num_total}. Sampling all.")
-         num_to_sample = num_total
 
-    # Auto-detect output type if not specified or ambiguous
+    if num_to_sample > num_total:
+        logger.warning(f"Requested {num_to_sample} but DB only has {num_total}. Sampling all.")
+        num_to_sample = num_total
+
     output_path = Path(output)
-    if output_type is None:
-        if output_path.suffix == '.db':
-            output_type = 'db'
-        elif output_path.suffix == '.xyz' or output_path.is_dir() or not output_path.suffix:
-            output_type = 'xyz'
-        else:
-             # Default to db if unknown extension, or raise error? 
-             # Let's default to xyz (directory) for consistency with old script if path has no extension
-             output_type = 'xyz'
-             
-    if output_type == 'db' and output_path.suffix != '.db':
-         logger.warning(f"Output type is 'db' but file extension is {output_path.suffix}")
 
     all_ids = [row.id for row in source_db.select()]
     random.shuffle(all_ids)
-    
-    # Prepare output
+
+    # Prepare output destinations
     output_db = None
-    written_ids = set()
-    
+    written_ids: set = set()
+
     if output_type == 'db':
-        Path(output).parent.mkdir(parents=True, exist_ok=True)
-        output_db = connect(str(output))
-        written_ids = {row.data.get("unique_id") for row in output_db.select() if "unique_id" in row.data}
-    elif output_type == 'xyz':
-        Path(output).mkdir(parents=True, exist_ok=True)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_db = connect(str(output_path))
+        written_ids = {
+            row.data.get("unique_id")
+            for row in output_db.select()
+            if "unique_id" in row.data
+        }
+    else:  # xyz or npy – both write into a directory
+        output_path.mkdir(parents=True, exist_ok=True)
+
+    # For npy we collect arrays and write at the end
+    npy_positions: list = []
+    npy_numbers: list = []
+    npy_natoms: list = []
 
     num_written = 0
     with tqdm(total=num_to_sample, desc="Sampling") as pbar:
         for row_id in all_ids:
-            if num_written >= num_to_sample: break
-            
+            if num_written >= num_to_sample:
+                break
+
             row = source_db.get(id=row_id)
             uid = row.data.get("unique_id")
-            
-            if uid and uid in written_ids: continue
-            
-            if verify_clean and not is_clean(row): continue
-            
+
+            if uid and uid in written_ids:
+                continue
+
+            if verify_clean and not is_clean(row):
+                continue
+
             try:
                 atoms = row.toatoms()
+
                 if output_type == 'db':
                     output_db.write(atoms, data=row.data)
-                    if uid: written_ids.add(uid)
-                else:
-                    fname = f"{str(uid).replace(':', '_').replace('/', '_') if uid else f'row_{row.id}'}.xyz"
-                    ase_write(Path(output) / fname, atoms)
-                
+                    if uid:
+                        written_ids.add(uid)
+
+                elif output_type == 'xyz':
+                    safe_uid = str(uid).replace(':', '_').replace('/', '_') if uid else f'row_{row.id}'
+                    ase_write(output_path / f"{safe_uid}.xyz", atoms)
+
+                elif output_type == 'npy':
+                    npy_positions.append(atoms.get_positions())
+                    npy_numbers.append(atoms.get_atomic_numbers())
+                    npy_natoms.append(len(atoms))
+
                 num_written += 1
                 pbar.update(1)
             except Exception as e:
                 logger.error(f"Failed to write row {row_id}: {e}")
+
+    # Finalise npy output with zero-padding to maximum atom count
+    if output_type == 'npy' and npy_natoms:
+        max_n = max(npy_natoms)
+        pos_arr = np.zeros((num_written, max_n, 3), dtype=np.float32)
+        num_arr = np.zeros((num_written, max_n), dtype=np.int32)
+        nat_arr = np.array(npy_natoms, dtype=np.int32)
+        for i, (pos, nums) in enumerate(zip(npy_positions, npy_numbers)):
+            n = len(nums)
+            pos_arr[i, :n] = pos
+            num_arr[i, :n] = nums
+        np.save(output_path / 'positions.npy', pos_arr)
+        np.save(output_path / 'numbers.npy', num_arr)
+        np.save(output_path / 'natoms.npy', nat_arr)
+        logger.info(
+            f"Saved npy arrays: positions {pos_arr.shape}, "
+            f"numbers {num_arr.shape}, natoms {nat_arr.shape}"
+        )
 
     logger.info(f"Sampled {num_written} entries.")
 
@@ -240,6 +276,7 @@ def inspect_db(
     db_path: Path, 
     output_dir: Path = None, 
     keys_to_plot: List[str] = None, 
+    sample_size: int = 5000,
     limit_print: int = 10
 ):
     """
@@ -258,11 +295,13 @@ def inspect_db(
 
     # Simple print inspection
     keys = set()
-    for row in db.select(limit=limit_print):
+    sample_ids = random.sample(range(1, n_rows + 1), min(n_rows, limit_print))
+    for rid in sample_ids:
+        row = db.get(rid)
         keys.update(row.key_value_pairs.keys())
         # Also check data
         keys.update(row.data.keys())
-    logger.info(f"Available Keys (first {limit_print}): {keys}")
+    logger.info(f"Available Keys (sampled {min(n_rows, limit_print)}): {keys}")
 
     if not output_dir:
         return
@@ -274,22 +313,52 @@ def inspect_db(
     # Determine keys to plot
     if not keys_to_plot:
         # Discovery
-        sample_ids = random.sample(range(1, n_rows + 1), min(n_rows, 5000))
+        sample_ids = random.sample(range(1, n_rows + 1), min(n_rows, sample_size))
         discovered = set()
         for rid in sample_ids:
             row = db.get(rid)
             for k, v in row.data.items():
+                if isinstance(v, (int, float, np.number)): discovered.add(k)
+            for k, v in row.key_value_pairs.items():
                 if isinstance(v, (int, float, np.number)): discovered.add(k)
             # Check attributes
             if hasattr(row, 'natoms'): discovered.add('natoms')
             # ... check other attrs ...
         keys_to_plot = sorted(list(discovered))
         logger.info(f"Discovered numeric keys: {keys_to_plot}")
+    else:
+        # Process specified keys (handle strings/commas/tuples from CLI)
+        if not isinstance(keys_to_plot, (list, tuple)):
+            keys_to_plot = [keys_to_plot]
+            
+        final_keys = []
+        for k in keys_to_plot:
+            if not isinstance(k, str):
+                if isinstance(k, (list, tuple)):
+                    final_keys.extend([str(ki).strip("'\"()[] ") for ki in k])
+                else:
+                    final_keys.append(k)
+                continue
+            
+            # String handling: strip wrapping junk and split by comma
+            k = k.strip("'\"()[] ")
+            if ',' in k:
+                final_keys.extend([ki.strip("'\"()[] ") for ki in k.split(',')])
+            elif k:
+                final_keys.append(k)
+                
+        keys_to_plot = final_keys
+            
+    # Always include mandatory keys
+    for k in ['natoms', 'mol_weight', 'num_heteroatoms']:
+        if k not in keys_to_plot:
+            keys_to_plot.append(k)
+            logger.info(f"Added mandatory '{k}' to keys to plot.")
 
     # Data Collection
-    sample_size = 50000 
     ids_to_fetch = random.sample(range(1, n_rows + 1), min(n_rows, sample_size))
-    
+    logger.info(f"Final keys to plot: {keys_to_plot}")
+
     data_map = defaultdict(list)
     atom_counts = Counter()
     
@@ -301,17 +370,36 @@ def inspect_db(
         for k in keys_to_plot:
             val = None
             if k == 'natoms': val = len(atoms)
+            elif k == 'mol_weight': val = sum(atoms.get_masses())
+            elif k == 'num_heteroatoms': val = sum(1 for sym in atoms.get_chemical_symbols() if sym not in ['C', 'H'])
             elif hasattr(row, k): val = getattr(row, k)
             elif k in row.data: val = row.data[k]
+            elif k in row.key_value_pairs: val = row.key_value_pairs[k]
             
             if val is not None and isinstance(val, (int, float, np.number)):
                 data_map[k].append(val)
                 
     # Plotting
     if atom_counts:
+        # Print atom type statistics
+        total_atoms = sum(atom_counts.values())
+        logger.info("--- Atom Type Statistics ---")
+        for sym, count in atom_counts.most_common():
+            logger.info(f"{sym}: {count} ({count/total_atoms*100:.2f}%)")
+            
         # Plot atom types
-        pass # ( Simplified for brevity, logic exists in original script )
-
+        if output_dir:
+            try:
+                symbols, counts = zip(*atom_counts.most_common())
+                plt.figure(figsize=(10, 6))
+                plt.bar(symbols, counts)
+                plt.xlabel("Atom Type")
+                plt.ylabel("Count")
+                plt.title("Atom Type Distribution")
+                plt.savefig(output_dir / "hist_atom_types.png")
+                plt.close()
+            except Exception as e:
+                logger.error(f"Failed to plot atom types: {e}")
     for k, vals in data_map.items():
         vals = np.array(vals)
         vals = vals[np.isfinite(vals)]
@@ -355,3 +443,42 @@ def split_db(db_path: Path, output_dir: Path, n_splits: int = 2):
             new_db.write(row.toatoms(), key_value_pairs=row.key_value_pairs, data=row.data)
 
 
+# --- Rename Logic ---
+
+def rename_db_attribute(db_path: Path, old_name: str, new_name: str):
+    """
+    Renames a data attribute for all rows in an ASE database.
+    """
+    db = connect(str(db_path))
+    rows = list(db.select())
+    
+    renamed_count = 0
+    with db:
+        for row in tqdm(rows, desc=f"Renaming '{old_name}' to '{new_name}'"):
+            update_data = {}
+            renamed = False
+            
+            # Check in .data or .key_value_pairs
+            kvp = row.key_value_pairs.copy()
+            data = row.data.copy()
+            
+            if old_name in data:
+                data[new_name] = data.pop(old_name)
+                renamed = True
+            
+            if old_name in kvp:
+                # Move from KVP to data
+                val = kvp.pop(old_name)
+                data[new_name] = val
+                renamed = True
+                
+            if renamed:
+                try:
+                    # Update row: remove old KVP and update data
+                    db.delete([row.id])
+                    db.write(row.toatoms(), key_value_pairs=kvp, data=data)
+                    renamed_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to rename row {row.id}: {e}")
+
+    logger.info(f"Successfully renamed '{old_name}' to '{new_name}' in {renamed_count}/{len(rows)} rows.")

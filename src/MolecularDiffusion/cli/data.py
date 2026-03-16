@@ -86,8 +86,8 @@ def compile_cmd(source, db, natoms, csv, sdf, fraction, seed):
 
 @prepare.command("annotate")
 @click.option("--db", "-d", required=True, type=click.Path(exists=True), help="ASE DB path")
-@click.option("--tag", "-t", required=True, cls=VariadicOption, help="Tag name(s)")
-@click.option("--value", "-v", "--val", required=True, cls=VariadicOption, help="Tag value(s)")
+@click.option("--tag", "-t", required=True, cls=VariadicOption, help="Tag name(s) (space-separated for multiple)")
+@click.option("--value", "-v", "--val", required=True, cls=VariadicOption, help="Tag value(s) (space-separated, must match tag count)")
 def annotate_cmd(db, tag, value):
     """Annotate an ASE database with a tag."""
     prep.annotate_db(Path(db), tag, value, verbose=True)
@@ -215,11 +215,13 @@ def merge_cmd(input, output, recursive):
 @ase_ops_group.command("inspect")
 @click.option("--db", "-d", required=True, type=click.Path(exists=True), help="ASE DB path")
 @click.option("--output", "-o", "--out", type=click.Path(), help="Directory to save plots")
-@click.option("--keys", "-k", multiple=True, help="Specific keys to plot")
-@click.option("--limit", "-l", "--lim", default=10, show_default=True, help="Number of entries to print")
-def inspect_cmd(db, output, keys, limit):
+@click.option("--keys", "-k", cls=VariadicOption, multiple=True, help="Specific keys to plot")
+@click.option("--sample-size", "-s", default=5000, show_default=True, help="Number of entries to sample for stats/plots")
+@click.option("--limit", "-l", "--lim", default=10, show_default=True, help="Number of entries to print/sample for keys")
+def inspect_cmd(db, output, keys, sample_size, limit):
     """Inspect an ASE database and optionally plot statistics."""
-    ase_ops.inspect_db(Path(db), output_dir=Path(output) if output else None, keys_to_plot=list(keys), limit_print=limit)
+    ase_ops.inspect_db(Path(db), output_dir=Path(output) if output else None, keys_to_plot=list(keys), sample_size=sample_size, limit_print=limit)
+
 
 @ase_ops_group.command("split")
 @click.option("--db", "-d", required=True, type=click.Path(exists=True), help="ASE DB path")
@@ -231,16 +233,33 @@ def split_cmd(db, output, n):
 
 @ase_ops_group.command("sample")
 @click.option("--input", "-i", "--inp", required=True, type=click.Path(exists=True), help="Input ASE DB")
-@click.option("--output", "-o", "--out", required=True, type=click.Path(), help="Output file/dir")
+@click.option("--output", "-o", "--out", required=True, type=click.Path(), help="Output file (db) or directory (xyz/npy)")
+@click.option("--format", "-fmt", "fmt", default="db", show_default=True,
+              type=click.Choice(["db", "xyz", "npy"]),
+              help="Output format: db (ASE database), xyz (one file per molecule), npy (padded numpy arrays)")
 @click.option("--fraction", "-f", "--frac", type=float, help="Fraction to sample")
 @click.option("--number", "-num", type=int, help="Number to sample")
 @click.option("--seed", "-s", "-se", type=int, help="Random seed")
 @click.option("--verify", "-v", "--ver", is_flag=True, help="Verify atom order matches RDKit")
-def sample_cmd(input, output, fraction, number, seed, verify):
-    """Sample entries from an ASE database."""
+def sample_cmd(input, output, fmt, fraction, number, seed, verify):
+    """Sample entries from an ASE database.
+
+    Output formats:\n
+      db  – write a new ASE SQLite database (default)\n
+      xyz – write one XYZ file per molecule into OUTPUT directory\n
+      npy – write positions.npy / numbers.npy / natoms.npy into OUTPUT directory
+    """
     ase_ops.sample_db(
         Path(input), Path(output),
-        output_type=None,
+        output_type=fmt,
         fraction=fraction, number=number,
         seed=seed, verify_clean=verify
     )
+
+@ase_ops_group.command("rename")
+@click.option("--db", "-d", required=True, type=click.Path(exists=True), help="ASE DB path")
+@click.option("--old", "-o", required=True, type=str, help="Old attribute name")
+@click.option("--new", "-n", required=True, type=str, help="New attribute name")
+def rename_cmd(db, old, new):
+    """Rename a row attribute in an ASE database."""
+    ase_ops.rename_db_attribute(Path(db), old, new)
