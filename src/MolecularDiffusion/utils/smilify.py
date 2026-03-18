@@ -18,10 +18,7 @@ from ase import neighborlist, data
 from ase.io.extxyz import read_xyz
 from ase.data import atomic_numbers, covalent_radii
 
-try:
-    from cell2mol.xyz2mol import xyz2mol
-except ImportError:
-    xyz2mol = None
+from MolecularDiffusion.utils.xyz2mol import xyz2mol
 
 from tqdm import tqdm
 
@@ -37,7 +34,7 @@ TIMEOUT = 300
 # silence RDKit warnings
 RDLogger.DisableLog("rdApp.*")
 
-#%% cell2mol
+#%% xyz2mol
 
 def simple_idx_match_check(rdkit_mol, ase_symbols):
     """Check that RDKit atom order matches the ASE symbol list exactly."""
@@ -75,17 +72,17 @@ def _timeout_handler(signum, frame):
     raise TimeoutException()
 
 
-def _smilify_cell2mol_worker(filename, z, coordinates, result_queue, total_charge=0):
+def _smilify_xyz2mol_worker(filename, z, coordinates, result_queue, total_charge=0):
     """Worker function for multiprocessing-based timeout."""
     try:
-        smiles, mol = _smilify_cell2mol_core(filename, z, coordinates, total_charge=total_charge)
+        smiles, mol = _smilify_xyz2mol_core(filename, z, coordinates, total_charge=total_charge)
         result_queue.put((smiles, mol))
     except Exception as e:
         result_queue.put((None, None))
 
 
-def _smilify_cell2mol_core(filename, z=None, coordinates=None, total_charge=0):
-    """Core cell2mol logic without timeout handling."""
+def _smilify_xyz2mol_core(filename, z=None, coordinates=None, total_charge=0):
+    """Core xyz2mol logic without timeout handling."""
     covalent_factors = [1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
     ok = False
     smiles = None
@@ -151,15 +148,15 @@ def _smilify_cell2mol_core(filename, z=None, coordinates=None, total_charge=0):
     return (smiles, mol) if ok else (None, None)
 
 
-def smilify_cell2mol(filename, z=None, coordinates=None, timeout=30, total_charge=0):
-    """Convert XYZ to mol using cell2mol with optional timeout."""
+def smilify_xyz2mol(filename, z=None, coordinates=None, timeout=30, total_charge=0):
+    """Convert XYZ to mol using xyz2mol with optional timeout."""
     if timeout is None:
-        return _smilify_cell2mol_core(filename, z, coordinates, total_charge=total_charge)
+        return _smilify_xyz2mol_core(filename, z, coordinates, total_charge=total_charge)
     
     import multiprocessing
     result_queue = multiprocessing.Queue()
     process = multiprocessing.Process(
-        target=_smilify_cell2mol_worker,
+        target=_smilify_xyz2mol_worker,
         args=(filename, z, coordinates, result_queue, total_charge)
     )
     process.start()

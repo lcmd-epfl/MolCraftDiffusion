@@ -10,7 +10,7 @@ from MolecularDiffusion.utils.geom_metrics import (check_validity_v1,
                                                    smilify_wrapper, 
                                                    load_molecules_from_xyz,
                                                    check_neutrality)
-from MolecularDiffusion.utils import smilify_cell2mol, smilify_openbabel
+from MolecularDiffusion.utils import smilify_xyz2mol, smilify_openbabel
 
 import logging
 from rdkit import RDLogger
@@ -82,13 +82,13 @@ def runner(args):
             try:
                 smiles_list, mol_list = smilify_openbabel(xyz)
             except:
-                # logging.warning(f"fail to convert xyz to mol with openbabel, retry with cell2mol")
+                # logging.warning(f"fail to convert xyz to mol with openbabel, retry with xyz2mol")
                 mol_list = None
             
             to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
             neutral_mol = check_neutrality(xyz)
             if mol_list is None and num_components < 3:
-                xyz2mol_fn = smilify_cell2mol
+                xyz2mol_fn = smilify_xyz2mol
                 try:
                     _, smiles_list, mol_list, _ = smilify_wrapper([xyz], xyz2mol_fn)
                     mol_list = mol_list[0]

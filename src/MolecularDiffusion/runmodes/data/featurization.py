@@ -83,7 +83,7 @@ def generate_morgan(
                 # From ASE Atoms (DB)
                 # Need to write to temp file for smilify_structure or use specialized logic?
                 # smilify_structure takes a filename. 
-                # prep.smilify_cell2mol can take atomic numbers/coords but it's internal.
+                # prep.smilify_xyz2mol can take atomic numbers/coords but it's internal.
                 # Let's write a temp file to be safe and reuse the robust hybrid logic.
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix='.xyz', mode='w', delete=False) as tmp:

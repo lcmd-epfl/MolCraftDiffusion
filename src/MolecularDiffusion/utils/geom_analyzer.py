@@ -17,7 +17,7 @@ from torch_geometric.nn import radius_graph
 from torch_geometric.utils import to_networkx
 from torch_geometric.data import Data
 
-from MolecularDiffusion.utils.smilify import smilify_cell2mol as smilify
+from MolecularDiffusion.utils.smilify import smilify_xyz2mol as smilify
 # %% predefined data
 
 
@@ -827,7 +827,7 @@ class BasicMolecularMetrics(object):
         self.ratio = ratio
         self.dataset_smiles_list = dataset_smiles_list
 
-    # TODO consider change to cell2mol xyz2mol instead and able to skip fail mol
+    # TODO consider change to xyz2mol xyz2mol instead and able to skip fail mol
     def compute_validity(self, generated):
         """generated smiles"""
         valid = []

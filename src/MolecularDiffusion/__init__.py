@@ -13,7 +13,7 @@ __author__ = "Thanapat Worakul"
 __email__ = "thanapat.worakul@epfl.ch"
 
 # Submodules are loaded lazily to avoid import errors when optional
-# dependencies (cell2mol, xtb, openbabel) are not installed.
+# dependencies (xyz2mol, xtb, openbabel) are not installed.
 _submodules = ["core", "data", "modules", "utils", "callbacks", "runmodes"]
 
 

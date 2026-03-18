@@ -129,7 +129,7 @@ def xyz2mol(xyz_file, atom_vocab, node_feature, edge_type="fully_connected", rad
                             
         else:
             raise ValueError( 
-                "Unknown node feature type, not yet installed dependency (cell2mol or libarvo)"
+                "Unknown node feature type, not yet installed dependency (xyz2mol or libarvo)"
             )
     else:
         node_features = torch.tensor(node_features, dtype=torch.float32)

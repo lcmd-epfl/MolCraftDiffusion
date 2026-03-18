@@ -718,13 +718,13 @@ def runner(args):
             bad_atom_chem = torch.arange(0,data.num_nodes)
             bad_atom_distort = torch.arange(0,data.num_nodes)
  
-        from .smilify import smilify_cell2mol, smilify_openbabel
+        from .smilify import smilify_xyz2mol, smilify_openbabel
         
         smiles_list, mol_list = smilify_openbabel(xyz)
         to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
         
         if mol_list is None and num_components < 3:
-            xyz2mol_fn = smilify_cell2mol
+            xyz2mol_fn = smilify_xyz2mol
             try:
                 _, smiles_list, mol_list, _ = smilify_wrapper([xyz], xyz2mol_fn)
                 mol_list = mol_list[0]

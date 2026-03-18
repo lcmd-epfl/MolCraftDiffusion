@@ -70,8 +70,6 @@ cpu = [
     "torchaudio==2.6.0",
     "torch_geometric",
 ]
-# xyz-to-SMILES conversion via cell2mol (must be installed manually):
-#   pip install git+https://github.com/lcmd-epfl/cell2mol.git
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",

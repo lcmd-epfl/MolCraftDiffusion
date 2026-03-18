@@ -81,7 +81,7 @@ from . import sascore
 from . import geom_metrics, geom_utils
 
 from .smilify import (
-    smilify_cell2mol,
+    smilify_xyz2mol,
     smilify_openbabel,
 )
 
@@ -160,6 +160,6 @@ __all__ = [
     "geom_metrics",
     "geom_utils",
     
-    "smilify_cell2mol",
+    "smilify_xyz2mol",
     "smilify_openbabel",
 ]

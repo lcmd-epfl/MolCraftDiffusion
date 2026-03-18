@@ -32,11 +32,7 @@ try:
 except ImportError:
     Chem = None
 
-# Try to import cell2mol from project source
-try:
-    from cell2mol.xyz2mol import xyz2mol
-except ImportError:
-    xyz2mol = None
+from MolecularDiffusion.utils.xyz2mol import xyz2mol
 
 try:
     from MolecularDiffusion.utils.smilify import Molecule, read_xyz_ob, simple_idx_match_check
@@ -612,7 +608,7 @@ def smilify_openbabel(filename, total_charge=0, timeout=30):
          
     return None, None
 
-def smilify_cell2mol(filename, total_charge=0, timeout=30):
+def smilify_xyz2mol(filename, total_charge=0, timeout=30):
     if xyz2mol is None: return None, None
     if simple_idx_match_check is None: return None, None
     
@@ -660,7 +656,7 @@ def smilify_cell2mol(filename, total_charge=0, timeout=30):
                 continue
                 
     except Exception as e:
-        logger.debug(f"cell2mol failed for {filename}: {e}")
+        logger.debug(f"xyz2mol failed for {filename}: {e}")
         
     return None, None
 
@@ -672,13 +668,13 @@ def smilify_structure(filename, total_charge=0, timeout=30, method='hybrid'):
         if total_charge == 0:
             smiles, rdkit_mol = smilify_openbabel(filename, total_charge, timeout)
         if rdkit_mol is None:
-            smiles, rdkit_mol = smilify_cell2mol(filename, total_charge, timeout)
+            smiles, rdkit_mol = smilify_xyz2mol(filename, total_charge, timeout)
             
     elif method == 'openbabel':
         smiles, rdkit_mol = smilify_openbabel(filename, total_charge, timeout)
         
-    elif method == 'cell2mol':
-        smiles, rdkit_mol = smilify_cell2mol(filename, total_charge, timeout)
+    elif method == 'xyz2mol':
+        smiles, rdkit_mol = smilify_xyz2mol(filename, total_charge, timeout)
         
     return smiles, rdkit_mol
 

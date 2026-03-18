@@ -15,7 +15,7 @@ from rdkit.Chem import BRICS
 from ase.data import chemical_symbols
 from rdkit import Chem
 
-from MolecularDiffusion.utils.smilify import smilify_cell2mol, smilify_openbabel
+from MolecularDiffusion.utils.smilify import smilify_xyz2mol, smilify_openbabel
 from MolecularDiffusion.utils.geom_utils import read_xyz_file   
 
 def extract_scaffold_and_fingerprints(smiles_iter, fp_bits=2048):
@@ -121,7 +121,7 @@ def _process_row(full_path: str, scale_factors: list[float], smilify_func, queue
     Args:
         full_path (str): Full path to the XYZ file.
         scale_factors (list[float]): List of scale factors to try for OpenBabel.
-        smilify_func: Fallback SMILES generation function (e.g., smilify_cell2mol).
+        smilify_func: Fallback SMILES generation function (e.g., smilify_xyz2mol).
         queue (mp.Queue): Queue to put the result (sanitized SMILES or None).
         verbose (bool): If True, print detailed messages.
     """
@@ -205,7 +205,7 @@ def run_processing(
         queue = mp.Queue()
         p = mp.Process(
             target=_process_row,
-            args=(full_path, scale_factors, smilify_cell2mol, queue, verbose)
+            args=(full_path, scale_factors, smilify_xyz2mol, queue, verbose)
         )
         p.start()
         p.join(timeout)

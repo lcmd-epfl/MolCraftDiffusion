@@ -12,7 +12,7 @@ from MolecularDiffusion.utils.geom_metrics import (check_validity_v1,
                                                    smilify_wrapper, 
                                                    load_molecules_from_xyz,
                                                    check_neutrality)
-from MolecularDiffusion.utils import smilify_cell2mol, smilify_openbabel
+from MolecularDiffusion.utils import smilify_xyz2mol, smilify_openbabel
 from MolecularDiffusion.utils.geom_stability import compute_molecules_stability
 
 import logging
@@ -89,13 +89,13 @@ def runner(args):
             try:
                 smiles_list, mol_list = smilify_openbabel(xyz)
             except:
-                # logging.warning(f"fail to convert xyz to mol with openbabel, retry with cell2mol")
+                # logging.warning(f"fail to convert xyz to mol with openbabel, retry with xyz2mol")
                 mol_list = None
             
             to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
             neutral_mol = check_neutrality(xyz)
             if mol_list is None and num_components < 3:
-                xyz2mol_fn = smilify_cell2mol
+                xyz2mol_fn = smilify_xyz2mol
                 try:
                     _, smiles_list, mol_list, _ = smilify_wrapper([xyz], xyz2mol_fn)
                     mol_list = mol_list[0]
@@ -254,7 +254,7 @@ def runner(args):
     # =========================================================================
     if args.metrics in ["all", "geom_revised"]:
         from rdkit import Chem
-        from MolecularDiffusion.utils.smilify import smilify_cell2mol
+        from MolecularDiffusion.utils.smilify import smilify_xyz2mol
         
         logging.info(f"Computing geom_revised metrics (converter: {args.mol_converter})...")
         
@@ -273,8 +273,8 @@ def runner(args):
         
         for xyz_file in tqdm(xyzs_to_process, desc="Loading molecules for geom_revised"):
             try:
-                if args.mol_converter == "cell2mol":
-                    smiles, mol = smilify_cell2mol(xyz_file, timeout=args.timeout)
+                if args.mol_converter == "xyz2mol":
+                    smiles, mol = smilify_xyz2mol(xyz_file, timeout=args.timeout)
                 else:  # openbabel
                     from openbabel import pybel
                     mol_pb = next(pybel.readfile("xyz", xyz_file))
@@ -399,9 +399,9 @@ if __name__ == "__main__":
                         help="Specify which metrics to compute: 'all', 'core', 'posebuster', or 'geom_revised'.")
     parser.add_argument("--skip_atoms", type=int, nargs="+", default=None, help="skip atoms")
     parser.add_argument("--portion", type=float, default=1.0, help="portion of xyz files to process")
-    parser.add_argument("--mol_converter", type=str, default="cell2mol",
-                        choices=["cell2mol", "openbabel"],
-                        help="Molecule converter for XYZ to mol: 'cell2mol' (default) or 'openbabel'")
+    parser.add_argument("--mol_converter", type=str, default="xyz2mol",
+                        choices=["xyz2mol", "openbabel"],
+                        help="Molecule converter for XYZ to mol: 'xyz2mol' (default) or 'openbabel'")
     parser.add_argument("--n_subsets", type=int, default=5, help="number of subsets for std calculation")
     parser.add_argument("--timeout", type=int, default=10, help="timeout for xyz2mol conversion (default: 10s)")
     args = parser.parse_args()

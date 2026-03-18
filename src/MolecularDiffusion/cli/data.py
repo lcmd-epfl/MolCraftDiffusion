@@ -99,7 +99,7 @@ def annotate_cmd(db, tag, value):
 @click.option("--csv", "-c", type=click.Path(exists=True), help="Metadata CSV file")
 @click.option("--fraction", "-f", "--frac", default=1.0, show_default=True, help="Fraction to process")
 @click.option("--indices", type=str, help='Process a slice of data, e.g., "0-10000".')
-@click.option("--method", "-m", "--met", default="hybrid", show_default=True, type=click.Choice(['hybrid', 'openbabel', 'cell2mol']), help="Smilification method")
+@click.option("--method", "-m", "--met", default="hybrid", show_default=True, type=click.Choice(['hybrid', 'openbabel', 'xyz2mol']), help="Smilification method")
 def generate_blocks_cmd(source, sdf, natoms, csv, fraction, indices, method):
     """Generate Mol Blocks, SMILES, and properties (SA, SC)."""
     # Logic is handled inside preparation.py
@@ -119,7 +119,7 @@ def generate_blocks_cmd(source, sdf, natoms, csv, fraction, indices, method):
 @click.option("--output", "-o", required=True, type=click.Path(), help="Output directory")
 @click.option("--format", "-f", default="npy", show_default=True, type=click.Choice(['npy', 'safetensors']), help="Output format")
 @click.option("--readout", "-ro", default="mean", show_default=True, type=click.Choice(['mean', 'sum']), help="Readout mode for SOAP")
-@click.option("--smilify-method", "-sm", default="hybrid", show_default=True, type=click.Choice(['hybrid', 'openbabel', 'cell2mol']), help="Smilification method for Morgan")
+@click.option("--smilify-method", "-sm", default="hybrid", show_default=True, type=click.Choice(['hybrid', 'openbabel', 'xyz2mol']), help="Smilification method for Morgan")
 @click.option("--radius", "-r", default=2, show_default=True, help="Morgan radius")
 @click.option("--nbits", "-n", default=2048, show_default=True, help="Morgan nbits")
 @click.option("--rcut", "-rc", default=5.0, show_default=True, help="SOAP r_cut")

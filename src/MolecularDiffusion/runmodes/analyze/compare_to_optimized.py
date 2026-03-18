@@ -6,7 +6,7 @@ initial XYZ files and their optimized counterparts in the `optimized_xyz` subdir
 Features:
 - Validates connectivity (skip disjoint graphs)
 - Computes RMSD and Energy difference (via xTB)
-- Computes Bond Length, Angle, and Torsion differences (via OpenBabel/cell2mol)
+- Computes Bond Length, Angle, and Torsion differences (via OpenBabel/xyz2mol)
 """
 
 from __future__ import annotations
@@ -69,11 +69,11 @@ def xyz2mol_openbabel(xyz_file: str) -> Optional[Chem.Mol]:
         return None
 
 
-def xyz2mol_cell2mol(xyz_file: str, timeout: int = 10) -> Optional[Chem.Mol]:
-    """Convert XYZ to RDKit Mol using cell2mol logic."""
-    from MolecularDiffusion.utils.smilify import smilify_cell2mol
+def xyz2mol_converter(xyz_file: str, timeout: int = 10) -> Optional[Chem.Mol]:
+    """Convert XYZ to RDKit Mol using xyz2mol logic."""
+    from MolecularDiffusion.utils.smilify import smilify_xyz2mol
     try:
-        _, mol = smilify_cell2mol(str(xyz_file), timeout=timeout)
+        _, mol = smilify_xyz2mol(str(xyz_file), timeout=timeout)
         return mol
     except Exception:
         return None
@@ -132,9 +132,9 @@ def compute_all_metrics(
         if args.mol_converter == "openbabel":
             init_mol = xyz2mol_openbabel(str(init_file))
             opt_mol = xyz2mol_openbabel(str(opt_file))
-        elif args.mol_converter == "cell2mol":
-            init_mol = xyz2mol_cell2mol(str(init_file), timeout=args.timeout)
-            opt_mol = xyz2mol_cell2mol(str(opt_file), timeout=args.timeout)
+        elif args.mol_converter == "xyz2mol":
+            init_mol = xyz2mol_converter(str(init_file), timeout=args.timeout)
+            opt_mol = xyz2mol_converter(str(opt_file), timeout=args.timeout)
         else:
             return {"error": f"Unknown converter {args.mol_converter}"}
             
@@ -242,7 +242,7 @@ def run_compare_analysis(args: argparse.Namespace):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Unified comparison of molecular geometries.")
     parser.add_argument("directory", type=str)
-    parser.add_argument("--mol-converter", choices=["openbabel", "cell2mol"], default="openbabel")
+    parser.add_argument("--mol-converter", choices=["openbabel", "xyz2mol"], default="openbabel")
     parser.add_argument("--charge", type=int, default=0)
     parser.add_argument("--level", default="gfn2")
     parser.add_argument("--timeout", type=int, default=120)

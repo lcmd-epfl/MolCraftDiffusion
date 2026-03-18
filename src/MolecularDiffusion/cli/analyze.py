@@ -96,9 +96,9 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
               help="Check strain via XTB optimization")
 @click.option("--portion", "-p", "--p", default=1.0, type=float,
               help="Portion of XYZ files to process (default: 1.0 = all)")
-@click.option("--mol-converter", default="cell2mol",
-              type=click.Choice(["cell2mol", "openbabel"]),
-              help="XYZ to mol converter (default: cell2mol)")
+@click.option("--mol-converter", default="xyz2mol",
+              type=click.Choice(["xyz2mol", "openbabel"]),
+              help="XYZ to mol converter (default: xyz2mol)")
 @click.option("--skip-atoms", multiple=True, type=int,
               help="Atom indices to skip in validation")
 @click.option("--n-subsets", "-n", "--n", default=5, type=int,
@@ -147,7 +147,7 @@ def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion
 
 @analyze.command("compare", context_settings=CONTEXT_SETTINGS)
 @click.argument("directory", type=click.Path(exists=True))
-@click.option("--mol-converter", default="openbabel", type=click.Choice(["openbabel", "cell2mol"]),
+@click.option("--mol-converter", default="openbabel", type=click.Choice(["openbabel", "xyz2mol"]),
               help="Converter for bond perception (default: openbabel)")
 @click.option("--n-subsets", "-n", "--n", default=5, type=int,
               help="Number of subsets for std calculation (default: 5)")

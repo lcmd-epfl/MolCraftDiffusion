@@ -269,7 +269,7 @@ try:
     import scipy as sp
     from ase import neighborlist
     from ase.io.extxyz import read_xyz
-    from cell2mol.xyz2mol import xyz2mol
+    from MolecularDiffusion.utils.xyz2mol import xyz2mol
     from rdkit import RDLogger
     from rdkit.Chem import MolToSmiles as mol2smi
     from rdkit import Chem
@@ -394,5 +394,5 @@ try:
 
 except ImportError:
     smilify = None
-    warnings.warn("cell2mol not installed; xyz-to-SMILES conversion unavailable.", ImportWarning, stacklevel=2)
+    warnings.warn("xyz2mol not installed; xyz-to-SMILES conversion unavailable.", ImportWarning, stacklevel=2)
 
