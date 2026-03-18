@@ -20,6 +20,7 @@ MolCraftDiffusion provides a complete pipeline for training/fine-tuning diffusio
 *   **Command-Line Interface:** A simple and flexible CLI interface enables users to perform training, generation, prediction, and analysis tasks directly from the command line.
 
 
+[![PyPI](https://img.shields.io/pypi/v/molcraftdiffusion)](https://pypi.org/project/molcraftdiffusion/)
 [![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18121166.svg)](https://zenodo.org/records/18121166)
 [![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
@@ -49,7 +50,8 @@ Installation
         --find-links https://data.pyg.org/whl/torch-2.6.0+cpu.html
 
     # Optional: xyz-to-SMILES conversion via cell2mol
-    pip install molcraftdiffusion[cell2mol]
+    git clone https://github.com/lcmd-epfl/cell2mol
+    cd cell2mol && python setup.py install && cd .. && rm -rf cell2mol
 
     # Optional: symmetry metrics (requires numpy==1.24.*)
     pip install cosymlib
