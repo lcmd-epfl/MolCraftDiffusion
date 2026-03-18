@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools", "setuptools_scm"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "MolecularDiffusion"
+name = "molcraftdiffusion"
 version = "1.1.0"
-description = "A molecular diffusion framework for machine learning applications"
+description = "A unified generative AI framework for 3D molecular generation using diffusion models"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = {text = "MIT"}
@@ -16,6 +16,9 @@ maintainers = [
   { name = "Thanapat Worakul", email = "thanapat.worakul@epfl.ch" },
 ]
 
+# Core pip-installable dependencies (no PyTorch — install via [gpu] or [cpu] extra).
+# NOTE: xtb and openbabel must be installed via conda before pip install:
+#   conda install -c conda-forge xtb==6.7.1 openbabel
 dependencies = [
     "click>=8.0.0",
     "fire",
@@ -23,11 +26,10 @@ dependencies = [
     "numpy",
     "scipy",
     "rdkit-pypi",
-    "posebusters==0.5.1",
+    "posebusters>=0.5.1",
     "networkx",
     "matplotlib",
     "seaborn",
-    "torch_geometric",
     "pandas",
     "scikit-learn",
     "tqdm",
@@ -44,19 +46,32 @@ dependencies = [
     "hydra-core>=1.0.0",
     "rootutils",
     "psutil",
-    "xtb>=22.1",
     "mendeleev",
 ]
 
 [project.optional-dependencies]
-torch = [
-    "torch==2.4.0",
-    "torchvision==0.19.0",
-    "torchaudio==2.4.0",
+# GPU install (CUDA-capable torch wheels, auto-detected by pip on Linux/Windows):
+#   pip install molcraftdiffusion[gpu]
+gpu = [
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
+    "torch_geometric",
+    "torch_scatter",
+    "torch_sparse",
+    "torch_cluster",
+    "torch_spline_conv",
 ]
-pyg = [
+# CPU-only install:
+#   pip install molcraftdiffusion[cpu] --extra-index-url https://download.pytorch.org/whl/cpu
+cpu = [
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
     "torch_geometric",
 ]
+# xyz-to-SMILES conversion via cell2mol:
+#   pip install molcraftdiffusion[cell2mol]
 cell2mol = [
     "cell2mol @ git+https://github.com/lcmd-epfl/cell2mol.git",
 ]
@@ -81,10 +96,10 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pregHosh/MolecularDiffusion"
-Repository = "https://github.com/pregHosh/MolecularDiffusion"
-Documentation = "https://moleculardiffusion.readthedocs.io"
-"Bug Tracker" = "https://github.com/pregHosh/MolecularDiffusion/issues"
+Homepage = "https://github.com/pregHosh/MolCraftDiffusion"
+Repository = "https://github.com/pregHosh/MolCraftDiffusion"
+Documentation = "https://preghosh.github.io/MolCraftDiffusion/"
+"Bug Tracker" = "https://github.com/pregHosh/MolCraftDiffusion/issues"
 
 [project.scripts]
 MolCraftDiff = "MolecularDiffusion.cli.main:cli"
@@ -98,9 +113,6 @@ where = ["src"]
     "data/**/*.json",
     "configs/**/*.yaml",
 ]
-
-[tool.setuptools_scm]
-write_to = "src/MolecularDiffusion/_version.py"
 
 [tool.ruff]
 line-length = 79

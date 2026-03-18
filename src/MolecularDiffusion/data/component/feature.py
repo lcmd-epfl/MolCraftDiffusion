@@ -14,7 +14,10 @@ from networkx.algorithms import community as nx_comm
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from cell2mol.elementdata import ElementData
+try:
+    from cell2mol.elementdata import ElementData
+except ImportError:
+    ElementData = None
 
 try:
     from cosymlib import Geometry

@@ -394,5 +394,5 @@ try:
 
 except ImportError:
     smilify = None
-    print("ASE/Cell2Mol not installed, skipping conversion of xyz to smiles.")
+    warnings.warn("cell2mol not installed; xyz-to-SMILES conversion unavailable.", ImportWarning, stacklevel=2)
 

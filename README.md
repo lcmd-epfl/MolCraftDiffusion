@@ -32,44 +32,34 @@ Try our interactive demo for molecular generation: [MolCraftDiffusion-demo](http
 Installation
 -----------
 
-### Detailed Installation Guide
+    # 1. Create environment
+    conda create -n molcraft python=3.11 -y
+    conda activate molcraft
 
-For a more detailed installation, including setting up a conda environment and installing necessary packages, follow these steps:
+    # 2. Install conda-only tools (xtb, openbabel)
+    conda install -c conda-forge xtb==6.7.1 openbabel -y
 
-    # create new python environment
-    conda create -n moleculardiffusion python=3.11 -c defaults
-    conda activate moleculardiffusion
+    # 3. Install MolCraftDiffusion with PyTorch + PyG + sparse extensions
+    pip install molcraftdiffusion[gpu] \
+        --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
 
-    # install pytorch according to instructions (use CUDA version for your system)
-    # https://pytorch.org/get-started/
-    pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
-    
-    # install pytorch geometric (use CUDA version for your system)
-    # https://pytorch-geometric.readthedocs.io/
-    pip install torch_geometric
+    # or CPU-only:
+    pip install molcraftdiffusion[cpu] \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        --find-links https://data.pyg.org/whl/torch-2.6.0+cpu.html
 
-    # Optional dependencies:
-    pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
-    conda install conda-forge::openbabel
-    conda install xtb==6.7.1
-    # install other libraries
-    pip install fire seaborn decorator numpy scipy rdkit-pypi posebusters==0.5.1 networkx matplotlib pandas scikit-learn tqdm pyyaml omegaconf ase morfeus-ml morfeus-ml wandb rmsd
+    # Optional: xyz-to-SMILES conversion via cell2mol
+    pip install molcraftdiffusion[cell2mol]
 
-    pip install hydra-core==1.* hydra-colorlog rootutils
-
-    # install cell2mol
-    git clone https://github.com/lcmd-epfl/cell2mol
-    cd cell2mol
-    python setup.py install
-    cd ..
-    rm -rf cell2mol
-
-    # Install the package. Use editable mode (-e) to make the MolCraftDiff CLI tool available.
-    pip install -e .
-
-    # optional for some featurizer/metrics
-    # this require numpy==1.24.*
+    # Optional: symmetry metrics (requires numpy==1.24.*)
     pip install cosymlib
+
+### Development / editable install
+
+    git clone https://github.com/pregHosh/MolCraftDiffusion
+    cd MolCraftDiffusion
+    pip install -e .[gpu] \
+        --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
 
 Usage
 -----

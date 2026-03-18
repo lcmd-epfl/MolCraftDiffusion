@@ -18,7 +18,10 @@ from ase import neighborlist, data
 from ase.io.extxyz import read_xyz
 from ase.data import atomic_numbers, covalent_radii
 
-from cell2mol.xyz2mol import xyz2mol
+try:
+    from cell2mol.xyz2mol import xyz2mol
+except ImportError:
+    xyz2mol = None
 
 from tqdm import tqdm
 
