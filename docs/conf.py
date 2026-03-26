@@ -66,11 +66,7 @@ sitemap_url_scheme = "{link}"
 # -- Options for HTML output ---------------------------------------------------
 html_theme = "furo"
 html_title = "MolCraftDiffusion"
-
-# Logo — drop logo.png into docs/_static/ and it will appear automatically.
-_logo_path = os.path.join(os.path.dirname(__file__), "_static", "logo.png")
-if os.path.exists(_logo_path):
-    html_logo = "_static/logo.png"
+html_logo = "_static/logo.png"
 
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
@@ -82,6 +78,7 @@ html_meta = {
 }
 
 html_theme_options = {
+    "sidebar_hide_name": True,
     "source_repository": "https://github.com/pregHosh/MolCraftDiffusion",
     "source_branch": "main",
     "source_directory": "docs/",
