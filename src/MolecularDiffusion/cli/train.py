@@ -3,10 +3,9 @@
 Adapted from scripts/train.py for package-level execution.
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict,  Tuple
 import os
 import pickle
-import logging
 
 import hydra
 import torch
@@ -112,7 +111,7 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module,
     if hasattr(task_module.task, "sample") and kwargs.get("generative_analysis"):
         best_metrics = -torch.inf
         models_to_save = {"node": task_module.task.node_dist_model}
-        if len(task_module.condition_names) > 0:
+        if len(getattr(task_module, "condition_names", [])) > 0:
             models_to_save["prop"] = task_module.task.prop_dist_model
         if is_rank_zero():
             with open(os.path.join(trainer_module.output_path, "edm_stat.pkl"), "wb") as f:

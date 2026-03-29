@@ -1,0 +1,67 @@
+# TABASCO diffusion task configuration
+# This config is referenced by: defaults: - override tasks: diffusion_tabasco
+
+_target_: MolecularDiffusion.modules.tasks.diffusion_tabasco.ModelTaskFactory
+task_type: diffusion_tabasco
+
+# Automatically populated from dataset
+num_atom_types: ???
+
+# Transformer backbone configuration
+transformer_config:
+  spatial_dim: 3
+  atom_dim: ???
+  hidden_dim: 256
+  num_layers: 16
+  num_heads: 8
+  activation: SiLU
+  implementation: pytorch
+  cross_attention: true
+  add_sinusoid_posenc: true
+  concat_combine_input: false
+  custom_weight_init: null
+
+# Continuous coordinate interpolant
+coords_interpolant_config:
+  key: coords
+  loss_weight: 1.0
+  centered: true
+  scale_noise_by_log_num_atoms: false
+  noise_scale: 1.0
+  langevin_sampling_schedule:
+    _target_: MolecularDiffusion.modules.models.tabasco.sample.noise_schedule.SampleNoiseSchedule
+    cutoff: 0.9
+  white_noise_sampling_scale: 0.01
+  time_factor:
+    _target_: MolecularDiffusion.modules.models.tabasco.flow.time_factor.InverseTimeFactor
+    max_value: 100.0
+    min_value: 0.05
+    zero_before: 0.0
+    eps: 1.0e-6
+
+# Discrete atom type interpolant
+atomics_interpolant_config:
+  key: atomics
+  loss_weight: 0.1
+  time_factor:
+    _target_: MolecularDiffusion.modules.models.tabasco.flow.time_factor.InverseTimeFactor
+    max_value: 100.0
+    min_value: 0.05
+    zero_before: 0.0
+    eps: 1.0e-6
+
+# Flow matching configuration
+flow_matching_config:
+  time_distribution: beta
+  time_alpha_factor: 1.8
+  num_random_augmentations: 7
+  sample_schedule: log
+  compile: false
+  interdist_loss: null
+
+# Dataset statistics (populated at runtime)
+dataset_stats:
+  max_atoms: ???
+  atom_count_histogram: {}
+  all_smiles: []
+
