@@ -52,6 +52,7 @@ class OptimSchedulerFactory:
         scheduler: str = None,
         scheduler_kwargs: dict = None,
         num_epochs: int = None,
+        num_steps: int = None,
         validation_interval: int = 3,
         train_set=None,
         batch_size: int = None,
@@ -78,6 +79,7 @@ class OptimSchedulerFactory:
         self.scheduler_choice = scheduler.lower() if scheduler else None
         self.scheduler_choice_kwargs = scheduler_kwargs if scheduler_kwargs is not None else {}
         self.num_epochs = num_epochs
+        self.num_steps = num_steps
         self.train_set = train_set
         self.batch_size = batch_size
         self.precision = precision

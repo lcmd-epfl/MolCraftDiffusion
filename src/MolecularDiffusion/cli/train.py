@@ -3,9 +3,11 @@
 Adapted from scripts/train.py for package-level execution.
 """
 
-from typing import Any, Dict,  Tuple
+from typing import Any, Dict, Optional, Tuple
+import math
 import os
 import pickle
+import logging
 
 import hydra
 import torch
@@ -36,45 +38,143 @@ def is_rank_zero():
     return True
 
 
-def load_weights(task, ckpt_path):
+def load_weights(task, ckpt_path, task_module=None):
     """Load model weights from a checkpoint file (weights only).
-    
+
     This loads the state_dict from the checkpoint into the task model,
     ignoring optimizer/scheduler states and other metadata.
     Useful for fine-tuning or starting from a pre-trained model.
+
+    If a RuntimeError occurs due to size mismatches (e.g., from adding
+    new conditions), delegates to task_module.adjust_state_dict() for
+    model-specific dimension adjustment.
+
+    Args:
+        task: The task model to load weights into.
+        ckpt_path: Path to the checkpoint file.
+        task_module: Optional task factory with adjust_state_dict() method
+                     for handling dimension mismatches.
     """
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
-        
+
     log.info(f"Loading weights from: {ckpt_path}")
-    
+
     # Load checkpoint
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    state_dict = checkpoint.get("state_dict", checkpoint)
-    
-    # Prepare state dict for loading
-    cleaned_state_dict = {}
-    for key, value in state_dict.items():
-        if key.startswith("task."):
-            cleaned_state_dict[key[5:]] = value
+
+    # Validate task_type if both checkpoint and task_module expose it
+    if task_module is not None and hasattr(task_module, "task_type"):
+        ckpt_task_type = (
+            checkpoint.get("hyperparameters", {}).get("task_type")
+            or checkpoint.get("task_type")
+        )
+        if ckpt_task_type is not None and ckpt_task_type != task_module.task_type:
+            raise ValueError(
+                f"Task type mismatch: checkpoint was trained as '{ckpt_task_type}' "
+                f"but current config specifies '{task_module.task_type}'. "
+                f"Update your config to use tasks: {ckpt_task_type} or point to the correct checkpoint."
+            )
+    # Extract the model state dict — original engine uses "ema_model"/"model" keys,
+    if "ema_model" in checkpoint or "model" in checkpoint:
+        # Original engine format: prefer EMA weights (matches engine.load() behaviour)
+        raw_state_dict = checkpoint.get("ema_model") or checkpoint.get("model")
+        cleaned_state_dict = raw_state_dict
+    else:
+        state_dict = checkpoint.get("state_dict", {})
+        cleaned_state_dict = {}
+        ema_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("task.ema_model."):
+                ema_state_dict[key[len("task.ema_model."):]] = value
+            elif key.startswith("ema_model."):
+                ema_state_dict[key[len("ema_model."):]] = value
+            elif key.startswith("task."):
+                cleaned_state_dict[key[5:]] = value
+            else:
+                cleaned_state_dict[key] = value
+        # Prefer EMA weights when available
+        if ema_state_dict:
+            log.info(f"Found {len(ema_state_dict)} EMA parameters in Lightning checkpoint, using them")
+            cleaned_state_dict = ema_state_dict
+
+    if not cleaned_state_dict:
+        raise ValueError(f"Could not extract a model state dict from checkpoint: {ckpt_path}")
+
+    # Detect size mismatches before loading by comparing shapes
+    model_state = task.state_dict()
+    mismatched = [
+        k for k in cleaned_state_dict
+        if k in model_state and cleaned_state_dict[k].shape != model_state[k].shape
+    ]
+    if mismatched:
+        if task_module is not None and hasattr(task_module, 'adjust_state_dict'):
+            log.warning(f"{len(mismatched)} size mismatch(es) detected, delegating to task module for adjustment")
+            cleaned_state_dict = task_module.adjust_state_dict(cleaned_state_dict, task)
+            mismatched = [
+                k for k in cleaned_state_dict
+                if k in model_state and cleaned_state_dict[k].shape != model_state[k].shape
+            ]
+            if mismatched:
+                raise RuntimeError(
+                    f"Size mismatch persists after adjust_state_dict for keys: {mismatched[:5]}"
+                    f"{'...' if len(mismatched) > 5 else ''}. "
+                    f"Check that your model config matches the checkpoint architecture."
+                )
         else:
-            cleaned_state_dict[key] = value
-            
-    # Load into task
+            raise RuntimeError(
+                f"{len(mismatched)} tensor(s) have mismatched shapes between the checkpoint and "
+                f"the current model (e.g. {mismatched[0]}: ckpt={cleaned_state_dict[mismatched[0]].shape} "
+                f"vs model={model_state[mismatched[0]].shape}). "
+                f"Ensure your model config matches the checkpoint, or use chkpt_path instead of "
+                f"load_weights_from to let the task factory handle dimension adjustment."
+            )
+
     missing, unexpected = task.load_state_dict(cleaned_state_dict, strict=False)
-    
-    if len(missing) > 0:
-        log.warning(f"Missing keys when loading weights: {missing[:5]}{'...' if len(missing)>5 else ''}")
-    if len(unexpected) > 0:
-        log.warning(f"Unexpected keys in checkpoint: {unexpected[:5]}{'...' if len(unexpected)>5 else ''}")
-        
+    if missing:
+        log.warning(f"Missing keys when loading weights: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+    if unexpected:
+        log.warning(f"Unexpected keys in checkpoint: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
     log.info(f"Successfully loaded {len(cleaned_state_dict)} parameters into task.")
 
+    # Store EMA state for later initialization by EngineLightning.on_train_start
+    if locals().get("ema_state_dict"):
+        task._pending_ema_state = ema_state_dict
+        log.info(f"Stored {len(ema_state_dict)} EMA parameters for deferred loading")
 
 
 
-def engine_wrapper(task_module, data_module, trainer_module, logger_module, 
-                   resume_from_checkpoint=None, **kwargs):
+
+
+def evaluate_and_save(i, solver, task_module, trainer_module, logger_module, versioned_ckpt_path, use_amp, **kwargs):
+    """Helper to run evaluation and save checkpoints."""
+    if hasattr(task_module.task, "sample"):
+        output_generated_dir = os.path.join(versioned_ckpt_path, "generated_molecules")
+        os.makedirs(output_generated_dir, exist_ok=True)
+        return evaluate(
+            task_module.task_type, solver, i, kwargs.get("best_metrics", torch.inf), kwargs.get("best_checkpoints", []),
+            logger_module.logger, output_generated_dir=output_generated_dir,
+            generative_analysis=kwargs.get("generative_analysis", False),
+            n_samples=kwargs.get("n_samples", 100),
+            metric=kwargs.get("metric", "Validity Relax and connected"),
+            output_path=versioned_ckpt_path,
+            use_amp=use_amp, precision=trainer_module.precision,
+            use_posebuster=kwargs.get("use_posebuster", False),
+            batch_size=kwargs.get("batch_size", 1),
+            save_top_k=getattr(trainer_module, "save_top_k", 3),
+            save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
+        )
+    else:
+        return evaluate(
+            task_module.task_type, solver, i, kwargs.get("best_metrics", torch.inf), kwargs.get("best_checkpoints", []),
+            logger_module.logger, output_path=versioned_ckpt_path,
+            save_top_k=getattr(trainer_module, "save_top_k", 3),
+            save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
+        )
+
+
+def engine_wrapper(task_module, data_module, trainer_module, logger_module,
+                   resume_from_checkpoint=None, tags=None, **kwargs):
     """Training loop using original Engine."""
     trainer_module.get_optimizer()
     trainer_module.get_scheduler()
@@ -96,6 +196,7 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module,
         name_wandb=logger_module.name_wandb,
         project_wandb=logger_module.project_wandb,
         dir_wandb=trainer_module.output_path,
+        tags_wandb=tags,
     )
     
     # Resume from checkpoint if provided
@@ -124,37 +225,56 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module,
     
     # Adjust loop to continue from start_epoch
     for i in range(start_epoch, trainer_module.num_epochs):
-        solver.train(num_epoch=1, use_amp=use_amp, precision=trainer_module.precision)
+        metric = solver.train(num_epoch=1, num_step=trainer_module.num_steps, use_amp=use_amp, precision=trainer_module.precision)
+        
+        # Check if we should stop because num_steps was reached
+        if trainer_module.num_steps is not None and solver.meter.batch_id >= trainer_module.num_steps:
+            log.info(f"Terminating training loop after epoch {i} because num_steps={trainer_module.num_steps} was reached.")
+            # Trigger final evaluation if not already done
+            if i % trainer_module.validation_interval != 0:
+                best_metrics, best_checkpoints = evaluate_and_save(
+                    i, solver, task_module, trainer_module, logger_module, 
+                    versioned_ckpt_path, use_amp, best_metrics=best_metrics, 
+                    best_checkpoints=best_checkpoints, **kwargs
+                )
+            break
+
         if i % trainer_module.validation_interval == 0 or i == trainer_module.num_epochs - 1:
-            if hasattr(task_module.task, "sample"):
-                output_generated_dir = os.path.join(versioned_ckpt_path, "generated_molecules")
-                os.makedirs(output_generated_dir, exist_ok=True)
-                best_metrics, best_checkpoints = evaluate(
-                    task_module.task_type, solver, i, best_metrics, best_checkpoints,
-                    logger_module.logger, output_generated_dir=output_generated_dir,
-                    generative_analysis=kwargs.get("generative_analysis", False),
-                    n_samples=kwargs.get("n_samples", 100),
-                    metric=kwargs.get("metric", "Validity Relax and connected"),
-                    output_path=versioned_ckpt_path,
-                    use_amp=use_amp, precision=trainer_module.precision,
-                    use_posebuster=kwargs.get("use_posebuster", False),
-                    batch_size=kwargs.get("batch_size", 1),
-                    save_top_k=getattr(trainer_module, "save_top_k", 3),
-                    save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
-                )
-            else:
-                best_metrics, best_checkpoints = evaluate(
-                    task_module.task_type, solver, i, best_metrics, best_checkpoints,
-                    logger_module.logger, output_path=versioned_ckpt_path,
-                    save_top_k=getattr(trainer_module, "save_top_k", 3),
-                    save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
-                )
+            best_metrics, best_checkpoints = evaluate_and_save(
+                i, solver, task_module, trainer_module, logger_module, 
+                versioned_ckpt_path, use_amp, best_metrics=best_metrics, 
+                best_checkpoints=best_checkpoints, **kwargs
+            )
     return best_metrics, solver
+
+
+def _assert_train_config(cfg: DictConfig):
+    """Crash early if the user passed a non-train config to the train command."""
+    has_interference = "interference" in cfg
+    has_chkpt_dir = "chkpt_directory" in cfg
+    has_trainer = "trainer" in cfg
+
+    if has_interference or has_chkpt_dir:
+        mismatched = []
+        if has_interference:
+            mismatched.append("'interference'")
+        if has_chkpt_dir:
+            mismatched.append("'chkpt_directory'")
+        raise ValueError(
+            f"Config contains {', '.join(mismatched)} — this looks like a generation config, "
+            f"not a training config. Did you mean: molcraft generate <config>?"
+        )
+    if not has_trainer:
+        raise ValueError(
+            "Config is missing required 'trainer' block. "
+            "Please provide a training config (e.g., configs/train.yaml)."
+        )
 
 
 @task_wrapper
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Main training function."""
+    _assert_train_config(cfg)
     output_path = cfg.trainer.output_path
     os.makedirs(output_path, exist_ok=True)
 
@@ -211,7 +331,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     
     # Optional: Load weights from checkpoint (without resuming full state)
     if cfg.trainer.get("load_weights_from"):
-        load_weights(task_module.task, cfg.trainer.load_weights_from)
+        load_weights(task_module.task, cfg.trainer.load_weights_from, task_module=task_module)
     
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     trainer_module: OptimSchedulerFactory = hydra.utils.instantiate(
@@ -235,25 +355,46 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     
     engine_type = cfg.get("engine", {}).get("engine_type", "original")
     log.info(f"Using engine: {engine_type}")
-    
+
+
+
+    # Extract top-level tags for wandb
+    tags = cfg.get("tags", None)
+    if tags is not None:
+        try:
+            from omegaconf import OmegaConf as _OC
+            tags = _OC.to_container(tags, resolve=True)
+        except Exception:
+            tags = list(tags)
+
+    # Extract generative parameters with fallbacks
+    tasks_cfg = cfg.get("tasks", {})
+    gen_analysis = cfg.get("generative_analysis", tasks_cfg.get("generative_analysis", False))
+    n_samples = cfg.get("n_samples", tasks_cfg.get("n_samples", 100))
+    metric = cfg.get("metrics", cfg.get("metric", tasks_cfg.get("metrics", "Validity Relax and connected")))
+    use_posebuster = cfg.get("use_posebuster", tasks_cfg.get("use_posebuster", False))
+    # Preference: cli/top-level -> tasks -> data -> default
+    gen_batch_size = cfg.get("batch_size", tasks_cfg.get("batch_size", cfg.data.get("batch_size", 100)))
+
 
     resume_ckpt = cfg.trainer.get("resume_from_checkpoint", None)
     if hasattr(task_module.task, "sample"):
         metrics = engine_wrapper(
             task_module, data_module, trainer_module, logger_module,
             resume_from_checkpoint=resume_ckpt,
-            generative_analysis=cfg.tasks.generative_analysis,
-            n_samples=cfg.tasks.n_samples,
-            metric=cfg.tasks.metrics,
-            use_posebuster=cfg.tasks.use_posebuster,
-            batch_size=cfg.tasks.batch_size,
+            generative_analysis=gen_analysis,
+            n_samples=n_samples,
+            metric=metric,
+            use_posebuster=use_posebuster,
+            batch_size=gen_batch_size,
+            tags=tags,
         )
     else:
         metrics = engine_wrapper(
             task_module, data_module, trainer_module, logger_module,
             resume_from_checkpoint=resume_ckpt,
+            tags=tags,
         )
-
 
     return metrics, object_dict
 
@@ -275,7 +416,10 @@ def log_hyperparameters(object_dict: dict):
             if hasattr(obj, '__dict__'):
                 for k, v in vars(obj).items():
                     if not k.startswith("_"):
-                        log.info(f"{k}: {v}")
+                        if isinstance(v, torch.nn.Module):
+                            log.info(f"{k}: {v.__class__.__name__}")
+                        else:
+                            log.info(f"{k}: {v}")
         log.info(f"{'=' * (44 + len(name))}\n")
 
     if "task" in object_dict and hasattr(object_dict["task"], "task"):

@@ -4,6 +4,7 @@ log_interval: 2
 name_wandb: MolecularDiffusion
 project_wandb: MolecularDiffusion
 dir_wandb: ${trainer.output_path}
+tags: null
 
 
 

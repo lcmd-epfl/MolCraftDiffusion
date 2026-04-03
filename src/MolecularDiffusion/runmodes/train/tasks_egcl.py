@@ -1,5 +1,6 @@
+
 from MolecularDiffusion.callbacks.train_helper import SP_regularizer
-from MolecularDiffusion.modules.tasks import ProperyPrediction, GuidanceModelPrediction, GeomMolecularGenerative
+from MolecularDiffusion.modules.tasks import ProperyPrediction, GuidanceModelPrediction,  GeomMolecularGenerative
 from MolecularDiffusion.modules.models import EGNN, EGNN_dynamics, NoiseModel, EnVariationalDiffusion
 from MolecularDiffusion.utils import adjust_weights, adjust_bias
 import torch
@@ -123,10 +124,42 @@ class ModelTaskFactory:
         self.chkpt_path = chkpt_path
         self.kwargs = kwargs
         
-        # Some checks
-        use_adaptor_module = self.kwargs.get("use_adapter_module", False)
-        if use_adaptor_module and self.context_node_nf < 1:
-            raise ValueError("Must specify the contexts to use the adapter module.")
+        # Resolve hybrid adapter/concat configuration
+        adapter_conditions = self.kwargs.get("adapter_conditions", None)
+        use_adapter_module = self.kwargs.get("use_adapter_module", False)
+        
+        if adapter_conditions:
+            # New hybrid config: map condition names to indices
+            for ac in adapter_conditions:
+                if ac not in self.condition_names:
+                    raise ValueError(
+                        f"adapter_conditions entry '{ac}' not found in condition_names {self.condition_names}"
+                    )
+            self.adapter_indices = [self.condition_names.index(ac) for ac in adapter_conditions]
+            self.concat_indices = [i for i in range(len(self.condition_names)) if i not in self.adapter_indices]
+        elif use_adapter_module:
+            # DEPRECATED: use_adapter_module=True routes ALL conditions through adapter.
+            # Prefer adapter_conditions: [...] for fine-grained control. Will be removed in a future version.
+            import warnings
+            warnings.warn(
+                "use_adapter_module=True is deprecated. Use 'adapter_conditions: [...]' instead "
+                "to specify which conditions use the adapter. Setting all conditions to adapter.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.adapter_indices = list(range(len(self.condition_names)))
+            self.concat_indices = []
+        else:
+            # Default: all conditions through concatenation
+            self.adapter_indices = []
+            self.concat_indices = list(range(len(self.condition_names)))
+        
+        self.n_adapter_context = len(self.adapter_indices)
+        self.n_concat_context = len(self.concat_indices)
+        
+        # Validation
+        if self.n_adapter_context > 0 and self.context_node_nf < 1:
+            raise ValueError("Must specify conditions to use the adapter module.")
 
     def build(self):
         """
@@ -144,8 +177,11 @@ class ModelTaskFactory:
             or torch.distributed.get_rank() == 0
         )
         
-
-        dynamics_in_node_nf = self.dynamics_in_node_nf
+        # For diffusion_hybrid, use scalar atomic numbers (1 dim) instead of one-hot
+        if self.task_type == "diffusion_hybrid":
+            dynamics_in_node_nf = 1 + len(self.kwargs.get("extra_norm_values", [])) + 1  # atomic_num(1) + extra + time(1)
+        else:
+            dynamics_in_node_nf = self.dynamics_in_node_nf
         
         # Construct shared EGNN dynamics
         dynamics_model = EGNN_dynamics(
@@ -166,7 +202,8 @@ class ModelTaskFactory:
             dropout=self.dropout,
             normalization=self.normalization,
             include_cosine=self.include_cosine,
-            use_adapter_module=self.kwargs.get("use_adapter_module", False),
+            adapter_indices=self.adapter_indices,
+            concat_indices=self.concat_indices,
         )
 
         if self.task_type == "diffusion":
@@ -183,6 +220,8 @@ class ModelTaskFactory:
                 extra_norm_values=self.kwargs.get("extra_norm_values", []),
                 context_mask_rate=self.kwargs.get("context_mask_rate", 0.15),
                 mask_value=self.kwargs.get("mask_value", None), # CFG
+                use_unknown_fallback=self.kwargs.get("use_unknown_fallback", False),
+                atom_vocab=self.atom_vocab,
             )
             
             if self.kwargs.get("sp_regularizer_deploy", False):
@@ -210,6 +249,7 @@ class ModelTaskFactory:
                 normalize_condition=self.kwargs.get("normalize_condition", None),
                 reference_indices=self.kwargs.get("reference_indices", None), # outpaint task
             )
+
 
         elif self.task_type == "regression":
             model = EGNN(
@@ -282,6 +322,7 @@ class ModelTaskFactory:
                 loss_weighting=self.kwargs.get("loss_weighting", "none")
             )
             
+
             self.task = GuidanceModelPrediction(model, noise_model, **task_kwargs)
 
         else:
@@ -291,9 +332,19 @@ class ModelTaskFactory:
         if is_main_process:
             logger.info(f"Number of parameters: {n_params}")
 
-        if self.chkpt_path:    
+        if self.chkpt_path:
             try:
                 ckpt = torch.load(self.chkpt_path, weights_only=False)
+
+                # Validate task_type matches the checkpoint
+                ckpt_task_type = ckpt.get("hyperparameters", {}).get("task_type") or ckpt.get("task_type")
+                if ckpt_task_type is not None and ckpt_task_type != self.task_type:
+                    raise ValueError(
+                        f"Task type mismatch: checkpoint was trained as '{ckpt_task_type}' "
+                        f"but current config specifies '{self.task_type}'. "
+                        f"Update your config to use tasks: {ckpt_task_type} or point to the correct checkpoint."
+                    )
+
                 chk_point = ckpt.get("ema_model") or ckpt.get("model")
                 if chk_point is None:
                     raise KeyError("Checkpoint missing both 'ema_model' and 'model'")
@@ -375,8 +426,8 @@ class ModelTaskFactory:
                                     logger.warning(f"\033[93mUnexpected keys ({len(res.unexpected_keys)}): {res.unexpected_keys}\033[0m")
                     else:
                         raise RuntimeError(f"The specified model configuration does not match with the checkpoint. Original error: {e}")
-                    
-                    
+                                
+    
                 if "mean" in chk_point and "std" in chk_point:
                     self.task.mean = chk_point["mean"]
                     self.task.std = chk_point["std"]                           
@@ -385,5 +436,65 @@ class ModelTaskFactory:
                     logger.warning(f"Checkpoint not found at {self.chkpt_path}. Initializing model without loading.")      
                 raise FileNotFoundError(f"Checkpoint not found at {self.chkpt_path}.")
         self.task.atom_vocab = self.atom_vocab
-            
+        self.task.task_type = self.task_type
+
         return self.task
+
+    def adjust_state_dict(self, state_dict, task):
+        """Adjust checkpoint state dict dimensions to match the current model.
+        
+        Handles size mismatches from added conditions by resizing EGCL
+        embedding layers and adapter context embeddings. Uses suffix-based
+        key matching on BOTH checkpoint and model state dicts to handle
+        cross-prefix scenarios (e.g. PyGAdapter wrapping).
+        
+        Args:
+            state_dict: The checkpoint state dict to adjust.
+            task: The task model (used to get expected dimensions).
+            
+        Returns:
+            The adjusted state dict.
+        """
+        model_sd = task.state_dict()
+        
+        def _find_key(sd, suffix):
+            """Find a key in state dict ending with the given suffix."""
+            matches = [k for k in sd if k.endswith(suffix)]
+            return matches[0] if matches else None
+        
+        # --- EGCL embedding layers ---
+        suffix_in = "egnn.embedding.layers.0.weight"
+        suffix_out_w = "egnn.embedding_out.layers.2.weight"
+        suffix_out_b = "egnn.embedding_out.layers.2.bias"
+        
+        ckpt_in = _find_key(state_dict, suffix_in)
+        ckpt_out_w = _find_key(state_dict, suffix_out_w)
+        ckpt_out_b = _find_key(state_dict, suffix_out_b)
+        model_in = _find_key(model_sd, suffix_in)
+        
+        if ckpt_in and ckpt_out_w and ckpt_out_b and model_in:
+            expected_dim = model_sd[model_in].shape[1]
+            ckpt_dim = state_dict[ckpt_in].shape[1]
+            hidden = state_dict[ckpt_in].shape[0]
+            
+            if expected_dim != ckpt_dim:
+                logger.info(f"Adjusting EGCL embedding: {ckpt_dim} -> {expected_dim}")
+                state_dict[ckpt_in] = adjust_weights(state_dict[ckpt_in], (hidden, expected_dim))
+                state_dict[ckpt_out_w] = adjust_weights(state_dict[ckpt_out_w], (expected_dim, hidden))
+                state_dict[ckpt_out_b] = adjust_bias(state_dict[ckpt_out_b], (expected_dim,))
+        
+        # --- Adapter context embedding ---
+        suffix_adapter = "egnn.emb_c_in.layers.0.weight"
+        ckpt_adapter = _find_key(state_dict, suffix_adapter)
+        model_adapter = _find_key(model_sd, suffix_adapter)
+        
+        if ckpt_adapter and model_adapter:
+            expected_ctx = model_sd[model_adapter].shape[1]
+            ckpt_ctx = state_dict[ckpt_adapter].shape[1]
+            hidden_ctx = state_dict[ckpt_adapter].shape[0]
+            if expected_ctx != ckpt_ctx:
+                logger.info(f"Adjusting adapter context: {ckpt_ctx} -> {expected_ctx}")
+                state_dict[ckpt_adapter] = adjust_weights(
+                    state_dict[ckpt_adapter], (hidden_ctx, expected_ctx))
+        
+        return state_dict

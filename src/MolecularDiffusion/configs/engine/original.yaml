@@ -1,4 +1,6 @@
 # Use the original custom Engine class
 engine_type: original
 
+progress_bar_metrics: "all"  # Can be "all" or a list of specific metric names like ["loss", "x_loss"]
+
 # Engine is instantiated inline in train.py using engine_wrapper()

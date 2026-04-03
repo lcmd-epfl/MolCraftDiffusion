@@ -32,36 +32,42 @@ def is_rank_zero():
         return torch.distributed.get_rank() == 0
     return True
 
+
+def _get_ckpt_meta(checkpoint):
+    """Extract task_type and condition_names from any checkpoint format."""
+    hparams = (
+        checkpoint.get("hyperparameters")
+        or checkpoint.get("hyper_parameters")
+        or {}
+    )
+    task_type = hparams.get("task_type") or checkpoint.get("task_type")
+    condition_names = hparams.get("condition_names") or checkpoint.get("condition_names")
+    return task_type, condition_names
+
+
+def _validate_task_type(checkpoint, expected_task_type):
+    """Raise ValueError if checkpoint task_type doesn't match expected_task_type."""
+    if expected_task_type is None:
+        return
+    ckpt_task_type, _ = _get_ckpt_meta(checkpoint)
+    if ckpt_task_type is not None and ckpt_task_type != expected_task_type:
+        raise ValueError(
+            f"Task type mismatch: checkpoint was trained as '{ckpt_task_type}' "
+            f"but current config specifies '{expected_task_type}'. "
+            f"Update your config to use tasks: {ckpt_task_type} or point to the correct checkpoint."
+        )
+
+
+def _stamp_condition_names(task, checkpoint):
+    """Stamp condition_names from checkpoint onto the task object."""
+    _, condition_names = _get_ckpt_meta(checkpoint)
+    if condition_names is not None:
+        task.condition = condition_names
+        log.info(f"Loaded condition_names from checkpoint: {condition_names}")
+
 def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0):
     """Load model from checkpoint directory with auto-detection."""
-    ckpt_files = glob.glob(os.path.join(chkpt_directory, '*.ckpt'))
-    
-    if ckpt_files:
-        best_metric = -1.0
-        best_checkpoint = None
-        
-        for ckpt_file in ckpt_files:
-            match = re.search(r"(?:metric|val)[_=](\d+\.?\d*)", os.path.basename(ckpt_file))
-            if match:
-                metric = float(match.group(1))
-                if metric > best_metric:
-                    best_metric = metric
-                    best_checkpoint = ckpt_file
-        
-        if best_checkpoint is None:
-            last_ckpt = os.path.join(chkpt_directory, 'last.ckpt')
-            best_checkpoint = last_ckpt if os.path.exists(last_ckpt) else ckpt_files[0]
-        
-        try:
-            with open(os.path.join(chkpt_directory, "edm_stat.pkl"), "rb") as file:
-                edm_stats = pickle.load(file)
-            task.node_dist_model = edm_stats.get("node")
-            if "prop" in edm_stats:
-                task.prop_dist_model = edm_stats["prop"]
-        except (ImportError, FileNotFoundError):
-            log.warning("edm_stat.pkl not found")
-        
-        return task
+
     
     # Original engine (.pkl files)
     model_path = os.path.join(chkpt_directory, "edm_chem.pkl")
@@ -87,7 +93,12 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
         model_path = best_checkpoint or checkpoint_files[0]
 
     log.info(f"Loading original engine checkpoint from: {model_path}")
-    
+
+    # Validate task_type for original engine checkpoints
+    expected_task_type = task_config.get("task_type") if task_config is not None else None
+    raw_ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
+    _validate_task_type(raw_ckpt, expected_task_type)
+
     edm_stats = {"node": None, "prop": None}
     stat_path = os.path.join(chkpt_directory, "edm_stat.pkl")
     if os.path.exists(stat_path):
@@ -108,33 +119,76 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
     engine = Engine(None, None, None, None, None)
     engine = engine.load_from_checkpoint(model_path, interference_mode=True)
     task = engine.model
-    
+    _stamp_condition_names(task, raw_ckpt)
+
     if edm_stats["node"] is not None:
         task.node_dist_model = edm_stats["node"]
     if edm_stats["prop"] is not None:
         task.prop_dist_model = edm_stats["prop"]
     
     if total_step > 0:
-        if hasattr(task, 'model') and hasattr(task.model, 'T'):
-            task.model.T = total_step
-        elif hasattr(task, 'T'):
+        override_occured = False
+        if hasattr(task, 'model'):
+            m_obj = task.model
+            if hasattr(m_obj, 'T'):
+                m_obj.T = total_step
+                override_occured = True
+            elif hasattr(m_obj, 'fm_num_timesteps'):
+                m_obj.fm_num_timesteps = total_step
+                override_occured = True
+        
+        if hasattr(task, 'T') and not override_occured:
             task.T = total_step
+            override_occured = True
+            
+        if hasattr(task, 'interpolant') and hasattr(task.interpolant, 'num_timesteps'):
+            task.interpolant.num_timesteps = total_step
 
     task.eval()
     return task
 
 
+def _assert_generate_config(cfg: DictConfig):
+    """Crash early if the user passed a non-generation config to the generate command."""
+    has_trainer = "trainer" in cfg
+    has_interference = "interference" in cfg
+    has_chkpt_dir = "chkpt_directory" in cfg
+
+    if has_trainer:
+        raise ValueError(
+            "Config contains 'trainer' — this looks like a training config, "
+            "not a generation config. Did you mean: molcraft train <config>?"
+        )
+    missing = []
+    if not has_interference:
+        missing.append("'interference'")
+    if not has_chkpt_dir:
+        missing.append("'chkpt_directory'")
+    if missing:
+        raise ValueError(
+            f"Config is missing required block(s): {', '.join(missing)}. "
+            "Please provide a generation config (e.g., configs/gen_config.yaml)."
+        )
+
+
 def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Main generation function."""
+    _assert_generate_config(cfg)
     if cfg.get("seed"):
         seed_everything(cfg.seed, workers=True)
 
-    log.info(f"Instantiating diffusion task and loading the model <{cfg.tasks._target_}>")
+    # Reconcile diffusion_steps: Prefer Root config, then Tasks config
+    diffusion_steps = cfg.get("diffusion_steps", 0)
+    if (diffusion_steps == 0 or diffusion_steps == 900) and "diffusion_steps" in cfg.tasks:
+        # Fallback to tasks config if root is default or zero
+        diffusion_steps = cfg.tasks.diffusion_steps
+        log.info(f"Using diffusion_steps from tasks config: {diffusion_steps}")
+
     task = load_model(
         cfg.chkpt_directory,
         task_config=cfg.tasks,
-        atom_vocab=cfg.atom_vocab,
-        total_step=cfg.diffusion_steps,
+        atom_vocab=getattr(cfg, "atom_vocab", None),
+        total_step=diffusion_steps,
     )
     
     if not hasattr(task, 'atom_vocab') or task.atom_vocab is None:
@@ -181,7 +235,7 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     # Inject chkpt_directory into condition_configs for feature config discovery
     if "condition_configs" in cfg.interference:
-        from omegaconf import OmegaConf, open_dict
+        from omegaconf import open_dict
         with open_dict(cfg.interference):
             cfg.interference.condition_configs["chkpt_directory"] = cfg.chkpt_directory
 

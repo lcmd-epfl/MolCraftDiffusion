@@ -700,6 +700,7 @@ class GraphDataset(torch_data.Dataset):
             pkl_file (str): file name
             verbose (int, optional): output verbose level
         """
+        os.makedirs(os.path.dirname(os.path.abspath(pkl_file)), exist_ok=True)
         with utils.smart_open(pkl_file, "wb") as fout:
             num_sample = len(self.graph_data_list)
             tasks = list(self.targets.keys())
@@ -1552,7 +1553,7 @@ class PointCloudDataset(torch_data.Dataset):
             pkl_file (str): file name
             verbose (int, optional): output verbose level
         """
-
+        os.makedirs(os.path.dirname(os.path.abspath(pkl_file)), exist_ok=True)
         if cheap_data:
             float_dtype = torch.float16
             long_dtype = torch.int16

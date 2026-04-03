@@ -247,13 +247,24 @@ class ModelTaskFactory:
         if is_main_process:
             logger.info(f"Number of parameters: {n_params}")
         
-        if self.chkpt_path:    
+
+        if self.chkpt_path:
             try:
                 ckpt = torch.load(self.chkpt_path, weights_only=False)
+
+                # Validate task_type matches the checkpoint
+                ckpt_task_type = ckpt.get("hyperparameters", {}).get("task_type") or ckpt.get("task_type")
+                if ckpt_task_type is not None and ckpt_task_type != self.task_type:
+                    raise ValueError(
+                        f"Task type mismatch: checkpoint was trained as '{ckpt_task_type}' "
+                        f"but current config specifies '{self.task_type}'. "
+                        f"Update your config to use tasks: {ckpt_task_type} or point to the correct checkpoint."
+                    )
+
                 chk_point = ckpt.get("ema_model") or ckpt.get("model")
                 if chk_point is None:
                     raise KeyError("Checkpoint missing both 'ema_model' and 'model'")
-                
+
                 if is_main_process:
                     logger.info(f"Loading checkpoint from {self.chkpt_path}")
                 
@@ -265,7 +276,6 @@ class ModelTaskFactory:
                             logger.warning(f"\033[93mMissing keys ({len(load_result.missing_keys)}): {load_result.missing_keys}\033[0m")
                         if load_result.unexpected_keys:
                             logger.warning(f"\033[93mUnexpected keys ({len(load_result.unexpected_keys)}): {load_result.unexpected_keys}\033[0m")
-                
                 except RuntimeError as e:
                     made_adjustment = False
                     
@@ -352,7 +362,8 @@ class ModelTaskFactory:
                                 logger.warning(f"\033[93mUnexpected keys ({len(res.unexpected_keys)}): {res.unexpected_keys}\033[0m")
                     else:
                         raise RuntimeError(f"The specified model configuration does not match with the checkpoint. Original error: {e}")
-                         
+                                
+    
                 if "mean" in chk_point and "std" in chk_point:
                     self.task.mean = chk_point["mean"]
                     self.task.std = chk_point["std"]                           
@@ -361,6 +372,77 @@ class ModelTaskFactory:
                     logger.warning(f"Checkpoint not found at {self.chkpt_path}. Initializing model without loading.")      
                 raise FileNotFoundError(f"Checkpoint not found at {self.chkpt_path}.")
         self.task.atom_vocab = self.atom_vocab
-            
+        self.task.task_type = self.task_type
+
         return self.task
 
+    def adjust_state_dict(self, state_dict, task):
+        """Adjust checkpoint state dict dimensions to match the current EGT model.
+        
+        Handles size mismatches from added conditions by resizing EGT MLP
+        layers and adapter context embeddings. Uses suffix-based key matching
+        on BOTH checkpoint and model state dicts to handle cross-prefix scenarios.
+        
+        Args:
+            state_dict: The checkpoint state dict to adjust.
+            task: The task model (used to get expected dimensions).
+            
+        Returns:
+            The adjusted state dict.
+        """
+        model_sd = task.state_dict()
+        
+        def _find_key(sd, suffix):
+            """Find a key in state dict ending with the given suffix."""
+            matches = [k for k in sd if k.endswith(suffix)]
+            return matches[0] if matches else None
+        
+        # --- EGT node MLPs: mlp_in_X / mlp_out_X ---
+        suffix_in = "egnn.mlp_in_X.0.weight"
+        suffix_out_w = "egnn.mlp_out_X.2.weight"
+        suffix_out_b = "egnn.mlp_out_X.2.bias"
+        
+        ckpt_in = _find_key(state_dict, suffix_in)
+        ckpt_out_w = _find_key(state_dict, suffix_out_w)
+        ckpt_out_b = _find_key(state_dict, suffix_out_b)
+        model_in = _find_key(model_sd, suffix_in)
+        
+        if ckpt_in and ckpt_out_w and ckpt_out_b and model_in:
+            expected_dim = model_sd[model_in].shape[1]
+            ckpt_dim = state_dict[ckpt_in].shape[1]
+            hidden = state_dict[ckpt_in].shape[0]
+            
+            if expected_dim != ckpt_dim:
+                logger.info(f"Adjusting EGT mlp_in_X: {ckpt_dim} -> {expected_dim}")
+                state_dict[ckpt_in] = adjust_weights(state_dict[ckpt_in], (hidden, expected_dim))
+                state_dict[ckpt_out_w] = adjust_weights(state_dict[ckpt_out_w], (expected_dim, hidden))
+                state_dict[ckpt_out_b] = adjust_bias(state_dict[ckpt_out_b], (expected_dim,))
+        
+        # --- EGT global: mlp_in_y ---
+        suffix_y = "egnn.mlp_in_y.0.weight"
+        ckpt_y = _find_key(state_dict, suffix_y)
+        model_y = _find_key(model_sd, suffix_y)
+        
+        if ckpt_y and model_y:
+            expected_y = model_sd[model_y].shape[1]
+            ckpt_y_dim = state_dict[ckpt_y].shape[1]
+            hidden_y = state_dict[ckpt_y].shape[0]
+            if expected_y != ckpt_y_dim:
+                logger.info(f"Adjusting EGT mlp_in_y: {ckpt_y_dim} -> {expected_y}")
+                state_dict[ckpt_y] = adjust_weights(state_dict[ckpt_y], (hidden_y, expected_y))
+        
+        # --- Adapter context embedding ---
+        suffix_adapter = "emb_c_in.weight"
+        ckpt_adapter = _find_key(state_dict, suffix_adapter)
+        model_adapter = _find_key(model_sd, suffix_adapter)
+        
+        if ckpt_adapter and model_adapter:
+            expected_ctx = model_sd[model_adapter].shape[1]
+            ckpt_ctx = state_dict[ckpt_adapter].shape[1]
+            hidden_ctx = state_dict[ckpt_adapter].shape[0]
+            if expected_ctx != ckpt_ctx:
+                logger.info(f"Adjusting adapter context: {ckpt_ctx} -> {expected_ctx}")
+                state_dict[ckpt_adapter] = adjust_weights(
+                    state_dict[ckpt_adapter], (hidden_ctx, expected_ctx))
+        
+        return state_dict

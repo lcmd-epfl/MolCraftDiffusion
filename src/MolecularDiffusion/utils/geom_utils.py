@@ -5,8 +5,11 @@ from torch_geometric.data import Data
 from ase.io import read
 from ase.data import covalent_radii, chemical_symbols
 import numpy as np
+import logging
 import os
 import shutil
+
+logger = logging.getLogger(__name__)
 
 
 def translate_to_origine(coords, node_mask):
@@ -323,14 +326,14 @@ def save_xyz_file(
     atomic_numbers=None,
     use_unknown_fallback=False,
 ):
-    """Save XYZ files for a batch of molecules, skipping atoms near (0,0,0).
+    """Save XYZ files for a batch of molecules directly to the target path.
     
     Args:
         path: Output directory
         one_hot: [B, N, C] one-hot encoding
         positions: [B, N, 3] coordinates
         atom_decoder: List mapping indices to atom symbols
-        id_from: Starting index for filenames
+        id_from: Starting index for filenames (if idxs is None)
         name: Filename prefix
         node_mask: Optional [B, N] or [B, N, 1] mask
         idxs: Optional indices for filenames
@@ -348,7 +351,9 @@ def save_xyz_file(
     for batch_i in range(one_hot.size(0)):
         try:
             idx = batch_i + id_from if idxs is None else idxs[batch_i]
-            filename = f"{name}_{idx:03d}.xyz"
+            # Use 4-digit padding by default to match framework convention
+            filename = f"{name}_{idx:04d}.xyz"
+            outpath = os.path.join(path, filename)
 
             atoms = torch.argmax(one_hot[batch_i], dim=1)
             n_atoms = int(atomsxmol[batch_i])
@@ -366,7 +371,7 @@ def save_xyz_file(
             else:
                 filtered_Z = None
 
-            with open(filename, "w") as f:
+            with open(outpath, "w") as f:
                 f.write(f"{n_valid}\n\n")
                 for i, (atom, pos) in enumerate(zip(filtered_atoms, filtered_coords)):
                     atom_idx = atom.item()
@@ -394,9 +399,8 @@ def save_xyz_file(
                         
                     f.write(f"{symbol} {pos[0]:.9f} {pos[1]:.9f} {pos[2]:.9f}\n")
 
-            if os.path.exists(filename):
-                shutil.move(filename, path)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error saving molecule {batch_i}: {e}")
             pass
         
 
@@ -411,7 +415,7 @@ def save_xyz_file_atomic_numbers(
     tol: float = 1e-4,
 ):
     """
-    Save XYZ files for a batch of molecules, writing ATOMIC SYMBOLS in the first column.
+    Save XYZ files for a batch of molecules directly to the target path.
 
     Args:
         path: output directory
@@ -441,7 +445,8 @@ def save_xyz_file_atomic_numbers(
     for batch_i in range(B):
         try:
             idx = (batch_i + id_from) if idxs is None else int(idxs[batch_i])
-            filename = f"{name}_{idx:03d}.xyz"
+            # Use 4-digit padding by default
+            filename = f"{name}_{idx:04d}.xyz"
             outpath = os.path.join(path, filename)
 
             n_atoms = int(atomsxmol[batch_i].item())
@@ -461,5 +466,5 @@ def save_xyz_file_atomic_numbers(
                     f.write(f"{symbol} {pos[0]:.9f} {pos[1]:.9f} {pos[2]:.9f}\n")
 
         except Exception as e:
-            # keep behavior similar to your original (skip failures quietly)
+            logger.error(f"Error saving molecule {batch_i}: {e}")
             pass

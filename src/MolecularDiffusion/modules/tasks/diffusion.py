@@ -11,6 +11,7 @@ from rdkit import Chem
 from MolecularDiffusion import core
 from MolecularDiffusion.callbacks import SP_regularizer
 from MolecularDiffusion.modules.layers import common, functional
+from MolecularDiffusion.modules.tasks.regression import MLPRegressor_padded, MLPRegressor_pernode
 from MolecularDiffusion.modules.models.en_diffusion import (
     DistributionNodes,
     DistributionProperty,
@@ -1403,7 +1404,12 @@ def reverse_tensor(x):
 @core.Registry.register("GuidanceModelPrediction")
 class GuidanceModelPrediction(Task, core.Configurable):
     eps = 1e-10
+    SNR_CLAMP_MAX = 5.0
     _option_members = {"task", "criterion", "metric"}
+
+    @property
+    def device(self):
+        return next(self.model.parameters()).device
 
     def __init__(
         self,
@@ -1415,7 +1421,7 @@ class GuidanceModelPrediction(Task, core.Configurable):
         num_mlp_layer=1,
         normalization=True,
         num_class=None,
-        mlp_batch_norm=True,
+        mlp_batch_norm=None,  # None, 'layernorm', 'batchnorm'
         readout="mean",
         mlp_dropout=0,
         std_mean=None,
@@ -1427,6 +1433,10 @@ class GuidanceModelPrediction(Task, core.Configurable):
         weight_classes=None,
         t_max=1,
         verbose=0,
+        prediction_mlp_type="pernode",  # 'pernode' or 'padded'
+        prediction_activation="relu",  # 'relu' or 'silu'
+        loss_weighting="none",
+        **kwargs
     ):
 
         super(GuidanceModelPrediction, self).__init__()
@@ -1441,6 +1451,11 @@ class GuidanceModelPrediction(Task, core.Configurable):
             self.architecture = "egcn"
         elif self.model.__class__.__name__ in ["PaiNN", "GemNetOC"]:
             self.architecture = "egnn_extra"
+        elif self.model.__class__.__name__ in ["eSEN_Backbone", "eSEN_Encoder"]:
+            self.architecture = "esen"
+        else:
+            # Default fallback
+            self.architecture = "egcn"
         
         self.metric = metric
         self.criterion = {"mse":1}
@@ -1457,11 +1472,38 @@ class GuidanceModelPrediction(Task, core.Configurable):
         self.num_class = (num_class,) if isinstance(num_class, int) else num_class
         self.readout = readout
         self.t_max = t_max
+        self.prediction_mlp_type = prediction_mlp_type
+        self.t_max = t_max
+        self.prediction_mlp_type = prediction_mlp_type
+        self.prediction_activation = prediction_activation
+        
+        self.loss_weighting = loss_weighting
+        self._last_sampled_t = None
 
         self.num_targets = len(self.task)
         self.ndim_extra = nextra_nf
         self.n_dims = 3
-        self.in_node_nf = self.model.in_node_nf - 1
+        
+        # Map attributes based on architecture
+        if self.architecture == "esen":
+            # eSEN stores input dimension as in_node_channels (set during construction)
+            # This should be: len(atom_vocab) + n_extra + 1 (charge) + 1 (time)
+            # We need in_node_nf = input_dim - 1 (excluding time which is added later)
+            if hasattr(self.model, 'in_node_channels'):
+                # eSEN was constructed with in_node_channels = in_node_nf + 1 (for time)
+                self.in_node_nf = self.model.in_node_channels - 1
+            else:
+                # Fallback: estimate from sphere_embedding if available
+                # This shouldn't happen if eSEN was constructed correctly
+                self.in_node_nf = getattr(self.model, 'sphere_channels', 128)
+            
+            # Set hidden_nf for MLP compatibility (d_model is the output dim after message passing)
+            self.model.hidden_nf = getattr(self.model, 'd_model', 
+                                           self.model.sphere_channels * ((self.model.lmax + 1) ** 2))
+            # Also set in_node_nf on model for compatibility
+            self.model.in_node_nf = self.in_node_nf + 1
+        else:
+            self.in_node_nf = self.model.in_node_nf - 1
         if weight_classes is None:
             self.weight_classes = torch.ones(len(self.task))
         else:
@@ -1478,32 +1520,70 @@ class GuidanceModelPrediction(Task, core.Configurable):
             self.mean = std_mean[1]
 
         if load_mlps_layer > 0:
-            hidden_dims = [self.model.hidden_nf] * (self.num_mlp_layer - 1)
-            self.mlp = common.MLP(
-                self.model.hidden_nf,
-                hidden_dims,
-                batch_norm=self.mlp_batch_norm,
-                dropout=self.mlp_dropout,
-            )
+            # MLP will be created below in the num_class block using MLPRegressor
+            pass
         self.load_mlps_layer = load_mlps_layer
 
 
         if self.num_class:
-            if load_mlps_layer > 0:
-                n_layer_final = self.num_mlp_layer - load_mlps_layer - 1
-                self.mlp_final = common.MLP(
-                    hidden_dims[n_layer_final:-1],
-                    sum(self.num_class) ,
-                    batch_norm=self.mlp_batch_norm,
-                    dropout=self.mlp_dropout,
-                )
-            else:
+            # Select MLP class based on prediction_mlp_type
+            # 'legacy' uses common.MLP for backward compatibility with old checkpoints
+            if self.prediction_mlp_type == "legacy":
+                # Legacy common.MLP mode for old checkpoints
                 hidden_dims = [self.model.hidden_nf] * (self.num_mlp_layer - 1)
-                self.mlp = common.MLP(
-                    self.model.hidden_nf,
-                    hidden_dims + [sum(self.num_class) ],
-                    batch_norm=self.mlp_batch_norm,
-                    dropout=self.mlp_dropout,
+                if load_mlps_layer > 0:
+                    self.mlp = common.MLP(
+                        self.model.hidden_nf,
+                        hidden_dims,
+                        batch_norm=self.mlp_batch_norm if isinstance(self.mlp_batch_norm, bool) else (self.mlp_batch_norm is not None),
+                        dropout=self.mlp_dropout,
+                    )
+                    n_layer_final = self.num_mlp_layer - load_mlps_layer - 1
+                    self.mlp_final = common.MLP(
+                        hidden_dims[n_layer_final:-1] if n_layer_final < len(hidden_dims) else [self.model.hidden_nf],
+                        [sum(self.num_class)],
+                        batch_norm=self.mlp_batch_norm if isinstance(self.mlp_batch_norm, bool) else (self.mlp_batch_norm is not None),
+                        dropout=self.mlp_dropout,
+                    )
+                else:
+                    self.mlp = common.MLP(
+                        self.model.hidden_nf,
+                        hidden_dims + [sum(self.num_class)],
+                        batch_norm=self.mlp_batch_norm if isinstance(self.mlp_batch_norm, bool) else (self.mlp_batch_norm is not None),
+                        dropout=self.mlp_dropout,
+                    )
+                self._use_legacy_mlp = True
+            else:
+                # New MLPRegressor mode
+                if self.prediction_mlp_type == "padded":
+                    MLPRegressor = MLPRegressor_padded
+                else:
+                    MLPRegressor = MLPRegressor_pernode
+                    
+                if load_mlps_layer > 0:
+                    n_layer_final = self.num_mlp_layer - load_mlps_layer - 1
+                    self.mlp_final = MLPRegressor(
+                        self.model.hidden_nf,
+                        sum(self.num_class),
+                        hidden_dim=self.model.hidden_nf,
+                        num_layers=n_layer_final,
+                        normalization=self.mlp_batch_norm,
+                        dropout=self.mlp_dropout,
+                        activation=self.prediction_activation,
+                        readout_method=self.readout,
+                        prediction_level="graph",
+                    )
+                else:
+                    self.mlp = MLPRegressor(
+                        self.model.hidden_nf,
+                        sum(self.num_class),
+                        hidden_dim=self.model.hidden_nf,
+                        num_layers=self.num_mlp_layer,
+                        normalization=self.mlp_batch_norm,
+                        dropout=self.mlp_dropout,
+                        activation=self.prediction_activation,
+                        readout_method=self.readout,
+                        prediction_level="graph",
                 )
 
 
@@ -1556,20 +1636,59 @@ class GuidanceModelPrediction(Task, core.Configurable):
             hidden_dims = [self.model.hidden_nf] * (self.num_mlp_layer - 1)
 
             if self.mlp is None:
-                self.mlp = common.MLP(
-                    self.model.hidden_nf,
-                    hidden_dims + [sum(self.num_class) ],
-                    batch_norm=self.mlp_batch_norm,
-                    dropout=self.mlp_dropout,
-                )
+                # Select MLP class based on prediction_mlp_type
+                if self.prediction_mlp_type == "legacy":
+                    # Legacy common.MLP mode
+                    self.mlp = common.MLP(
+                        self.model.hidden_nf,
+                        hidden_dims + [sum(self.num_class)],
+                        batch_norm=self.mlp_batch_norm if isinstance(self.mlp_batch_norm, bool) else (self.mlp_batch_norm is not None),
+                        dropout=self.mlp_dropout,
+                    )
+                    self._use_legacy_mlp = True
+                else:
+                    if self.prediction_mlp_type == "padded":
+                        MLPRegressor = MLPRegressor_padded
+                    else:
+                        MLPRegressor = MLPRegressor_pernode
+                        
+                    self.mlp = MLPRegressor(
+                        self.model.hidden_nf,
+                        sum(self.num_class),
+                        hidden_dim=self.model.hidden_nf,
+                        num_layers=self.num_mlp_layer,
+                        normalization=self.mlp_batch_norm,
+                        dropout=self.mlp_dropout,
+                        activation=self.prediction_activation,
+                        readout_method=self.readout,
+                        prediction_level="graph",
+                    )
             if self.load_mlps_layer > 0:
-                n_layer_final = self.num_mlp_layer - self.load_mlps_layer - 1
-                self.mlp_final = common.MLP(
-                    hidden_dims[n_layer_final:-1],
-                    sum(self.num_class) ,
-                    batch_norm=self.mlp_batch_norm,
-                    dropout=self.mlp_dropout,
-                )
+                if self.prediction_mlp_type == "legacy":
+                    n_layer_final = self.num_mlp_layer - self.load_mlps_layer - 1
+                    self.mlp_final = common.MLP(
+                        hidden_dims[n_layer_final:-1] if n_layer_final < len(hidden_dims) else [self.model.hidden_nf],
+                        [sum(self.num_class)],
+                        batch_norm=self.mlp_batch_norm if isinstance(self.mlp_batch_norm, bool) else (self.mlp_batch_norm is not None),
+                        dropout=self.mlp_dropout,
+                    )
+                else:
+                    if self.prediction_mlp_type == "padded":
+                        MLPRegressor = MLPRegressor_padded
+                    else:
+                        MLPRegressor = MLPRegressor_pernode
+                    n_layer_final = self.num_mlp_layer - self.load_mlps_layer - 1
+                    self.mlp_final = MLPRegressor(
+                        self.model.hidden_nf,
+                        sum(self.num_class),
+                        hidden_dim=self.model.hidden_nf,
+                        num_layers=n_layer_final,
+                        normalization=self.mlp_batch_norm,
+                        dropout=self.mlp_dropout,
+                        activation=self.prediction_activation,
+                        readout_method=self.readout,
+                        prediction_level="graph",
+                    )
 
             self.train_set_size = len(train_set)
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1601,6 +1720,15 @@ class GuidanceModelPrediction(Task, core.Configurable):
             )
         else:
             loss = F.mse_loss(pred, target, reduction="none")
+
+        # Apply loss weighting if configured
+        if self.loss_weighting != "none" and self._last_sampled_t is not None:
+            w = self.get_loss_weight(self._last_sampled_t)
+            if w.size(0) == loss.size(0):
+                 if w.dim() == 1 and loss.dim() == 2:
+                     w = w.unsqueeze(1)
+                 loss = loss * w
+            
         name = _get_criterion_name("mse")
         if self.verbose > 0:
             for t, l in zip(self.task, loss):
@@ -1666,7 +1794,7 @@ class GuidanceModelPrediction(Task, core.Configurable):
             t_upper = int(self.T * self.t_max)
             t_int = torch.zeros((n_nodes, 1), device=x.device, dtype=torch.long)
             t_int_value = torch.randint(
-                0, t_upper + 1, size=(bs, 1),  dtype=torch.long
+                0, t_upper + 1, size=(bs, 1),  dtype=torch.long, device=x.device
             )
 
             n_atom_cum = 0
@@ -1675,6 +1803,10 @@ class GuidanceModelPrediction(Task, core.Configurable):
                 n_atom_cum += n_atom
 
             t = t_int / self.T
+            
+            # Store sampled t for loss weighting in forward
+            self._last_sampled_t = t_int_value.float() / self.T if not evaluate else None
+            
             eps_x, eps_h = self.sample_combined_position_feature_noise(
                 n_samples=1, n_nodes=n_nodes, node_mask=node_mask
             )
@@ -1751,9 +1883,10 @@ class GuidanceModelPrediction(Task, core.Configurable):
             node_mask = None
             edge_mask = None
             h_final, _ = self.model(
-                z_h, x, edges, node_mask=node_mask, edge_mask=edge_mask, use_embed=True
+                z_h, z_x, edges, node_mask=node_mask, edge_mask=edge_mask, use_embed=True
             )  
         elif self.architecture == "egnn_extra":
+            # MUST USE ONLY MLP embedding 
             if not(self.include_charge):
                 z_h = z_h[:, :-1]
 
@@ -1763,21 +1896,58 @@ class GuidanceModelPrediction(Task, core.Configurable):
             z_h = torch.cat([z_h, t], dim=1)
             batch["graph"].x = z_h
             batch["graph"].pos = z_x    
+            batch["graph"].num_atoms = batch["graph"].natoms
+            batch["graph"].token_idx = torch.zeros(batch["graph"].num_nodes, device=self.device).long()
+            h_final, _ = self.model(batch["graph"])    
+        elif self.architecture == "esen":
+            # eSEN architecture: expects PyG Data object
+            # IMPORTANT: eSEN's sphere_embedding already concatenates atomic_numbers to data.x
+            # So we must NOT include charge in z_h to avoid double-counting
+            # Strip the charge dimension (last dim) from z_h
+            z_h = z_h[:, :-1]  # Remove charge - eSEN will use atomic_numbers separately
 
-            h_final, _ = self.model(batch["graph"], use_embed=True)    
-               
+            if evaluate:
+                t = batch["graph"].times
+            
+            # Concatenate time to features
+            z_h = torch.cat([z_h, t], dim=1)
+            
+            # Build eSEN-compatible data object
+            batch["graph"].x = z_h
+            batch["graph"].pos = z_x
+            batch["graph"].num_atoms = batch["graph"].natoms
+            batch["graph"].token_idx = torch.zeros(batch["graph"].num_nodes, device=self.device).long()
+            # For guidance mode with noisy atomic numbers, keep as float
+            # eSEN's sphere_embedding already calls .float() on atomic_numbers
+            # if hasattr(batch["graph"], 'atomic_numbers'):
+            #     batch["graph"].atomic_numbers = batch["graph"].atomic_numbers.long()
+            
+            # Forward pass through eSEN
+            emb_dict = self.model(batch["graph"])
+            
+            # Extract node features from eSEN output dict
+            # eSEN returns {"x": [N, d_model], "num_atoms": ..., "batch": ..., ...}
+            h_final = emb_dict["x"]
 
-        h_final = self.pad_data(h_final, batch, self.model.hidden_nf)   
-        output = {
-            "graph_feature": self.readout_f(h_final),
-            "node_feature": h_final,
-        }
-
-        if self.load_mlps_layer > 0:
-            x = self.mlp(output["graph_feature"])
-            pred = self.mlp_final(x)
+        # Handle MLP prediction based on mode
+        if getattr(self, '_use_legacy_mlp', False):
+            # Legacy common.MLP: does its own readout via pad_data + readout_f
+            h_final = self.pad_data(h_final, batch, self.model.hidden_nf)   
+            graph_embedding = self.readout_f(h_final)
+            if self.load_mlps_layer > 0:
+                x = self.mlp(graph_embedding)
+                pred = self.mlp_final(x)
+            else:
+                pred = self.mlp(graph_embedding)
         else:
-            pred = self.mlp(output["graph_feature"])
+            # New MLPRegressor: pass node features + batch indices
+            batch_indices = batch["graph"].batch
+            if self.load_mlps_layer > 0:
+                x = self.mlp(h_final, batch_indices)
+                pred = self.mlp_final(x, batch_indices)
+            else:
+                pred = self.mlp(h_final, batch_indices)
+            
         if self.normalization:
             pred = pred * self.std + self.mean
         return pred
@@ -1926,4 +2096,48 @@ class GuidanceModelPrediction(Task, core.Configurable):
         number_of_nodes = torch.sum(node_mask.squeeze(2), dim=1)
         return (number_of_nodes - 1) * self.n_dims
 
+
+
+    def get_loss_weight(self, t):
+        """
+        Compute importance weights for the loss based on the timestep t.
+        
+        Args:
+            t: Tensor of shape (B, 1) or (B,) containing normalized timesteps in [0, 1].
+            
+        Returns:
+            w: Tensor of importance weights.
+        """
+        if self.loss_weighting == "none":
+            return torch.ones_like(t)
+            
+        elif self.loss_weighting == "linear":
+            # Linear decay: weight = 1 - t
+            # Emphasizes t=0 (clean data)
+            # Strict clamping to [0, 1) range to avoid exactly 1.0
+            return torch.clamp(1.0 - t, min=0.0, max=1.0 - 1e-6)
+            
+        elif self.loss_weighting == "snr":
+            # SNR weighting: alpha^2 / sigma^2
+            # Closely related to VLB weighting for diffusion models.
+            # We use the noise schedule from self.gamma.
+            
+            # t is normalized [0, 1]. Map to integer steps.
+            t_int = torch.round(t * self.T).long()
+            
+            # Get alpha_bar and sigma_bar
+            # Note: We use "pos" key as representative schedule (usually they are similar/same)
+            alpha_bar = self.gamma.get_alpha_bar(t_int=t_int, key="pos")
+            sigma_bar = self.gamma.get_sigma_bar(t_int=t_int, key="pos")
+            
+            # Avoid division by zero at t=0 (sigma=0)
+            snr = (alpha_bar ** 2) / (sigma_bar ** 2 + 1e-8)
+            
+            # Clip to avoid extreme values at t=0 and rescale to [0, 1)
+            # Common practice in diffusion guidance
+            w = torch.clamp(snr, max=self.SNR_CLAMP_MAX) / self.SNR_CLAMP_MAX
+            return torch.clamp(w, max=1.0 - 1e-6)
+            
+        else:
+            raise ValueError(f"Unknown loss weighting scheme: {self.loss_weighting}")
 

@@ -109,7 +109,15 @@ class WandbLogger(LoggingLogger):
                 )
                 self.run = wandb.run
             else:
-                self.run = wandb.init(project=project, name=name, dir=dir, **kwargs)
+                # Convert OmegaConf ListConfig tags to plain list for wandb
+                tags = kwargs.pop("tags", None)
+                if tags is not None:
+                    try:
+                        from omegaconf import OmegaConf
+                        tags = OmegaConf.to_container(tags, resolve=True) if hasattr(tags, '_metadata') else list(tags)
+                    except Exception:
+                        tags = list(tags)
+                self.run = wandb.init(project=project, name=name, dir=dir, tags=tags or None, **kwargs)
 
             self.run.define_metric("train/batch/*", step_metric="batch", summary="none")
             for split in ["train", "valid", "test"]:

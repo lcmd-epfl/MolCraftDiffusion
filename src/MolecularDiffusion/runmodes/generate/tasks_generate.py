@@ -14,6 +14,8 @@ from torch_geometric.data import Batch, Data
 from torch_geometric.nn import radius_graph
 from MolecularDiffusion.data.component.pointcloud import PointCloud_Mol
 from MolecularDiffusion.data.component.feature import onehot
+from MolecularDiffusion.utils.geom_utils import save_xyz_file, save_xyz_file_atomic_numbers
+
 from ase.data import atomic_numbers
 
 logger = logging.getLogger(__name__)
@@ -33,16 +35,19 @@ class GenerativeFactory:
                  n_frames: int = 0,
                  output_path: str = "generated_mol",
                  condition_configs={},
+                 max_mol_size: int = 0,
     ):
 
         self.task = task
         self.task_type = task_type
         self.num_generate = num_generate
+        self.max_mol_size = max_mol_size
         try:
             self.max_atom = max(task.n_node_dist.keys())
-        except ValueError:
+        except (ValueError, AttributeError):
             logger.warning("Node distribution model is not available, set max_atom to 86")
             self.max_atom = 86
+
             
         self.mol_size = mol_size
 
@@ -55,11 +60,24 @@ class GenerativeFactory:
         self.target_values = target_values
         self.property_names = property_names
         self.negative_target_values = negative_target_values
-        
-        
+
         if len(self.target_values) != len(self.property_names):
             logger.warning("Number of target values must match with number of property names")
             self.property_names = ["a"]*len(self.target_values)
+
+        # Validate number of target_values against model's condition_names (from checkpoint)
+        if len(self.target_values) > 0:
+            model_conditions = getattr(task, "condition", None)
+            if model_conditions is not None and len(model_conditions) > 0:
+                n_model = len(model_conditions)
+                n_requested = len(self.target_values)
+                if n_requested != n_model:
+                    raise ValueError(
+                        f"Property count mismatch: {n_requested} target value(s) specified "
+                        f"but the model was trained with {n_model} condition(s) "
+                        f"({list(model_conditions)}). "
+                        f"Update 'target_values' in your config to match."
+                    )
         
         self.batch_size = batch_size
         self.seed = seed
@@ -68,12 +86,15 @@ class GenerativeFactory:
         if n_frames > 0:
             self.visualize_trajectory = True
             
+            # Use T for DDPM/LDM, fm_num_timesteps for FM
+            total_steps = getattr(self.task.model, 'T', getattr(self.task.model, 'fm_num_timesteps', 100))
+            
             if condition_configs.get("denoising_strength", 0) > 0:
-                t_start  = int(self.task.model.T * condition_configs.get("denoising_strength", 0.8))
+                t_start = int(total_steps * condition_configs.get("denoising_strength", 0.8))
             elif condition_configs.get("t_start", 1) < 1:
-                t_start = int(self.task.model.T * condition_configs.get("t_start", 1))
+                t_start = int(total_steps * condition_configs.get("t_start", 1))
             else:
-                t_start = int(self.task.model.T)
+                t_start = int(total_steps)
                 
             s_saves = torch.linspace(0, t_start, 
                                             steps=self.n_frames).long()
@@ -93,7 +114,7 @@ class GenerativeFactory:
             import random
             if len(self.mol_size) == 2:
                 if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                    self.mol_size = random.randint(14, 100)
+                    self.mol_size = [random.randint(14, 100)]
         
     def run(self):
         
@@ -137,6 +158,8 @@ class GenerativeFactory:
                 elif len(self.mol_size) == 2:
                     if self.mol_size[0] == 0 and self.mol_size[1] == 0:
                         nodesxsample = self.task.node_dist_model.sample(current_batch_size)
+                        if self.max_mol_size > 0:
+                            nodesxsample = torch.clamp(nodesxsample, max=self.max_mol_size)
                     else:
                         mean = (self.mol_size[0] + self.mol_size[1]) / 2
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
@@ -144,16 +167,16 @@ class GenerativeFactory:
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                         nodesxsample = nodesxsample.repeat(current_batch_size) 
                 if self.task.prop_dist_model and len(self.target_values) == 0:
-                    size = nodesxsample.item()
+                    size = nodesxsample[0].item()
                     target_value = self.task.prop_dist_model.sample(size)
-                    one_hot, _, x, _ = self.task.sample_conditonal(
+                    one_hot, charges, x, node_mask = self.task.sample_conditonal(
                         nodesxsample=nodesxsample, 
                         target_value=target_value,
                         mode=self.sampling_mode,
                         n_frames=self.n_frames
                     )
                 else:
-                    one_hot, _, x, _ = self.task.sample(
+                    one_hot, charges, x, node_mask = self.task.sample(
                         nodesxsample=nodesxsample,
                         mode=self.sampling_mode,
                         n_frames=self.n_frames
@@ -163,34 +186,53 @@ class GenerativeFactory:
                     for j in range(current_batch_size):
                         mol_idx = i * self.batch_size + j
                         output_path_frame = os.path.join(self.output_path, f"mol_{mol_idx}")
-                        save_xyz_file(
-                            output_path_frame,
-                            one_hot[:, j],
-                            x[:, j],
-                            atom_decoder=self.task.atom_vocab,
-                            idxs=self.s_saves.tolist()
-                        )   
-                        path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
-                        idx = i * self.batch_size + j
-                        shutil.move(
-                            path_xyz,
-                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
-                        )         
+                        if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                            save_xyz_file_atomic_numbers(
+                                output_path_frame,
+                                x[:, j],
+                                charges[:, j].squeeze(-1),
+                                idxs=self.s_saves.tolist(),
+                                node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
+                            )
+                        else:
+                            save_xyz_file(
+                                output_path_frame,
+                                one_hot[:, j],
+                                x[:, j],
+                                atom_decoder=self.task.atom_vocab,
+                                idxs=self.s_saves.tolist(),
+                                atomic_numbers=charges[:, j].squeeze(-1) if hasattr(self.task.model, 'use_unknown_fallback') else None,
+                                use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
+                                node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
+                            )   
+                        # Copy the last frame of the trajectory to the main output folder
+                        last_frame_idx = self.s_saves[-1].item()
+                        path_xyz = os.path.join(output_path_frame, f"molecule_{last_frame_idx:04d}.xyz")
+                        if os.path.exists(path_xyz):
+                            shutil.copy(
+                                path_xyz,
+                                os.path.join(self.output_path, f"molecule_{mol_idx:04d}.xyz"),
+                            )
                 else:
-                    save_xyz_file(
-                        self.output_path,
-                        one_hot,
-                        x,
-                        atom_decoder=self.task.atom_vocab,
-                    )
-
-                    for j in range(current_batch_size):
-                        
-                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
-                        idx = i * self.batch_size + j
-                        shutil.move(
-                            path_xyz,
-                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                    batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
+                    if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                        save_xyz_file_atomic_numbers(
+                            self.output_path,
+                            x,
+                            charges.squeeze(-1),
+                            node_mask=node_mask,
+                            idxs=batch_idxs,
+                        )
+                    else:
+                        save_xyz_file(
+                            self.output_path,
+                            one_hot,
+                            x,
+                            atom_decoder=self.task.atom_vocab,
+                            atomic_numbers=charges.squeeze(-1) if hasattr(self.task.model, 'use_unknown_fallback') else None,
+                            use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
+                            node_mask=node_mask,
+                            idxs=batch_idxs,
                         )
             except Exception as e:
                 fail_count += 1
@@ -204,8 +246,7 @@ class GenerativeFactory:
             })
     
     def conditional_generation(self):
-        
-        assert len(self.target_values) == len(self.task.condition); "Number of target values must match with number of conditions in the model"
+        assert len(self.target_values) > 0, "Target values must be provided for conditional generation"
         
         if hasattr(self.task, 'predictive_model'):
             property_eval = True
@@ -240,6 +281,8 @@ class GenerativeFactory:
                 elif len(self.mol_size) == 2:
                     if self.mol_size[0] == 0 and self.mol_size[1] == 0:
                         nodesxsample = self.task.node_dist_model.sample(current_batch_size)
+                        if self.max_mol_size > 0:
+                            nodesxsample = torch.clamp(nodesxsample, max=self.max_mol_size)
                     else:
                         mean = (self.mol_size[0] + self.mol_size[1]) / 2
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
@@ -248,14 +291,14 @@ class GenerativeFactory:
                         nodesxsample = nodesxsample.repeat(current_batch_size) 
               
                 if self.task_type == "conditional":
-                    one_hot, charges, x, _ = self.task.sample_conditonal(
+                    one_hot, charges, x, node_mask = self.task.sample_conditonal(
                             nodesxsample=nodesxsample, 
                             target_value=self.target_values,
                             n_frames=self.n_frames,
                             mode=self.sampling_mode
                         )
                 elif self.task_type == "cfg":
-                    one_hot, charges, x, _ = self.task.sample_guidance_conitional(
+                    one_hot, charges, x, node_mask = self.task.sample_guidance_conitional(
                             target_function=None,
                             target_value=self.target_values,
                             negative_target_value=self.negative_target_values,
@@ -270,36 +313,55 @@ class GenerativeFactory:
                     for j in range(current_batch_size):
                         mol_idx = i * self.batch_size + j
                         output_path_frame = os.path.join(self.output_path, f"mol_{mol_idx}")
-                        save_xyz_file(
-                            output_path_frame,
-                            one_hot[:, j],
-                            x[:, j],
-                            atom_decoder=self.task.atom_vocab,
-                            idxs=self.s_saves.tolist()
-                        )     
-                        path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
-                        idx = i * self.batch_size + j
-                        shutil.move(
-                            path_xyz,
-                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
-                        )
+                        if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                            save_xyz_file_atomic_numbers(
+                                output_path_frame,
+                                x[:, j],
+                                charges[:, j].squeeze(-1) if charges is not None else None,
+                                idxs=self.s_saves.tolist(),
+                                node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
+                            )
+                        else:
+                            save_xyz_file(
+                                output_path_frame,
+                                one_hot[:, j],
+                                x[:, j],
+                                atom_decoder=self.task.atom_vocab,
+                                idxs=self.s_saves.tolist(),
+                                atomic_numbers=charges[:, j].squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
+                                use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
+                                node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
+                            )     
+                        # Copy the last frame of the trajectory to the main output folder
+                        last_frame_idx = self.s_saves[-1].item()
+                        path_xyz = os.path.join(output_path_frame, f"molecule_{last_frame_idx:04d}.xyz")
+                        if os.path.exists(path_xyz):
+                            shutil.copy(
+                                path_xyz,
+                                os.path.join(self.output_path, f"molecule_{mol_idx:04d}.xyz"),
+                            )
                     x = x[:, -1]
                     one_hot = one_hot[:, -1]   
-                else:     
-                    save_xyz_file(
-                        self.output_path,
-                        one_hot,
-                        x,
-                        atom_decoder=self.task.atom_vocab,
-                    )
-
-                    for j in range(current_batch_size):
-                        
-                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
-                        idx = i * self.batch_size + j
-                        shutil.move(
-                            path_xyz,
-                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                else:
+                    batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
+                    if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                        save_xyz_file_atomic_numbers(
+                            self.output_path,
+                            x,
+                            charges.squeeze(-1) if charges is not None else None,
+                            node_mask=node_mask,
+                            idxs=batch_idxs,
+                        )
+                    else:
+                        save_xyz_file(
+                            self.output_path,
+                            one_hot,
+                            x,
+                            atom_decoder=self.task.atom_vocab,
+                            atomic_numbers=charges.squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
+                            use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
+                            node_mask=node_mask,
+                            idxs=batch_idxs,
                         )
                 
                 #TODO to adapt this to work with batch of mols
@@ -341,7 +403,14 @@ class GenerativeFactory:
             scheduler = scheduler()
             
         fail_count = 0
-        progress_bar = tqdm(range(self.num_generate), desc="Sampling molecules", leave=True)
+        
+        # Batch generation setup (matching unconditional_generation pattern)
+        num_round = self.num_generate // self.batch_size
+        if self.num_generate % self.batch_size != 0:
+            num_round += 1
+        current_batch_size = self.batch_size
+        
+        progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
         
         if hasattr(self.task, 'predictive_model'):
             property_eval = True
@@ -356,20 +425,30 @@ class GenerativeFactory:
             property_eval = False
              
         for i in progress_bar:
+            # Adjust batch size for last incomplete batch
+            if i == num_round - 1 and self.num_generate % self.batch_size != 0:
+                current_batch_size = self.num_generate % self.batch_size
+            else:
+                current_batch_size = self.batch_size
+                
             try:
                 if len(self.mol_size) == 1:
                     nodesxsample = torch.tensor(self.mol_size, dtype=torch.long)
+                    nodesxsample = nodesxsample.repeat(current_batch_size)
                 elif len(self.mol_size) == 2:
                     if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                        nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                        nodesxsample = self.task.node_dist_model.sample(current_batch_size)
+                        if self.max_mol_size > 0:
+                            nodesxsample = torch.clamp(nodesxsample, max=self.max_mol_size)
                     else:
                         mean = (self.mol_size[0] + self.mol_size[1]) / 2
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
                         nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
+                        nodesxsample = nodesxsample.repeat(current_batch_size)
                 
                 if len(self.target_values) == 0:
-                    one_hot, charges, x, _  = self.task.sample_guidance(
+                    one_hot, charges, x, node_mask  = self.task.sample_guidance(
                         target_function=target_function,
                         nodesxsample=nodesxsample,
                         scale=self.condition_configs.get("gg_scale",1),
@@ -383,7 +462,7 @@ class GenerativeFactory:
                     )              
                 else:
                     
-                    one_hot, charges, x, _  = self.task.sample_guidance_conitional(
+                    one_hot, charges, x, node_mask  = self.task.sample_guidance_conitional(
                         target_function=target_function,
                         target_value=self.target_values,
                         negative_target_value=self.negative_target_values,
@@ -399,39 +478,45 @@ class GenerativeFactory:
                         n_backwards=self.condition_configs.get("n_backwards",1)
                     )   
                     
-                save_xyz_file(
-                    self.output_path,
-                    one_hot,
-                    x,
-                    atom_decoder=self.task.atom_vocab,
-                )
-
-                path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
-                shutil.move(
-                    path_xyz,
-                    os.path.join(self.output_path, f"molecule_{str(i+1).zfill(4)}.xyz"),
-                )
-                
-                if property_eval:
-                    xh = torch.cat([
+                batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
+                if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                    save_xyz_file_atomic_numbers(
+                        self.output_path,
                         x,
+                        charges.squeeze(-1) if charges is not None else None,
+                        node_mask=node_mask,
+                        idxs=batch_idxs,
+                    )
+                else:
+                    save_xyz_file(
+                        self.output_path,
                         one_hot,
-                        charges
-                    ])
-                    preds = self.property_prediction(xh, t=0)
-                    for prop_name in self.property_names:
-                        logger.info(f"{prop_name}: {preds[prop_name]}")
-                        df_dict[prop_name].append(preds[prop_name])
-                    df_dict["filename"].append(f"molecule_{str(i+1).zfill(4)}.xyz")
-                    df_dict["size"].append(nodesxsample.item())    
+                        x,
+                        atom_decoder=self.task.atom_vocab,
+                        atomic_numbers=charges.squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
+                        use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
+                        node_mask=node_mask,
+                        idxs=batch_idxs,
+                    )
+                
+                # Property evaluation (TODO: adapt for batch)
+                if property_eval:
+                    for j in range(current_batch_size):
+                        idx = i * self.batch_size + j
+                        df_dict["filename"].append(f"molecule_{str(idx).zfill(4)}.xyz")
+                        df_dict["size"].append(nodesxsample[j].item() if nodesxsample.dim() > 0 else nodesxsample.item())
+                        # TODO: add per-molecule property prediction
+                        for prop_name in self.property_names:
+                            df_dict[prop_name].append(None)  # Placeholder
+                            
             except Exception as e:
                 fail_count += 1
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
 
             progress_bar.set_postfix({
-                "completed": i + 1,
+                "completed": (i + 1) * self.batch_size,
                 "failed": fail_count,
-                "success": (i + 1 - fail_count),
+                "success": ((i + 1) * self.batch_size - fail_count * self.batch_size),
                 "success_rate": f"{100 * (i + 1 - fail_count) / (i + 1):.1f}%",
             })
             
@@ -492,6 +577,8 @@ class GenerativeFactory:
                 elif len(self.mol_size) == 2:
                     if self.mol_size[0] == 0 and self.mol_size[1] == 0:
                         nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                        if self.max_mol_size > 0:
+                            nodesxsample = torch.clamp(nodesxsample, max=self.max_mol_size)
                     else:
                         mean = (self.mol_size[0] + self.mol_size[1]) / 2
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
@@ -539,13 +626,22 @@ class GenerativeFactory:
 
                 if self.visualize_trajectory:   
                     output_path_frame = os.path.join(self.output_path, f"mol_{i}")
-                    save_xyz_file(
-                        output_path_frame,
-                        one_hot[:, 0],
-                        x[:, 0],
-                        atom_decoder=self.task.atom_vocab,
-                        idxs=self.s_saves.tolist()
-                    )     
+                    if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                        save_xyz_file_atomic_numbers(
+                            output_path_frame,
+                            x[:, 0],
+                            charges[:, 0].squeeze(-1) if charges is not None else None,
+                            idxs=self.s_saves.tolist(),
+                            node_mask=node_mask[0].unsqueeze(0).expand(one_hot[:, 0].size(0), -1, -1) if node_mask is not None else None,
+                        )
+                    else:
+                        save_xyz_file(
+                            output_path_frame,
+                            one_hot[:, 0],
+                            x[:, 0],
+                            atom_decoder=self.task.atom_vocab,
+                            idxs=self.s_saves.tolist()
+                        )     
                     path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
                     idx = i  
                     shutil.move(
@@ -555,17 +651,23 @@ class GenerativeFactory:
                     x = x[:, -1]
                     one_hot = one_hot[:, -1]   
                 else:     
-                    save_xyz_file(
-                        self.output_path,
-                        one_hot,
-                        x,
-                        atom_decoder=self.task.atom_vocab,
-                    )
-                    path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
-                    shutil.move(
-                        path_xyz,
-                        os.path.join(self.output_path, f"molecule_{str(i).zfill(4)}.xyz"),
-                    )             
+                    batch_idxs = range(i + 1, i + 2)
+                    if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                        save_xyz_file_atomic_numbers(
+                            self.output_path,
+                            x,
+                            charges.squeeze(-1) if charges is not None else None,
+                            node_mask=node_mask,
+                            idxs=batch_idxs,
+                        )
+                    else:
+                        save_xyz_file(
+                            self.output_path,
+                            one_hot,
+                            x,
+                            atom_decoder=self.task.atom_vocab,
+                            idxs=batch_idxs,
+                        )
                              
             except Exception as e:
                 fail_count += 1
@@ -583,8 +685,15 @@ class GenerativeFactory:
         xh_ref = self.preprocess_ref_structure(self.task.device)
         condition_mode = self.task_type.split("_")[0] + "_" + self.condition_configs.get("condition_component",  "xh")
         
-        guidance_ver = self.condition_configs.get("guidance_ver", "cfg")
-        if guidance_ver in [0,1,2,"cfggg"]:
+        # Map task_type suffix to guidance_ver if not explicitly set in config
+        if self.task_type.endswith("_cfggg"):
+            guidance_ver = self.condition_configs.get("guidance_ver", "cfg_gg")
+        elif self.task_type.endswith("_gg"):
+            guidance_ver = self.condition_configs.get("guidance_ver", 2)
+        else:
+            guidance_ver = self.condition_configs.get("guidance_ver", "cfg")
+        
+        if guidance_ver in [0, 1, 2, "cfg_gg"]:
 
             target_function=self.condition_configs.get("target_function", None)            
             if target_function is None:
@@ -632,6 +741,8 @@ class GenerativeFactory:
                 elif len(self.mol_size) == 2:
                     if self.mol_size[0] == 0 and self.mol_size[1] == 0:
                         nodesxsample = self.task.node_dist_model.sample(current_batch_size)
+                        if self.max_mol_size > 0:
+                            nodesxsample = torch.clamp(nodesxsample, max=self.max_mol_size)
                     else:
                         mean = (self.mol_size[0] + self.mol_size[1]) / 2
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
@@ -645,7 +756,7 @@ class GenerativeFactory:
                         logging.warning("Specified molecular size is too small, set it as the same size as the reference structure")
                         
                 xh_tensor = xh_ref.repeat(current_batch_size, 1, 1)
-                one_hot, charges, x, _  = self.task.sample_hybrid_guidance(
+                one_hot, charges, x, node_mask  = self.task.sample_hybrid_guidance(
                     target_function=target_function,
                     target_value=self.target_values,
                     negative_target_value=self.negative_target_values,
@@ -671,37 +782,56 @@ class GenerativeFactory:
                     for j in range(current_batch_size):
                         mol_idx = i * self.batch_size + j
                         output_path_frame = os.path.join(self.output_path, f"mol_{mol_idx}")
-                        save_xyz_file(
-                            output_path_frame,
-                            one_hot[:, j],
-                            x[:, j],
-                            atom_decoder=self.task.atom_vocab,
-                            idxs=self.s_saves.tolist()
-                        )     
-                        path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
-                        idx = i * self.batch_size + j
-                        shutil.move(
-                            path_xyz,
-                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
-                        )
+                        if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                            save_xyz_file_atomic_numbers(
+                                output_path_frame,
+                                x[:, j],
+                                charges[:, j].squeeze(-1) if charges is not None else None,
+                                idxs=self.s_saves.tolist(),
+                                node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
+                            )
+                        else:
+                            save_xyz_file(
+                                output_path_frame,
+                                one_hot[:, j],
+                                x[:, j],
+                                atom_decoder=self.task.atom_vocab,
+                                idxs=self.s_saves.tolist(),
+                                atomic_numbers=charges[:, j].squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
+                                use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
+                                node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
+                            )     
+                        # Copy the last frame of the trajectory to the main output folder
+                        last_frame_idx = self.s_saves[-1].item()
+                        path_xyz = os.path.join(output_path_frame, f"molecule_{last_frame_idx:04d}.xyz")
+                        if os.path.exists(path_xyz):
+                            shutil.copy(
+                                path_xyz,
+                                os.path.join(self.output_path, f"molecule_{mol_idx:04d}.xyz"),
+                            )
             
                     x = x[:, -1]
                     one_hot = one_hot[:, -1]   
-                else:     
-                    save_xyz_file(
-                        self.output_path,
-                        one_hot,
-                        x,
-                        atom_decoder=self.task.atom_vocab,
-                    )
-
-                    for j in range(current_batch_size):
-                        
-                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
-                        idx = i * self.batch_size + j
-                        shutil.move(
-                            path_xyz,
-                            os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
+                else:
+                    batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
+                    if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                        save_xyz_file_atomic_numbers(
+                            self.output_path,
+                            x,
+                            charges.squeeze(-1) if charges is not None else None,
+                            node_mask=node_mask,
+                            idxs=batch_idxs,
+                        )
+                    else:
+                        save_xyz_file(
+                            self.output_path,
+                            one_hot,
+                            x,
+                            atom_decoder=self.task.atom_vocab,
+                            atomic_numbers=charges.squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
+                            use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
+                            node_mask=node_mask,
+                            idxs=batch_idxs,
                         )
             
                 if property_eval:
@@ -773,11 +903,13 @@ class GenerativeFactory:
         
         This function reads an XYZ file, encodes atomic features, normalizes
         coordinates and features, and returns a tensor combining positions
-        and processed features.
+        and processed features.  When the model uses extra node features
+        (ndim_extra > 0), they are either computed from the reference
+        structure or zero-padded.
 
         Returns:
-            torch.Tensor: Tensor of shape (1, n_atoms, 3 + n_features + 1) containing:
-                        [normalized_coords | normalized_onehot_features | normalized_charges].
+            torch.Tensor: Tensor of shape (1, n_atoms, 3 + n_features + ndim_extra + 1)
+                        containing [normalized_coords | normalized_onehot | normalized_extra | normalized_charges].
         
         Raises:
             FileNotFoundError: If the reference structure file is not found.
@@ -815,11 +947,82 @@ class GenerativeFactory:
         node_features_tensor = torch.tensor(node_features, dtype=torch.float32).view(1, n_atoms, -1) / normalize_feats
         charges_tensor = torch.tensor(charges, dtype=torch.float32).view(1, n_atoms, 1) / normalize_charges
 
-        # Concatenate features: [coords | onehot | charges]
-        features = torch.cat([node_features_tensor, charges_tensor], dim=-1)
+        # Handle extra node features
+        ndim_extra = getattr(self.task.model, 'ndim_extra', 0)
+        if ndim_extra > 0:
+            extra_features_path = self.condition_configs.get("extra_features_path", None)
+            if extra_features_path is None:
+                raise ValueError(
+                    f"Model uses {ndim_extra} extra node feature dimensions, but "
+                    "'extra_features_path' is not set in condition_configs. "
+                    "Provide a .npy file of shape (N_atoms, ndim_extra) containing "
+                    "the raw (unnormalized) extra features for the reference structure."
+                )
+            extra_features = self._load_extra_features(
+                extra_features_path, n_atoms, ndim_extra
+            )
+            # extra_features: (1, n_atoms, ndim_extra), already normalized
+            features = torch.cat([node_features_tensor, extra_features, charges_tensor], dim=-1)
+        else:
+            features = torch.cat([node_features_tensor, charges_tensor], dim=-1)
+
         xh_ref = torch.cat([coords_tensor, features], dim=-1).to(device)
 
         if xh_ref.nelement() == 0:
             raise ValueError("Reference structure is empty or could not be processed.")
 
         return xh_ref
+
+    def _load_extra_features(self, path, n_atoms, ndim_extra):
+        """
+        Load user-provided extra node features from a .npy file.
+
+        The file must contain a float array of shape (n_atoms, ndim_extra)
+        with **raw (unnormalized)** feature values matching the training
+        pipeline's feature order. Normalization by extra_norm_values is
+        applied automatically.
+
+        Args:
+            path: Path to the .npy file.
+            n_atoms: Expected number of atoms.
+            ndim_extra: Expected number of extra feature dimensions.
+
+        Returns:
+            Tensor of shape (1, n_atoms, ndim_extra), normalized.
+        """
+        import numpy as np
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Extra features file not found: {path}")
+
+        feats = np.load(path)
+
+        if feats.ndim == 1:
+            # Allow flat (n_atoms * ndim_extra,) → reshape
+            if feats.shape[0] == n_atoms * ndim_extra:
+                feats = feats.reshape(n_atoms, ndim_extra)
+            else:
+                raise ValueError(
+                    f"Extra features file has shape {feats.shape}, expected "
+                    f"({n_atoms}, {ndim_extra}) or ({n_atoms * ndim_extra},)"
+                )
+
+        if feats.shape != (n_atoms, ndim_extra):
+            raise ValueError(
+                f"Extra features shape mismatch: got {feats.shape}, "
+                f"expected ({n_atoms}, {ndim_extra})"
+            )
+
+        extra_norm = torch.tensor(
+            self.task.model.extra_norm_values, dtype=torch.float32
+        ).view(1, 1, -1)
+
+        feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)  # (1, N, ndim_extra)
+        feats_t = feats_t / extra_norm
+
+        logger.info(
+            f"Loaded extra features from {path}: shape {feats.shape}, "
+            f"normalized by {self.task.model.extra_norm_values}"
+        )
+
+        return feats_t

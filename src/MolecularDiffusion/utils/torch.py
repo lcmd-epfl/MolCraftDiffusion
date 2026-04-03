@@ -136,6 +136,8 @@ def stack(objs, *args, **kwargs):
         return {k: stack([x[k] for x in objs], *args, **kwargs) for k in obj}
     elif isinstance(obj, (list, tuple)):
         return type(obj)(stack(xs, *args, **kwargs) for xs in zip(*objs))
+    elif isinstance(obj, (int, float)):
+        return torch.stack([torch.tensor(x) for x in objs], *args, **kwargs)
 
     raise TypeError("Can't perform stack over object type `%s`" % type(obj))
 

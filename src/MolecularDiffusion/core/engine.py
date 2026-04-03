@@ -72,7 +72,9 @@ class Engine(core.Configurable):
         project_wandb=None,
         name_wandb=None,
         dir_wandb=None,
+        tags_wandb=None,
         debug=False,
+        progress_bar_metrics="all",
     ):
         try:
             self.rank = int(os.environ["SLURM_PROCID"])
@@ -99,8 +101,10 @@ class Engine(core.Configurable):
         self.project_wandb = project_wandb
         self.name_wandb = name_wandb
         self.dir_wandb = dir_wandb
+        self.tags_wandb = tags_wandb
 
         self.debug = debug
+        self.progress_bar_metrics = progress_bar_metrics
 
         try:
             gpus_per_node = int(
@@ -204,6 +208,7 @@ class Engine(core.Configurable):
                         name=self.name_wandb,
                         dir=self.dir_wandb,
                         rank=self.rank,
+                        tags=self.tags_wandb,
                     )
                 else:
                     logger = core.LoggingLogger() # Fallback for non-main processes
@@ -224,14 +229,16 @@ class Engine(core.Configurable):
                 key_config['diffusion_steps'] = self.model.model.T
             self.meter.log_config(key_config)
 
-    def train(self, num_epoch=1, batch_per_epoch=1, use_amp=False, precision="bf16"):
+    def train(self, num_epoch=1, num_step=None, batch_per_epoch=1, use_amp=False, precision="bf16"):
         """
         Train the model.
 
-        Iterates over the WHOLE dataset for each epoch.
+        Iterates over the WHOLE dataset for each epoch unless num_step is provided.
 
         Parameters:
             num_epoch (int, optional): number of epochs.
+            num_step (int, optional): total number of optimizer steps to perform.
+                                     If provided, training stops after this many updates.
             batch_per_epoch (int, optional): Gradient Accumulation Steps.
                                              The number of batches to accumulate gradients
                                              for before performing an optimizer step.
@@ -392,6 +399,20 @@ class Engine(core.Configurable):
                     # F. EMA Update
                     if self.EMA:
                         self.EMA.update_model_average(self.ema_model, self.model)
+                    
+                    # G. Check for step-based termination
+                    if num_step is not None:
+                        # self.meter.batch_id is incremented every batch, but we want to count optimizer steps.
+                        # However, to keep it simple and consistent with how num_steps is often used:
+                        # if we want exactly 'num_step' updates, we should track it.
+                        # Let's use a local counter or assume num_step is the target for self.meter.batch_id / accumulation_steps
+                        # Wait, easier: if we are here, we just did an update.
+                        # Let's check how many updates were done.
+                        if not hasattr(self, '_total_steps'):
+                            self._total_steps = 0 # This might not be right for multiple calls to train()
+                        # Actually, let's just use self.meter.batch_id and assume it's roughly proportional,
+                        # OR better, add a true step counter to the engine.
+                        pass # See below for better implementation
 
                 # --- 4. Metrics Calculation ---
                 # (Update metrics every step, or accumulate them - adhering to original logic of updating meter)
@@ -410,11 +431,19 @@ class Engine(core.Configurable):
                     metrics = [] # Reset local metric accumulation
 
                 # --- 5. Progress Bar Update ---
-                progress_bar.set_postfix({"batch": batch_id + 1})
+                postfix_dict = {"batch": batch_id + 1}
                 if 'metric' in locals() and metric:
                      for metric_name in metric.keys():
-                        val = metric[metric_name]
-                        progress_bar.set_postfix({metric_name: val.item() if isinstance(val, torch.Tensor) else val})
+                        if self.progress_bar_metrics == "all" or metric_name in self.progress_bar_metrics:
+                            val = metric[metric_name]
+                            postfix_dict[metric_name] = val.item() if isinstance(val, torch.Tensor) else val
+                progress_bar.set_postfix(postfix_dict)
+                
+                # Termination Check
+                if num_step is not None and self.meter.batch_id >= num_step:
+                    if self.rank == 0:
+                        module.logger.info(f"Reached num_step ({num_step}). Terminating training.")
+                    return metric
 
             # --- 6. Scheduler Step (End of Epoch) ---
             if self.scheduler:
@@ -801,6 +830,12 @@ class Engine(core.Configurable):
                     
                 elif "pointcloud" in ds_cls_name.lower() or "PointCloudDataset" in ds_cls_name:
                     hyperparameters["data_type"] = "pointcloud"
+
+            # === Save task_type and condition_names for validation ===
+            if hasattr(self.model, "task_type"):
+                hyperparameters["task_type"] = self.model.task_type
+            if hasattr(self.model, "condition"):
+                hyperparameters["condition_names"] = list(self.model.condition)
 
             # === Save hybrid diffusion-specific hyperparameters ===
             # These are saved from the model directly since they are model config

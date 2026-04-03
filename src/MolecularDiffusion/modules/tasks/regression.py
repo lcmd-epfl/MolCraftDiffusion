@@ -4,8 +4,9 @@ from collections import defaultdict
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch_scatter import scatter
 
-from MolecularDiffusion.modules.layers import common, functional
+from MolecularDiffusion.modules.layers import  functional
 from MolecularDiffusion import core
 
 from .task import Task, _get_criterion_name, _get_metric_name
@@ -30,11 +31,13 @@ class ProperyPrediction(Task, core.Configurable):
         num_class=None,
         mlp_batch_norm=False,
         condition_time=False,
+        prediction_mlp_type="pernode",
+        prediction_activation="relu",
         readout="mean",
         mlp_dropout=0,
         std_mean=None,
-        load_mlps_layer=0,
         verbose=0,
+        load_mlps_layer=0, # unused/for old models
     ):
 
         super(ProperyPrediction, self).__init__()
@@ -54,7 +57,6 @@ class ProperyPrediction(Task, core.Configurable):
         self.readout = readout
 
         self.condition_time = condition_time
-
         if self.model.__class__.__name__ in [
             "GraphTransformer",
             "GraphDiffTransformer",
@@ -62,43 +64,37 @@ class ProperyPrediction(Task, core.Configurable):
             self.architecture = "egt"
         elif self.model.__class__.__name__ in ["EGNN"]:
             self.architecture = "egcn"
-        elif self.model.__class__.__name__ in ["PaiNN", "GemNetOC"]:
+        else:
             self.architecture = "egnn_extra"
 
-        self.THESHOLD = 4.5
         self.mlp = None
         self.mlp_final = None
         if std_mean:
             self.std = std_mean[0]
             self.mean = std_mean[1]
 
-        if load_mlps_layer > 0:
-            hidden_dims = [self.model.hidden_nf] * (self.num_mlp_layer - 1)
-            self.mlp = common.MLP(
-                self.model.hidden_nf,
-                hidden_dims,
-                batch_norm=self.mlp_batch_norm,
-                dropout=self.mlp_dropout,
-            )
-        self.load_mlps_layer = load_mlps_layer
-
+        self.prediction_mlp_type = prediction_mlp_type
+        self.prediction_activation=prediction_activation
+        if self.prediction_mlp_type == "padded":
+            MLPRegressor = MLPRegressor_padded
+        elif self.prediction_mlp_type == "pernode":
+            MLPRegressor = MLPRegressor_pernode
+        else:
+            raise ValueError(f"Unsupported MLP type: {self.prediction_mlp_type}")
+        
         if self.num_class:
-            if load_mlps_layer > 0:
-                n_layer_final = self.num_mlp_layer - load_mlps_layer - 1
-                self.mlp_final = common.MLP(
-                    hidden_dims[n_layer_final:-1],
-                    sum(self.num_class),
-                    batch_norm=self.mlp_batch_norm,
-                    dropout=self.mlp_dropout,
-                )
-            else:
-                hidden_dims = [self.model.hidden_nf] * (self.num_mlp_layer - 1)
-                self.mlp = common.MLP(
-                    self.model.hidden_nf,
-                    hidden_dims + [sum(self.num_class)],
-                    batch_norm=self.mlp_batch_norm,
-                    dropout=self.mlp_dropout,
-                )
+            self.mlp = MLPRegressor(
+                self.model.hidden_nf,
+                sum(self.num_class),
+                hidden_dim=self.model.hidden_nf,
+                num_layers=self.num_mlp_layer,
+                normalization=self.mlp_batch_norm,
+                dropout=self.mlp_dropout,
+                activation=self.prediction_activation,
+                readout_method=readout,
+                prediction_level="graph",
+            )
+
 
     def preprocess(self, train_set, valid_set=None, test_set=None):
         """
@@ -143,23 +139,24 @@ class ProperyPrediction(Task, core.Configurable):
                 self.register_buffer("std", torch.as_tensor(std, dtype=torch.float))
             self.register_buffer("weight", torch.as_tensor(weight, dtype=torch.float))
             self.num_class = self.num_class or num_class
-
-            hidden_dims = [self.model.hidden_nf] * (self.num_mlp_layer - 1)
-
             if self.mlp is None:
-                self.mlp = common.MLP(
+                if self.mlp_type == "padded":
+                    MLPRegressor = MLPRegressor_padded
+                elif self.mlp_type == "pernode":
+                    MLPRegressor = MLPRegressor_pernode
+                else:
+                    raise ValueError(f"Unsupported MLP type: {self.mlp_type}")
+        
+                self.mlp = MLPRegressor(
                     self.model.hidden_nf,
-                    hidden_dims + [sum(self.num_class)],
-                    batch_norm=self.mlp_batch_norm,
-                    dropout=self.mlp_dropout,
-                )
-            if self.load_mlps_layer > 0:
-                n_layer_final = self.num_mlp_layer - self.load_mlps_layer - 1
-                self.mlp_final = common.MLP(
-                    hidden_dims[n_layer_final:-1],
                     sum(self.num_class),
-                    batch_norm=self.mlp_batch_norm,
+                    hidden_dim=self.model.hidden_nf,
+                    num_layers=self.num_mlp_layer,
+                    normalization=self.mlp_batch_norm,
                     dropout=self.mlp_dropout,
+                    activation=self.activation,
+                    readout_method=self.readout,
+                    prediction_level="graph",
                 )
         else:
             pass
@@ -324,6 +321,7 @@ class ProperyPrediction(Task, core.Configurable):
             for t, s in zip(self.task, score):
                 metric["%s [%s]" % (name, t)] = s
 
+
         return metric
 
     def predict(self, batch, all_loss=None, metric=None, evaluate=False):
@@ -343,7 +341,7 @@ class ProperyPrediction(Task, core.Configurable):
             edges = [edge_index[0], edge_index[1]]
             node_mask = None
             edge_mask = None
-            h_final, x_final = self.model(
+            h_final, _ = self.model(
                 h, x, edges, node_mask=node_mask, edge_mask=edge_mask, use_embed=True
             )
         elif self.architecture == "egt":
@@ -376,30 +374,38 @@ class ProperyPrediction(Task, core.Configurable):
             )
         
         elif self.architecture == "egnn_extra":
-            if self.include_charge:
-                h = torch.cat([batch["graph"].x, batch["graph"].atomic_numbers.unsqueeze(-1)], dim=1)
-                batch["graph"].x = h
+
             if self.condition_time:
                 t_zeropad = torch.zeros(h.shape[0], 1).to(self.device)
                 h = torch.cat([h, t_zeropad], dim=1)
                 batch["graph"].x = h
-            h_final, _ = self.model(batch["graph"], use_embed=True)    
+                
+            if self.model.__class__.__name__ == "eSEN_Backbone":
+                 batch["graph"].num_atoms = batch["graph"].natoms
+                 batch["graph"].token_idx = torch.zeros(batch["graph"].num_nodes, device=self.device).long()
+                 output = self.model(batch["graph"])
+                 h_final = output["x"]
+            else:
+                h_final, _ = self.model(batch["graph"], use_embed=True)    
             
 
-        if self.architecture == "egt":
-            h_final = h_final.view(bs, n_nodes, self.model.hidden_nf)
-        else:
-            h_final = self.pad_data(h_final, batch, self.model.hidden_nf)   
-        output = {
-            "graph_feature": self.readout_f(h_final),
-            "node_feature": h_final,
-        }
-
-        if self.load_mlps_layer > 0:
-            x = self.mlp(output["graph_feature"])
-            pred = self.mlp_final(x)
-        else:
-            pred = self.mlp(output["graph_feature"])
+        # if self.architecture == "egt":
+        #     h_final = h_final.view(bs, n_nodes, self.model.hidden_nf)
+        # else:
+        #     h_final = self.pad_data(h_final, batch, self.model.hidden_nf)   
+        # output = {
+        #     "graph_feature": self.readout_f(h_final),
+        #     "node_feature": h_final,
+        # }
+        pred = self.mlp(
+            h_final,
+            batch["graph"].batch
+        )
+        # if self.load_mlps_layer > 0:
+        #     x = self.mlp(output["graph_feature"])
+        #     pred = self.mlp_final(x)
+        # else:
+        #     pred = self.mlp(output["graph_feature"])
     
         if self.normalization:
             pred = pred * self.std + self.mean
@@ -461,6 +467,7 @@ class ProperyPrediction(Task, core.Configurable):
         Returns:
         torch.Tensor: Aggregated tensor of size (x, z).
         """
+   
         if self.readout == "sum":
             return embeddings.sum(dim=1)
         elif self.readout == "mean":
@@ -468,3 +475,122 @@ class ProperyPrediction(Task, core.Configurable):
         else:
             raise ValueError("Unsupported method. Choose either 'sum' or 'mean'.")
 
+
+
+class MLPRegressor_padded(nn.Module):
+    def __init__(self, 
+                 latent_dim,
+                 out_dim,
+                 hidden_dim=128,
+                 num_layers=2, 
+                 normalization=None, 
+                 dropout=0, 
+                 activation='relu',
+                 prediction_level: str = "graph",
+                 readout_method: str = "mean"  
+                 ):
+        super().__init__()
+        self.prediction_level = prediction_level
+        self.readout_method = readout_method
+        
+        assert self.prediction_level in ["graph", "atom"]
+        assert self.readout_method in ["mean", "sum"], "readout_method must be 'mean' or 'sum'"
+        
+        layers = []
+        in_dim = latent_dim
+        if activation == 'relu':
+            act_fn = nn.ReLU()
+        elif activation == 'silu':
+            act_fn = nn.SiLU()
+        else:
+            raise ValueError(f"Unsupported activation function: {activation}")
+            
+        for i in range(num_layers):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            if normalization == 'layernorm':
+                layers.append(nn.LayerNorm(hidden_dim)) 
+            elif normalization == 'batchnorm':
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(act_fn)
+            if dropout > 0.0:
+                layers.append(nn.Dropout(dropout))
+            in_dim = hidden_dim
+            
+        layers.append(nn.Linear(hidden_dim, out_dim))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, latent, batch_indices):
+        if self.prediction_level == "atom":
+            return self.mlp(latent)
+
+        batch_size = batch_indices.max().item() + 1
+        latent_per_graph = latent.new_zeros((batch_size, latent.size(-1)))
+        
+        # Accumulate sums (this is the base for both sum and mean)
+        latent_per_graph = latent_per_graph.index_add(0, batch_indices, latent)
+        
+        # If 'mean', divide by counts. If 'sum', skip this step.
+        if self.readout_method == "mean":
+            counts = torch.bincount(batch_indices, minlength=batch_size).unsqueeze(-1)
+            latent_per_graph = latent_per_graph / counts.clamp(min=1)
+            
+        return self.mlp(latent_per_graph)
+    
+    
+    
+class MLPRegressor_pernode(nn.Module):
+    def __init__(self,
+                 latent_dim,
+                 out_dim, 
+                 hidden_dim=128, 
+                 num_layers=2, 
+                 normalization=None, 
+                 dropout=0, 
+                 activation='relu',
+                 prediction_level: str = "graph",
+                 readout_method: str = "mean" 
+                 ):
+        super().__init__()
+        self.prediction_level = prediction_level
+        self.readout_method = readout_method
+        
+        assert self.prediction_level in ["graph", "atom"]
+        assert self.readout_method in ["mean", "sum"], "readout_method must be 'mean' or 'sum'"
+
+        layers = []
+        in_dim = latent_dim
+        if activation == 'relu':
+            act_fn = nn.ReLU()
+        elif activation == 'silu':
+            act_fn = nn.SiLU()
+        else:
+            raise ValueError(f"Unsupported activation function: {activation}")
+            
+        for i in range(num_layers):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            if normalization == 'layernorm':
+                layers.append(nn.LayerNorm(hidden_dim)) 
+            elif normalization == 'batchnorm':
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(act_fn)
+            if dropout > 0.0:
+                layers.append(nn.Dropout(dropout))
+            in_dim = hidden_dim
+            
+        layers.append(nn.Linear(hidden_dim, out_dim))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, latent, batch_indices):
+        per_node_property = self.mlp(latent)
+
+        if self.prediction_level == "atom":
+            return per_node_property
+        
+        # Aggregate over nodes in each graph using the specified readout method
+        properties_predicted = scatter(
+            per_node_property, 
+            batch_indices, 
+            dim=0, 
+            reduce=self.readout_method # <--- Dynamic reduction
+        )
+        return properties_predicted

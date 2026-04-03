@@ -61,7 +61,7 @@ condition_configs:
     all_frozen: True
     use_covalent_radii: True
     scale_factor: 1.2
-    noise_initial_mask: True
+    noise_initial_mask: False
   n_frames: 0
   n_retrys: 0
   t_retry: 180
