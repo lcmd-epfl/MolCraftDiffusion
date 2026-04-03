@@ -1,15 +1,17 @@
 import torch
 from typing import Tuple
+from typing import Any, Dict, List
+from tqdm import tqdm
 from torch_geometric.nn import radius_graph
 from torch_geometric.data import Data
 from ase.io import read
 from ase.data import covalent_radii, chemical_symbols
 import numpy as np
-import logging
 import os
 import shutil
+import logging
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def translate_to_origine(coords, node_mask):
@@ -326,14 +328,14 @@ def save_xyz_file(
     atomic_numbers=None,
     use_unknown_fallback=False,
 ):
-    """Save XYZ files for a batch of molecules directly to the target path.
+    """Save XYZ files for a batch of molecules, skipping atoms near (0,0,0).
     
     Args:
         path: Output directory
         one_hot: [B, N, C] one-hot encoding
         positions: [B, N, 3] coordinates
         atom_decoder: List mapping indices to atom symbols
-        id_from: Starting index for filenames (if idxs is None)
+        id_from: Starting index for filenames
         name: Filename prefix
         node_mask: Optional [B, N] or [B, N, 1] mask
         idxs: Optional indices for filenames
@@ -351,9 +353,7 @@ def save_xyz_file(
     for batch_i in range(one_hot.size(0)):
         try:
             idx = batch_i + id_from if idxs is None else idxs[batch_i]
-            # Use 4-digit padding by default to match framework convention
-            filename = f"{name}_{idx:04d}.xyz"
-            outpath = os.path.join(path, filename)
+            filename = f"{name}_{idx:03d}.xyz"
 
             atoms = torch.argmax(one_hot[batch_i], dim=1)
             n_atoms = int(atomsxmol[batch_i])
@@ -361,7 +361,7 @@ def save_xyz_file(
             # Filter out atoms near (0,0,0)
             coords = positions[batch_i, :n_atoms]
             mask = torch.any(torch.abs(coords) > tol, dim=1)  # keep atoms not at origin
-            filtered_atoms = atoms[mask]
+            filtered_atoms = atoms[:n_atoms][mask]
             filtered_coords = coords[mask]
             n_valid = filtered_atoms.size(0)
             
@@ -371,7 +371,7 @@ def save_xyz_file(
             else:
                 filtered_Z = None
 
-            with open(outpath, "w") as f:
+            with open(filename, "w") as f:
                 f.write(f"{n_valid}\n\n")
                 for i, (atom, pos) in enumerate(zip(filtered_atoms, filtered_coords)):
                     atom_idx = atom.item()
@@ -399,10 +399,14 @@ def save_xyz_file(
                         
                     f.write(f"{symbol} {pos[0]:.9f} {pos[1]:.9f} {pos[2]:.9f}\n")
 
-        except Exception as e:
-            logger.error(f"Error saving molecule {batch_i}: {e}")
-            pass
-        
+            if os.path.exists(filename):
+                dest = os.path.join(path, os.path.basename(filename))
+                if os.path.exists(dest):
+                    _logger.warning(f"save_xyz_file: overwriting existing file {dest}")
+                shutil.move(filename, dest)
+        except Exception as _e:
+            _logger.warning(f"save_xyz_file: failed to save molecule {batch_i}: {_e}")
+
 
 def save_xyz_file_atomic_numbers(
     path: str,
@@ -415,7 +419,7 @@ def save_xyz_file_atomic_numbers(
     tol: float = 1e-4,
 ):
     """
-    Save XYZ files for a batch of molecules directly to the target path.
+    Save XYZ files for a batch of molecules, writing ATOMIC SYMBOLS in the first column.
 
     Args:
         path: output directory
@@ -445,8 +449,7 @@ def save_xyz_file_atomic_numbers(
     for batch_i in range(B):
         try:
             idx = (batch_i + id_from) if idxs is None else int(idxs[batch_i])
-            # Use 4-digit padding by default
-            filename = f"{name}_{idx:04d}.xyz"
+            filename = f"{name}_{idx:03d}.xyz"
             outpath = os.path.join(path, filename)
 
             n_atoms = int(atomsxmol[batch_i].item())
@@ -466,5 +469,284 @@ def save_xyz_file_atomic_numbers(
                     f.write(f"{symbol} {pos[0]:.9f} {pos[1]:.9f} {pos[2]:.9f}\n")
 
         except Exception as e:
-            logger.error(f"Error saving molecule {batch_i}: {e}")
+            # keep behavior similar to your original (skip failures quietly)
             pass
+
+def save_shepherd_outputs(output_dir: str, structures: list, idx_offset: int = 0, save_modalities: bool = False):
+    """
+    Save ShEPhERD generated structures to disk.
+
+    Each structure is a dict returned by _extract_generated_samples():
+        x1: {atoms: ndarray(N,), positions: ndarray(N,3), bonds: ndarray(E,)}
+        x2: {positions: ndarray(75,3)}
+        x3: {charges: ndarray(75,), positions: ndarray(75,3)}
+        x4: {types: ndarray(M,), positions: ndarray(M,3), directions: ndarray(M,3)}
+
+    Outputs per sample (zero-padded index):
+        mol_{idx:04d}.xyz          x1 structure (standard XYZ)
+        mol_{idx:04d}_surface.npy  x2 surface point cloud (75,3)
+        mol_{idx:04d}_esp.npz      x3 electrostatics: positions(75,3) + charges(75,)
+        mol_{idx:04d}_pharm.npz    x4 pharmacophores: types(M,) + positions(M,3) + directions(M,3)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    for i, s in enumerate(structures):
+        idx = idx_offset + i
+
+        # --- x1: write .xyz ---
+        x1 = s.get('x1', {})
+        atoms = x1.get('atoms', np.array([]))
+        positions = x1.get('positions', np.array([]).reshape(0, 3))
+        if len(atoms) > 0:
+            xyz_path = os.path.join(output_dir, f"mol_{idx:04d}.xyz")
+            with open(xyz_path, 'w') as f:
+                f.write(f"{len(atoms)}\n")
+                f.write(f"mol_{idx:04d}\n")
+                for z, pos in zip(atoms, positions):
+                    sym = chemical_symbols[int(z)] if 0 <= int(z) < len(chemical_symbols) else 'X'
+                    f.write(f"{sym}  {pos[0]:.6f}  {pos[1]:.6f}  {pos[2]:.6f}\n")
+
+        # --- x2: surface point cloud ---
+        x2 = s.get('x2', {})
+        x2_pos = x2.get('positions', None)
+        if x2_pos is not None and len(x2_pos) > 0:
+            np.save(os.path.join(output_dir, f"mol_{idx:04d}_surface.npy"), x2_pos)
+
+        # --- x3: electrostatics ---
+        x3 = s.get('x3', {})
+        x3_pos = x3.get('positions', None)
+        x3_charges = x3.get('charges', None)
+        if x3_pos is not None and x3_charges is not None:
+            np.savez(
+                os.path.join(output_dir, f"mol_{idx:04d}_esp.npz"),
+                positions=x3_pos,
+                charges=x3_charges,
+            )
+
+        # --- x4: pharmacophores ---
+        x4 = s.get('x4', {})
+        x4_types = x4.get('types', None)
+        x4_pos = x4.get('positions', None)
+        x4_dir = x4.get('directions', None)
+        if x4_types is not None and x4_pos is not None:
+            np.savez(
+                os.path.join(output_dir, f"mol_{idx:04d}_pharm.npz"),
+                types=x4_types,
+                positions=x4_pos,
+                directions=x4_dir if x4_dir is not None else np.zeros_like(x4_pos),
+            )
+
+        # --- Optional: unified .npz for metrics ---
+        if save_modalities:
+            np.savez(
+                os.path.join(output_dir, f"mol_{idx:04d}.npz"),
+                surf_pts=x2_pos if x2_pos is not None else np.array([]),
+                esp_vals=x3_charges if x3_charges is not None else np.array([]),
+                pharm_pts=x4_pos if x4_pos is not None else np.array([]),
+                pharm_types=x4_types if x4_types is not None else np.array([]),
+            )
+
+
+
+def random_rotation_matrix(validate: bool = False, device=None, dtype=None) -> torch.Tensor:
+    """Generate a random 3x3 rotation matrix from a quaternion.
+    
+    Args:
+        validate: If True, verify the matrix is orthogonal
+        device: Target device for the tensor
+        dtype: Target dtype for the tensor
+        
+    Returns:
+        A (3, 3) rotation matrix
+    """
+    # Generate a random quaternion
+    q = torch.rand(4, device=device, dtype=dtype)
+    q = q / torch.linalg.norm(q)
+    
+    # Compute the rotation matrix from the quaternion
+    rot_mat = torch.tensor([
+        [
+            1 - 2 * q[2] ** 2 - 2 * q[3] ** 2,
+            2 * q[1] * q[2] - 2 * q[0] * q[3],
+            2 * q[1] * q[3] + 2 * q[0] * q[2],
+        ],
+        [
+            2 * q[1] * q[2] + 2 * q[0] * q[3],
+            1 - 2 * q[1] ** 2 - 2 * q[3] ** 2,
+            2 * q[2] * q[3] - 2 * q[0] * q[1],
+        ],
+        [
+            2 * q[1] * q[3] - 2 * q[0] * q[2],
+            2 * q[2] * q[3] + 2 * q[0] * q[1],
+            1 - 2 * q[1] ** 2 - 2 * q[2] ** 2,
+        ],
+    ], device=device, dtype=dtype)
+    
+    if validate:
+        eye = torch.eye(3, device=device, dtype=dtype)
+        assert torch.allclose(
+            rot_mat @ rot_mat.T, eye, atol=1e-5, rtol=1e-5
+        ), "Not a valid rotation matrix."
+    
+    return rot_mat
+
+
+def apply_rotation_augmentation(
+    batch,
+    rot_mat: torch.Tensor,
+    rotate_cell: bool = False,
+) -> None:
+    """Apply rotation augmentation to batch positions (in-place).
+    
+    Args:
+        batch: PyG Data/Batch with pos attribute
+        rot_mat: (3, 3) rotation matrix
+        rotate_cell: If True, also rotate cell (for crystals). Disabled for molecules.
+    """
+    # Rotate positions: pos' = pos @ R^T
+    batch.pos = batch.pos @ rot_mat.T
+    
+    # For crystals: rotate cell vectors (disabled for molecules)
+    if rotate_cell and hasattr(batch, 'cell') and batch.cell is not None:
+        batch.cell = batch.cell @ rot_mat.T
+        # Note: fractional coordinates are rotation invariant, no update needed
+
+
+def compute_rmsd(pos1: np.ndarray, pos2: np.ndarray) -> float:
+    """Compute RMSD between two sets of positions.
+    
+    Handles different number of atoms by returning inf.
+    """
+    if pos1.shape != pos2.shape:
+        return float("inf")
+    return np.sqrt(np.mean(np.sum((pos1 - pos2) ** 2, axis=-1)))
+
+
+def compute_atom_type_accuracy(types1: np.ndarray, types2: np.ndarray) -> float:
+    """Compute accuracy of atom type predictions.
+    
+    Handles different number of atoms by returning 0.0.
+    """
+    if types1.shape != types2.shape:
+        return 0.0
+    return np.mean(types1 == types2)
+
+
+class MoleculeReconstructionEvaluator:
+    """Evaluator for molecule reconstruction tasks.
+    
+    Simple evaluator that computes:
+    - RMSD between predicted and ground truth positions
+    - Atom type accuracy
+    - Match rate (molecules with RMSD below threshold and perfect atom types)
+    
+    Does NOT require pymatgen or openbabel.
+    
+    Args:
+        rmsd_threshold: RMSD threshold (in Angstroms) for considering a match.
+    """
+    
+    def __init__(self, rmsd_threshold: float = 0.5):
+        self.rmsd_threshold = rmsd_threshold
+        self.pred_arrays_list: List[Dict[str, np.ndarray]] = []
+        self.gt_arrays_list: List[Dict[str, np.ndarray]] = []
+        self.device = torch.device("cpu")
+    
+    def append_pred_array(self, pred: Dict[str, np.ndarray]):
+        """Append a prediction to the evaluator.
+        
+        Args:
+            pred: Dict with keys:
+                - 'atom_types': (n_atoms,) atomic numbers
+                - 'pos': (n_atoms, 3) positions
+                - 'sample_idx': sample index
+        """
+        self.pred_arrays_list.append(pred)
+    
+    def append_gt_array(self, gt: Dict[str, np.ndarray]):
+        """Append a ground truth to the evaluator."""
+        self.gt_arrays_list.append(gt)
+    
+    def clear(self):
+        """Clear stored predictions and ground truths for next epoch."""
+        self.pred_arrays_list = []
+        self.gt_arrays_list = []
+    
+    def get_metrics(
+        self, 
+        current_epoch: int = 0, 
+        save: bool = False, 
+        save_dir: str = ""
+    ) -> Dict[str, Any]:
+        """Compute reconstruction metrics.
+        
+        Returns:
+            Dict with:
+                - match_rate: fraction of molecules with RMSD < threshold AND perfect atom types
+                - mean_rms_dist: mean RMSD over all samples
+                - atom_type_accuracy: mean atom type accuracy over all samples
+        """
+        assert len(self.pred_arrays_list) == len(self.gt_arrays_list), \
+            "Number of predictions and ground truths must match."
+        
+        if len(self.pred_arrays_list) == 0:
+            return {
+                "match_rate": torch.tensor(0.0, device=self.device),
+                "mean_rms_dist": torch.tensor(10.0, device=self.device),
+                "atom_type_accuracy": torch.tensor(0.0, device=self.device),
+            }
+        
+        rmsd_list = []
+        accuracy_list = []
+        match_list = []
+        
+        for i in tqdm(range(len(self.pred_arrays_list)), 
+                      desc=f"Epoch {current_epoch}, reconstruction eval", leave=False):
+            pred = self.pred_arrays_list[i]
+            gt = self.gt_arrays_list[i]
+            
+            # Compute RMSD
+            rmsd = compute_rmsd(pred["pos"], gt["pos"])
+            rmsd_list.append(rmsd)
+            
+            # Compute atom type accuracy
+            acc = compute_atom_type_accuracy(pred["atom_types"], gt["atom_types"])
+            accuracy_list.append(acc)
+            
+            # Match: RMSD below threshold AND perfect atom types
+            is_match = (rmsd < self.rmsd_threshold) and (acc == 1.0)
+            match_list.append(float(is_match))
+        
+        # Convert to tensors
+        rmsd_tensor = torch.tensor(rmsd_list, device=self.device)
+        accuracy_tensor = torch.tensor(accuracy_list, device=self.device)
+        match_tensor = torch.tensor(match_list, device=self.device)
+        
+        # Filter inf for mean RMSD
+        valid_rmsd = rmsd_tensor[~torch.isinf(rmsd_tensor)]
+        mean_rmsd = valid_rmsd.mean() if len(valid_rmsd) > 0 else torch.tensor(10.0, device=self.device)
+        
+        return {
+            "match_rate": match_tensor.mean(),
+            "mean_rms_dist": mean_rmsd,
+            "atom_type_accuracy": accuracy_tensor.mean(),
+        }
+    
+    def save_molecules(self, save_dir: str):
+        """Save predicted and ground truth molecules as XYZ files."""
+        from ase import Atoms
+        from ase.io import write
+        
+        os.makedirs(f"{save_dir}/pred", exist_ok=True)
+        os.makedirs(f"{save_dir}/gt", exist_ok=True)
+        
+        for i, (pred, gt) in enumerate(zip(self.pred_arrays_list, self.gt_arrays_list)):
+            sample_idx = pred.get("sample_idx", i)
+            
+            # Predicted
+            atoms_pred = Atoms(numbers=pred["atom_types"], positions=pred["pos"])
+            write(f"{save_dir}/pred/molecule_{sample_idx}.xyz", atoms_pred)
+            
+            # Ground truth
+            atoms_gt = Atoms(numbers=gt["atom_types"], positions=gt["pos"])
+            write(f"{save_dir}/gt/molecule_{sample_idx}.xyz", atoms_gt)

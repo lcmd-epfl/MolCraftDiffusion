@@ -20,6 +20,94 @@ from MolecularDiffusion.utils.geom_metrics import check_validity_v0, load_molecu
 from MolecularDiffusion.utils.geom_utils import (
     read_xyz_file, save_xyz_file, save_xyz_file_atomic_numbers)
 
+from dataclasses import dataclass, replace as dataclass_replace
+from typing import Optional
+
+@dataclass
+class TaskEvalConfig:
+    """Declarative evaluation config for a task type."""
+    higher_is_better: bool
+    metric_key: str                    # key extracted from metric_dict or performances dict
+    needs_generative: bool             # True → analyze_and_save path; False → loss/MAE path
+    split_reset_hook: Optional[str]    # model method to call before each solver.evaluate() split
+    mae_eval: bool = False             # True → regression MAE path (preds/targets concatenation)
+
+
+# ---------------------------------------------------------------------------
+# Task registry — add one entry per task type family.
+# Prefix matching is used for families like "vae_transformer", "vae_equiformer".
+# ---------------------------------------------------------------------------
+TASK_REGISTRY: dict[str, TaskEvalConfig] = {
+    # --- generative diffusion -------------------------------------------------
+    "diffusion": TaskEvalConfig(
+        higher_is_better=True,
+        metric_key="Validity Relax and connected",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
+    "diffusion_hybrid": TaskEvalConfig(
+        higher_is_better=True,
+        metric_key="Validity Relax and connected",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
+    "diffusion_pyg": TaskEvalConfig(
+        higher_is_better=True,
+        metric_key="Validity Relax and connected",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
+    "diffusion_tabasco": TaskEvalConfig(
+        higher_is_better=True,
+        metric_key="Validity Relax and connected",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
+    # --- regression / guidance ------------------------------------------------
+    "regression": TaskEvalConfig(
+        higher_is_better=False,
+        metric_key="mae",
+        needs_generative=False,
+        split_reset_hook=None,
+        mae_eval=True,
+    ),
+    "guidance": TaskEvalConfig(
+        higher_is_better=False,
+        metric_key="mae",
+        needs_generative=False,
+        split_reset_hook=None,
+        mae_eval=True,
+    ),
+    # --- VAE family (prefix-matched: vae_transformer, vae_equiformer, …) -----
+    "vae": TaskEvalConfig(
+        higher_is_better=True,
+        metric_key="match_rate",
+        needs_generative=False,
+        split_reset_hook="on_validation_epoch_start",
+    ),
+    # --- LDM ------------------------------------------------------------------
+    "diffusion_adit": TaskEvalConfig(
+        higher_is_better=False,
+        metric_key="valid_posebuster",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
+}
+
+
+def _resolve_task_config(task_type: str) -> TaskEvalConfig:
+    """Exact match first, then prefix match (e.g. 'vae_transformer' → 'vae')."""
+    if task_type in TASK_REGISTRY:
+        return TASK_REGISTRY[task_type]
+    for key in TASK_REGISTRY:
+        if task_type.startswith(key):
+            return TASK_REGISTRY[key]
+    raise ValueError(
+        f"Unknown task_type '{task_type}'. "
+        f"Register it in TASK_REGISTRY in eval.py. "
+        f"Known prefixes: {list(TASK_REGISTRY.keys())}"
+    )
+
 DIST_THRESHOLD = 3
 DIST_RELAX_BOND = 0.25
 ANGLE_RELAX = 20
@@ -117,6 +205,110 @@ def _manage_best_checkpoints(
 
     return best_checkpoints
 
+def _call_split_reset(model, hook_name: Optional[str]):
+    """Call a reset hook on the model if it exists."""
+    if hook_name and hasattr(model, hook_name):
+        getattr(model, hook_name)()
+
+
+def _log_metrics(val_metric_dict: dict, test_metric_dict: dict, logger: str):
+    """Log all keys from val/test metric dicts to wandb or logging."""
+    is_main_process = (
+        not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+    )
+    if not is_main_process:
+        return
+    if logger == "wandb":
+        log_dict = {
+            f"valid/{k}": (v.item() if hasattr(v, "item") else v)
+            for k, v in val_metric_dict.items()
+        }
+        log_dict.update({
+            f"test/{k}": (v.item() if hasattr(v, "item") else v)
+            for k, v in test_metric_dict.items()
+        })
+        wandb.log(log_dict)
+    else:
+        for k, v in val_metric_dict.items():
+            v_s = v.item() if hasattr(v, "item") else v
+            logging.info(f"  valid/{k}: {v_s:.4f}")
+
+
+def _run_eval(
+    cfg: TaskEvalConfig,
+    task: str,
+    solver: Engine,
+    epoch: int,
+    logger: str,
+    output_path: str,
+    use_amp: bool,
+    precision: str,
+    **kwargs,
+) -> float:
+    """
+    Run evaluation for the given task config and return the scalar metric value.
+
+    Generative path  → analyze_and_save → validity metric
+    MAE path         → solver.evaluate valid+test → mean absolute error
+    Loss path (VAE)  → solver.evaluate valid+test → val_loss from metric_dict
+    """
+    model = solver.ema_model if solver.ema_decay > 0 else solver.model
+
+    # --- generative diffusion -------------------------------------------------
+    if cfg.needs_generative and kwargs.get("generative_analysis", False):
+        output_generated_dir = kwargs.get("output_generated_dir", "generated_molecules")
+        path = os.path.join(output_generated_dir, f"gen_xyz_{epoch}")
+        _, val_loss_raw, _ = solver.evaluate("valid", use_amp=use_amp, precision=precision)
+        _, test_loss_raw, _ = solver.evaluate("test", use_amp=use_amp, precision=precision)
+        logging.info(
+            f"Diffusion — val_loss: {torch.tensor(val_loss_raw).mean().item():.4f}  "
+            f"test_loss: {torch.tensor(test_loss_raw).mean().item():.4f}"
+        )
+        performances = analyze_and_save(
+            model, epoch,
+            n_samples=kwargs.get("n_samples", 100),
+            batch_size=kwargs.get("batch_size", 1),
+            logger=logger,
+            path_save=path,
+            use_posebuster=kwargs.get("use_posebuster", False),
+            postbuster_timeout=kwargs.get("postbuster_timeout", 120),
+        )
+        return performances[kwargs.get("metric", cfg.metric_key)]
+
+    # --- diffusion without generative analysis (loss only) --------------------
+    if cfg.needs_generative and not kwargs.get("generative_analysis", False):
+        _, val_loss_raw, _ = solver.evaluate("valid", use_amp=use_amp, precision=precision)
+        _, test_loss_raw, _ = solver.evaluate("test", use_amp=use_amp, precision=precision)
+        val_loss = torch.tensor(val_loss_raw).mean().item()
+        test_loss = torch.tensor(test_loss_raw).mean().item()
+        logging.info(f"Diffusion (loss only) — val_loss: {val_loss:.4f}  test_loss: {test_loss:.4f}")
+        return test_loss
+
+    # --- regression / guidance (MAE) -----------------------------------------
+    if cfg.mae_eval:
+        _, preds, targets = solver.evaluate("valid", use_amp=use_amp, precision=precision)
+        _, preds_test, targets_test = solver.evaluate("test", use_amp=use_amp, precision=precision)
+        preds_t = torch.cat(preds, dim=0)
+        targets_t = torch.cat(targets, dim=0)
+        metric = torch.mean(torch.abs(preds_t - targets_t)).item()
+        # stash for saving on improvement
+        kwargs["_preds_test"] = torch.cat(preds_test, dim=0)
+        kwargs["_trues_test"] = torch.cat(targets_test, dim=0)
+        return metric
+
+    # --- loss-based (VAE, LDM, etc.) -----------------------------------------
+    _call_split_reset(model, cfg.split_reset_hook)
+    val_metric_dict, _, _ = solver.evaluate("valid", use_amp=use_amp, precision=precision)
+    _call_split_reset(model, cfg.split_reset_hook)
+    test_metric_dict, _, _ = solver.evaluate("test", use_amp=use_amp, precision=precision)
+
+    val_loss = val_metric_dict[cfg.metric_key].item()
+    test_loss = test_metric_dict.get(cfg.metric_key, torch.tensor(float("nan"))).item()
+    logging.info(f"{task} eval — val_loss: {val_loss:.4f}  test_loss: {test_loss:.4f}")
+    _log_metrics(val_metric_dict, test_metric_dict, logger)
+    return val_loss
+
+
 def evaluate(
     task: str,
     solver: Engine,
@@ -130,27 +322,13 @@ def evaluate(
     **kwargs,
 ):
     """
-    Evaluates the performance of a trained model based on the specified task.
+    Unified evaluation entry point for all task types.
 
-    For 'diffusion' tasks, it evaluates generative performance by sampling molecules,
-    saving them, and analyzing their structural validity and connectivity.
-    For 'property' or 'guidance' tasks, it evaluates predictive performance
-    by calculating Mean Absolute Error (MAE).
-
-    Args:
-        task (str): The type of task being evaluated ("diffusion", "property", or "guidance").
-        solver (Engine): The training engine containing the model and evaluation methods.
-        epoch (int, optional): The current training epoch, used for naming generated files. Defaults to 0.
-        best_checkpoints (list, optional): A list of tuples containing the metric and path of the best checkpoints.
-        logger (Literal["wandb", "logging"], optional): The logging backend to use. Defaults to "logging".
-        **kwargs: Additional keyword arguments specific to the task, such as:
-            - output_generated_dir (str): Directory to save generated molecules (for diffusion).
-            - generative_analysis (bool): Whether to perform generative analysis (for diffusion).
-            - n_samples (int): Number of samples to generate (for diffusion).
-            - metric (str): The metric to return from generative analysis (for diffusion).
+    Resolves task → TaskEvalConfig via TASK_REGISTRY, runs _run_eval(),
+    then executes one shared compare-and-checkpoint block.
 
     Returns:
-        Tuple[float, list]: A tuple containing the best performance metric and the list of best checkpoints.
+        Tuple[float, list]: (current_best_metric, best_checkpoints)
     """
     is_main_process = (
         not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
@@ -159,155 +337,63 @@ def evaluate(
     if best_checkpoints is None:
         best_checkpoints = []
 
+    cfg = _resolve_task_config(task)
+    # Apply engine-level overrides (from cfg.engine.eval_metric_key / eval_higher_is_better)
+    if kwargs.get("eval_metric_key") is not None:
+        cfg = dataclass_replace(cfg, metric_key=kwargs["eval_metric_key"])
+    if kwargs.get("eval_higher_is_better") is not None:
+        cfg = dataclass_replace(cfg, higher_is_better=kwargs["eval_higher_is_better"])
+    save_top_k = kwargs.get("save_top_k", 3)
+    save_every_val_epoch = kwargs.get("save_every_val_epoch", False)
+
     if output_path:
         last_path = os.path.join(output_path, "last.pkl")
         solver.save(last_path, compact=False, full_state=True)
         if is_main_process:
-            logging.info(f"Saved last model checkpoint to {last_path}")
+            logging.info(f"Saved last checkpoint → {last_path}")
 
-    save_top_k = kwargs.get("save_top_k", 3)
-    save_every_val_epoch = kwargs.get("save_every_val_epoch", False)
+    metric = _run_eval(
+        cfg=cfg, task=task, solver=solver, epoch=epoch,
+        logger=logger, output_path=output_path,
+        use_amp=use_amp, precision=precision, **kwargs,
+    )
 
-    if task in ("diffusion", "diffusion_hybrid", "diffusion_pyg", "diffusion_tabasco"):
-        output_generated_dir = kwargs.get("output_generated_dir", None)
-        if output_generated_dir is None:
-            output_generated_dir = "generated_molecules"
+    improved = (
+        metric > current_best_metric if cfg.higher_is_better
+        else metric < current_best_metric
+    )
 
-        _, val_loss, _ = solver.evaluate("valid", use_amp=use_amp, precision=precision)
-        _, test_loss, _ = solver.evaluate("test", use_amp=use_amp, precision=precision)
-        val_loss = torch.tensor(val_loss).mean().item()
-        test_loss = torch.tensor(test_loss).mean().item()
+    if save_every_val_epoch and output_path and is_main_process:
+        ckpt_name = f"{task}-epoch={epoch}-metric={metric:.4f}.pkl"
+        solver.save(os.path.join(output_path, ckpt_name), compact=False, full_state=True)
+        logging.info(f"Saved per-epoch checkpoint: {ckpt_name}")
 
-        if kwargs.get("generative_analysis", False):
-            metrics = 0.0  # Default value
-            # if is_main_process:
-            path = os.path.join(output_generated_dir, f"gen_xyz_{epoch}")
-            model_to_eval = (
-                solver.ema_model if solver.ema_decay > 0 else solver.model
+    if improved:
+        if is_main_process:
+            print(
+                f"\033[92m🚀 New best at epoch {epoch}: {metric:.4f} "
+                f"(was: {current_best_metric:.4f})\033[0m"
             )
-            performances = analyze_and_save(
-                model_to_eval,
-                epoch,
-                n_samples=kwargs.get("n_samples", 100),
-                batch_size=kwargs.get("batch_size", 1),
-                logger=logger,
-                path_save=path,
-                use_posebuster=kwargs.get("use_posebuster", False),
-                postbuster_timeout=kwargs.get("postbuster_timeout", 120),
+        current_best_metric = metric
+        best_checkpoints = _manage_best_checkpoints(
+            metric_value=metric, epoch=epoch, solver=solver,
+            output_path=output_path, best_checkpoints=best_checkpoints,
+            task_name=task, top_k=save_top_k, higher_is_better=cfg.higher_is_better,
+        )
+        if cfg.mae_eval and output_path and is_main_process:
+            y_preds = kwargs.get("_preds_test")
+            y_trues = kwargs.get("_trues_test")
+            if y_preds is not None:
+                np.save(os.path.join(output_path, f"y_preds_{epoch}.npy"), y_preds.detach().cpu().numpy())
+                np.save(os.path.join(output_path, f"y_trues_{epoch}.npy"), y_trues.detach().cpu().numpy())
+    else:
+        if is_main_process:
+            print(
+                f"\033[93m🤷 No improvement at epoch {epoch}: {metric:.4f} "
+                f"(best: {current_best_metric:.4f})\033[0m"
             )
 
-            metrics = performances[
-                kwargs.get("metric", "Validity Relax and connected")
-            ]
-            if save_every_val_epoch and is_main_process:
-                checkpoint_name = f"edm-gen-epoch={epoch}-metric={metrics:.4f}.pkl"
-                checkpoint_path = os.path.join(output_path, checkpoint_name)
-                solver.save(checkpoint_path, compact=False, full_state=True)
-                logging.info(f"Saved checkpoint for epoch {epoch} with metric {metrics:.4f} at {checkpoint_path}")
-            if metrics > current_best_metric:
-                if is_main_process:
-                    print(
-                        f"\033[92m🚀 New best metric at epoch {epoch}: {metrics:.4f} (previously: {current_best_metric:.4f})\033[0m"
-                    )
-                current_best_metric = metrics
-                # if is_main_process:
-                best_checkpoints = _manage_best_checkpoints(
-                    metric_value=metrics,
-                    epoch=epoch,
-                    solver=solver,
-                    output_path=output_path,
-                    best_checkpoints=best_checkpoints,
-                    task_name="edm-gen",
-                    top_k=save_top_k,
-                    higher_is_better=True,
-                )
-            else:
-                if is_main_process:
-                    print(
-                        f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m"
-                    )
-            # # if torch.distributed.is_initialized():
-            #     objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
-            #     torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-            #     best_checkpoints = objects_to_broadcast[0]
-
-        else:
-            metrics = test_loss
-
-            if metrics < current_best_metric:
-                if is_main_process:
-                    print(
-                        f"\033[92m🚀 New best metric at epoch {epoch}: {metrics:.4f} (previously: {current_best_metric:.4f})\033[0m"
-                    )
-                current_best_metric = metrics
-                # if is_main_process:
-                best_checkpoints = _manage_best_checkpoints(
-                    metric_value=metrics,
-                    epoch=epoch,
-                    solver=solver,
-                    output_path=output_path,
-                    best_checkpoints=best_checkpoints,
-                    task_name="edm-loss",
-                    top_k=save_top_k,
-                    higher_is_better=False,
-                )
-            else:
-                if is_main_process:
-                    print(
-                        f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m"
-                    )
-
-            # if torch.distributed.is_initialized():
-            #     objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
-            #     torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-            #     best_checkpoints = objects_to_broadcast[0]
-
-    elif task in ("regression", "guidance"):
-        _, preds, targets = solver.evaluate("valid")
-        _, preds_test, targets_test = solver.evaluate("test")
-        preds = torch.cat(preds, dim=0)
-        targets = torch.cat(targets, dim=0)
-        mae_per_property = torch.mean(torch.abs(preds - targets), dim=0)
-        y_preds = torch.cat(preds_test, dim=0)
-        y_trues = torch.cat(targets_test, dim=0)
-        metrics = torch.mean(mae_per_property)
-        if metrics < current_best_metric:
-            if is_main_process:
-                print(
-                    f"\033[92m🚀 New best metric at epoch {epoch}: {metrics:.4f} (previously: {current_best_metric:.4f})\033[0m"
-                )
-            current_best_metric = metrics
-            # if is_main_process:
-            best_checkpoints = _manage_best_checkpoints(
-                metric_value=metrics,
-                epoch=epoch,
-                solver=solver,
-                output_path=output_path,
-                best_checkpoints=best_checkpoints,
-                task_name=task,
-                top_k=3,
-                higher_is_better=False,
-            )
-            np.save(
-                os.path.join(output_path, f"y_preds_{epoch}.npy"),
-                y_preds.detach().cpu().numpy(),
-            )
-            np.save(
-                os.path.join(output_path, f"y_trues_{epoch}.npy"),
-                y_trues.detach().cpu().numpy(),
-            )
-        else:
-            if is_main_process:
-                print(
-                    f"\033[93m🤷 No improvement at epoch {epoch}: {metrics:.4f} (best: {current_best_metric:.4f})\033[0m"
-                )
-
-        # if torch.distributed.is_initialized():
-        #     objects_to_broadcast = [best_checkpoints] if is_main_process else [None]
-        #     torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-        #     best_checkpoints = objects_to_broadcast[0]
-
-    return current_best_metric, best_checkpoints 
+    return current_best_metric, best_checkpoints
     
 
 def analyze_and_save(

@@ -12,6 +12,9 @@ from .geom_utils import (
     sample_gaussian_with_mask,
     random_rotation,
     check_mask_correct,
+    apply_rotation_augmentation,
+    random_rotation_matrix,
+    MoleculeReconstructionEvaluator
 )
 
 from .molgraph_utils import (
@@ -117,6 +120,9 @@ __all__ = [
     "create_pyg_graph",
     "correct_edges",
     "remove_mean_pyG",
+    "apply_rotation_augmentation",
+    "random_rotation_matrix",
+    "MoleculeReconstructionEvaluator",
     
     "initialize_extra_nodes",
     "initialize_extra_nodes_seed",

@@ -4,3 +4,9 @@ engine_type: original
 progress_bar_metrics: "all"  # Can be "all" or a list of specific metric names like ["loss", "x_loss"]
 
 # Engine is instantiated inline in train.py using engine_wrapper()
+
+# --- Evaluation overrides (optional) -----------------------------------------
+# Leave null to use the TASK_REGISTRY defaults for the active task type.
+# Set explicitly to override — e.g. use "match_rate" instead of "val_loss" for VAE.
+eval_metric_key: null          # e.g. "match_rate", "val_loss", "Validity Relax and connected"
+eval_higher_is_better: null    # true or false

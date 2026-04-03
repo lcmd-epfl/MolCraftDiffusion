@@ -1,0 +1,25 @@
+# Latent Diffusion with DiT denoiser
+_target_: MolecularDiffusion.modules.tasks.diffusion_ldm.LDMTaskFactory
+task_type: diffusion_adit
+_recursive: False
+autoencoder_ckpt: ???  # Required: path to pre-trained VAE
+
+denoiser:
+  _target_: MolecularDiffusion.modules.models.ldm.denoisers.dit.DiT
+  # d_x is auto-inferred from VAE latent_dim
+  d_model: 768
+  num_layers: 12
+  nhead: 12
+  class_dropout_prob: 0.1
+
+interpolant:
+  type: flow_matching
+  min_t: 0.01
+  corrupt: true
+  num_timesteps: 100
+  self_condition: true
+  self_condition_prob: 0.5
+
+# Data augmentation
+augment_rotation: true
+

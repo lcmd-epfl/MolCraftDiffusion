@@ -21,6 +21,7 @@ from MolecularDiffusion.runmodes.train import (
     OptimSchedulerFactory,
     get_versioned_output_path,
 )
+from MolecularDiffusion.runmodes.train.eval import _resolve_task_config
 from MolecularDiffusion.utils import (
     RankedLogger,
     task_wrapper,
@@ -147,30 +148,25 @@ def load_weights(task, ckpt_path, task_module=None):
 
 
 def evaluate_and_save(i, solver, task_module, trainer_module, logger_module, versioned_ckpt_path, use_amp, **kwargs):
-    """Helper to run evaluation and save checkpoints."""
-    if hasattr(task_module.task, "sample"):
-        output_generated_dir = os.path.join(versioned_ckpt_path, "generated_molecules")
-        os.makedirs(output_generated_dir, exist_ok=True)
-        return evaluate(
-            task_module.task_type, solver, i, kwargs.get("best_metrics", torch.inf), kwargs.get("best_checkpoints", []),
-            logger_module.logger, output_generated_dir=output_generated_dir,
-            generative_analysis=kwargs.get("generative_analysis", False),
-            n_samples=kwargs.get("n_samples", 100),
-            metric=kwargs.get("metric", "Validity Relax and connected"),
-            output_path=versioned_ckpt_path,
-            use_amp=use_amp, precision=trainer_module.precision,
-            use_posebuster=kwargs.get("use_posebuster", False),
-            batch_size=kwargs.get("batch_size", 1),
-            save_top_k=getattr(trainer_module, "save_top_k", 3),
-            save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
-        )
-    else:
-        return evaluate(
-            task_module.task_type, solver, i, kwargs.get("best_metrics", torch.inf), kwargs.get("best_checkpoints", []),
-            logger_module.logger, output_path=versioned_ckpt_path,
-            save_top_k=getattr(trainer_module, "save_top_k", 3),
-            save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
-        )
+    """Run evaluation for any task type — routing is handled by TASK_REGISTRY inside evaluate()."""
+    output_generated_dir = os.path.join(versioned_ckpt_path, "generated_molecules")
+    os.makedirs(output_generated_dir, exist_ok=True)
+    return evaluate(
+        task_module.task_type, solver, i,
+        kwargs.get("best_metrics", torch.inf), kwargs.get("best_checkpoints", []),
+        logger_module.logger,
+        output_path=versioned_ckpt_path,
+        output_generated_dir=output_generated_dir,
+        use_amp=use_amp,
+        precision=trainer_module.precision,
+        generative_analysis=kwargs.get("generative_analysis", False),
+        n_samples=kwargs.get("n_samples", 100),
+        metric=kwargs.get("metric", "Validity Relax and connected"),
+        use_posebuster=kwargs.get("use_posebuster", False),
+        batch_size=kwargs.get("batch_size", 1),
+        save_top_k=getattr(trainer_module, "save_top_k", 3),
+        save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
+    )
 
 
 def engine_wrapper(task_module, data_module, trainer_module, logger_module,
@@ -208,17 +204,20 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module,
     use_amp = trainer_module.precision in ["bf16", 16]
     
     best_checkpoints = []
-    best_checkpoints = []
     if hasattr(task_module.task, "sample") and kwargs.get("generative_analysis"):
-        best_metrics = -torch.inf
         models_to_save = {"node": task_module.task.node_dist_model}
         if len(getattr(task_module, "condition_names", [])) > 0:
             models_to_save["prop"] = task_module.task.prop_dist_model
         if is_rank_zero():
             with open(os.path.join(trainer_module.output_path, "edm_stat.pkl"), "wb") as f:
                 pickle.dump(models_to_save, f)
-    else:
-        best_metrics = torch.inf
+
+    # Determine correct initial sentinel from registry + engine overrides
+    _eval_cfg = _resolve_task_config(task_module.task_type)
+    if kwargs.get("eval_higher_is_better") is not None:
+        from dataclasses import replace as _dcreplace
+        _eval_cfg = _dcreplace(_eval_cfg, higher_is_better=kwargs["eval_higher_is_better"])
+    best_metrics = -torch.inf if _eval_cfg.higher_is_better else torch.inf
     
     # Create versioned checkpoint folder (like Lightning's version_X folders)
     versioned_ckpt_path = get_versioned_output_path(trainer_module.output_path)
@@ -356,7 +355,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     engine_type = cfg.get("engine", {}).get("engine_type", "original")
     log.info(f"Using engine: {engine_type}")
 
-
+    # Optional eval overrides from engine config
+    engine_cfg = cfg.get("engine", {})
+    eval_metric_key = engine_cfg.get("eval_metric_key", None)
+    eval_higher_is_better = engine_cfg.get("eval_higher_is_better", None)
 
     # Extract top-level tags for wandb
     tags = cfg.get("tags", None)
@@ -378,23 +380,18 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
 
     resume_ckpt = cfg.trainer.get("resume_from_checkpoint", None)
-    if hasattr(task_module.task, "sample"):
-        metrics = engine_wrapper(
-            task_module, data_module, trainer_module, logger_module,
-            resume_from_checkpoint=resume_ckpt,
-            generative_analysis=gen_analysis,
-            n_samples=n_samples,
-            metric=metric,
-            use_posebuster=use_posebuster,
-            batch_size=gen_batch_size,
-            tags=tags,
-        )
-    else:
-        metrics = engine_wrapper(
-            task_module, data_module, trainer_module, logger_module,
-            resume_from_checkpoint=resume_ckpt,
-            tags=tags,
-        )
+    metrics = engine_wrapper(
+        task_module, data_module, trainer_module, logger_module,
+        resume_from_checkpoint=resume_ckpt,
+        generative_analysis=gen_analysis,
+        n_samples=n_samples,
+        metric=metric,
+        use_posebuster=use_posebuster,
+        batch_size=gen_batch_size,
+        tags=tags,
+        eval_metric_key=eval_metric_key,
+        eval_higher_is_better=eval_higher_is_better,
+    )
 
     return metrics, object_dict
 

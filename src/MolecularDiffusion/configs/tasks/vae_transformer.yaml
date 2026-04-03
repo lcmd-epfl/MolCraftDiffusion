@@ -1,0 +1,35 @@
+# VAE with Transformer encoder/decoder
+_target_: MolecularDiffusion.modules.tasks.diffusion_ldm.VAETaskFactory
+task_type: vae_transformer
+
+encoder:
+  _target_: MolecularDiffusion.modules.models.ldm.encoders.transformer.TransformerEncoder
+  max_num_elements: 100
+  d_model: 512
+  nhead: 8
+  num_layers: 8
+
+decoder:
+  _target_: MolecularDiffusion.modules.models.ldm.decoders.transformer.TransformerDecoder
+  max_num_elements: 100
+  d_model: 512
+  nhead: 8
+  num_layers: 8
+
+latent_dim: 8
+loss_weights:
+  pos: 10.0
+  atom_types: 1.0
+  kl: 0.0001
+augment_noise: 0.1
+
+# Reconstruction evaluation
+eval_reconstruction: true
+# Save reconstructed molecules as XYZ files
+save_reconstruction: true
+# Output path for saving reconstruction (uses trainer output by default)
+output_path: ${trainer.output_path}
+
+# Data augmentation
+augment_rotation: true
+

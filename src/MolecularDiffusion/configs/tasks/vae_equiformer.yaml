@@ -1,0 +1,27 @@
+# VAE with Equiformer encoder/decoder
+_target_: MolecularDiffusion.modules.tasks.diffusion_ldm.VAETaskFactory
+task_type: vae_equiformer
+
+encoder:
+  _target_: MolecularDiffusion.modules.models.ldm.encoders.equiformer.EquiformerEncoder
+  max_num_elements: 100
+  sphere_channels: 128
+  num_layers: 4
+  lmax_list: [4]
+  mmax_list: [2]
+  use_pbc: false
+
+decoder:
+  _target_: MolecularDiffusion.modules.models.ldm.decoders.equivariant_feedforward.FeedForwardDecoder
+  max_num_elements: 100
+  sphere_channels: 128
+  lmax_list: [4]
+  mmax_list: [2]
+
+latent_dim: 8
+loss_weights:
+  pos: 1.0
+  atom_types: 1.0
+  kl: 0.0001
+augment_noise: 0.1
+augment_rotation: true
