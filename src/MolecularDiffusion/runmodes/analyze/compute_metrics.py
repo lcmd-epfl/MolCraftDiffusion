@@ -6,12 +6,24 @@ import pandas as pd
 import random
 from tqdm import tqdm
 from MolecularDiffusion.utils.geom_utils import read_xyz_file, create_pyg_graph, correct_edges
-from MolecularDiffusion.utils.geom_metrics import (check_validity_v1, 
-                                                   check_chem_validity, 
-                                                   run_postbuster, 
-                                                   smilify_wrapper, 
+from MolecularDiffusion.utils.geom_metrics import (check_validity_v1,
+                                                   check_chem_validity,
+                                                   run_postbuster,
+                                                   smilify_wrapper,
                                                    load_molecules_from_xyz,
-                                                   check_neutrality)
+                                                   check_neutrality,
+                                                   xyz_to_rdkit_mol,
+                                                   compute_drug_likeness)
+from MolecularDiffusion.utils.shepherd_score.extract_profiles import get_electrostatic_potential
+from MolecularDiffusion.utils.shepherd_score.generate_point_cloud import (
+    get_molecular_surface, get_atomic_vdw_radii)
+from MolecularDiffusion.utils.shepherd_score.pharm_utils.pharmacophore import get_pharmacophores
+from MolecularDiffusion.utils.shepherd_score.score.constants import ALPHA, LAM_SCALING
+from MolecularDiffusion.utils.shepherd_score.score.gaussian_overlap_np import get_overlap_np
+from MolecularDiffusion.utils.shepherd_score.score.electrostatic_scoring_np import get_overlap_esp_np
+from MolecularDiffusion.utils.shepherd_score.score.pharmacophore_scoring_np import get_overlap_pharm_np
+from MolecularDiffusion.utils.shepherd_score.alignment import (
+    optimize_ROCS_overlay, optimize_ROCS_esp_overlay, optimize_pharm_overlay)
 from MolecularDiffusion.utils import smilify_xyz2mol, smilify_openbabel
 from MolecularDiffusion.utils.geom_stability import compute_molecules_stability
 
@@ -255,12 +267,65 @@ def runner(args):
     if args.metrics in ["all", "geom_revised"]:
         from rdkit import Chem
         from MolecularDiffusion.utils.smilify import smilify_xyz2mol
+        from MolecularDiffusion.utils.geom_stability import (
+            compute_bond_lengths_diff,
+            compute_bond_angles_diff,
+            compute_torsion_angles_diff,
+            compute_differences,
+        )
+        from collections import defaultdict
+
+        def run_bond_analysis(pairs, analysis_type="bond_length"):
+            accumulated_results = defaultdict(lambda: ([], []))
+            if analysis_type == "bond_length":
+                results = compute_differences(pairs, compute_bond_lengths_diff)
+            elif analysis_type == "bond_angle":
+                results = compute_differences(pairs, compute_bond_angles_diff)
+            elif analysis_type == "torsion_angle":
+                results = compute_differences(pairs, compute_torsion_angles_diff)
+            else:
+                raise ValueError(f"Unknown analysis type: {analysis_type}")
+                
+            for key, (avg_diff, std_dev, weight) in results.items():
+                accumulated_results[key][0].append(avg_diff)
+                accumulated_results[key][1].append(weight)
+            return accumulated_results
+
+        def summarize_bond_results(results):
+            total_weighted_diffs = []
+            total_weight = 0
+            for key, (avg_diff_list, weight_list) in results.items():
+                weighted_diffs = np.array(avg_diff_list) * np.array(weight_list)
+                total_weighted_diffs.append(np.sum(weighted_diffs))
+                total_weight += np.sum(weight_list)
+            return np.sum(total_weighted_diffs) / total_weight if total_weight > 0 else 0
+
+        def get_split_stats_bond(pairs, analysis_type, n_subsets):
+            if len(pairs) == 0: return 0.0, 0.0
+            if n_subsets <= 1:
+                results = run_bond_analysis(pairs, analysis_type=analysis_type)
+                return summarize_bond_results(results), 0.0
+            fold_size = len(pairs) // n_subsets
+            scores = []
+            for i in range(n_subsets):
+                if i < n_subsets - 1:
+                    fold_pairs = pairs[i * fold_size: (i + 1) * fold_size]
+                else:
+                    fold_pairs = pairs[i * fold_size:]
+                if not fold_pairs: continue
+                results = run_bond_analysis(fold_pairs, analysis_type=analysis_type)
+                score = summarize_bond_results(results)
+                scores.append(score)
+            if not scores: return 0.0, 0.0
+            return np.mean(scores), np.std(scores)
         
         logging.info(f"Computing geom_revised metrics (converter: {args.mol_converter})...")
         
         # Load molecules from XYZ
         mols_revised = []
         xyz_files_revised = []
+        mol_pairs = []
+        mol_pair_mapping = {}
         
         xyzs_to_process = [
             path for path in glob.glob(f"{xyz_dir}/*.xyz")
@@ -275,6 +340,18 @@ def runner(args):
             try:
                 if args.mol_converter == "xyz2mol":
                     smiles, mol = smilify_xyz2mol(xyz_file, timeout=args.timeout)
+                    if mol is not None and mol.GetNumConformers() == 0:
+                        try:
+                            from rdkit.Geometry import Point3D
+                            cart_coords, _ = read_xyz_file(xyz_file)
+                            conf = Chem.Conformer(mol.GetNumAtoms())
+                            for i in range(mol.GetNumAtoms()):
+                                x, y, z = cart_coords[i].tolist()
+                                conf.SetAtomPosition(i, Point3D(x, y, z))
+                            mol.AddConformer(conf)
+                        except Exception as e:
+                            logging.debug(f"Failed to add conformer to {xyz_file}: {e}")
+                            mol = None
                 else:  # openbabel
                     from openbabel import pybel
                     mol_pb = next(pybel.readfile("xyz", xyz_file))
@@ -283,9 +360,31 @@ def runner(args):
                     if mol is not None:
                         Chem.SanitizeMol(mol)
                 
+                # Generate optimized molecule using MMFF via OpenBabel
+                opt_mol = None
+                if mol is not None:
+                    try:
+                        from openbabel import pybel
+                        mol_pb = next(pybel.readfile("xyz", xyz_file))
+                        mol_pb.localopt(forcefield="mmff94", steps=1000)
+                        
+                        # Convert to RDKit mol
+                        from rdkit import Chem
+                        mol_sdf = mol_pb.write("sdf")
+                        opt_mol = Chem.MolFromMolBlock(mol_sdf, removeHs=False, sanitize=False)
+                        if opt_mol is not None:
+                            Chem.SanitizeMol(opt_mol)
+                    except Exception as e:
+                        logging.debug(f"OpenBabel MMFF Optimization failed for {xyz_file}: {e}")
+                        opt_mol = None
+
                 if mol is not None:
                     mols_revised.append(mol)
                     xyz_files_revised.append(xyz_file)
+                    if opt_mol is not None:
+                        mol_pairs.append((mol, opt_mol))
+                        mol_pair_mapping[xyz_file] = opt_mol
+
             except Exception as e:
                 logging.debug(f"Failed to load {xyz_file}: {e}")
         
@@ -320,6 +419,29 @@ def runner(args):
                 "valid": valid_list,
                 "valid_connected": valid_connected_list,
             }
+            
+            # --- Bond Analysis per file ---
+            bond_len_diffs = []
+            bond_ang_diffs = []
+            torsion_diffs = []
+            
+            for mol, xyz_file in zip(mols_revised, xyz_files_revised):
+                opt_mol = mol_pair_mapping.get(xyz_file)
+                if opt_mol is not None:
+                    len_res = run_bond_analysis([(mol, opt_mol)], "bond_length")
+                    ang_res = run_bond_analysis([(mol, opt_mol)], "bond_angle")
+                    tor_res = run_bond_analysis([(mol, opt_mol)], "torsion_angle")
+                    bond_len_diffs.append(summarize_bond_results(len_res))
+                    bond_ang_diffs.append(summarize_bond_results(ang_res))
+                    torsion_diffs.append(summarize_bond_results(tor_res))
+                else:
+                    bond_len_diffs.append(None)
+                    bond_ang_diffs.append(None)
+                    torsion_diffs.append(None)
+            
+            results_dict["bond_length_diff"] = bond_len_diffs
+            results_dict["bond_angle_diff"] = bond_ang_diffs
+            results_dict["torsion_diff"] = torsion_diffs
             
             modes_to_run = [
                 ("aromatic_true", True),   # Arom-Dependent Valence
@@ -384,6 +506,251 @@ def runner(args):
                     logging.info(f"--- Mode: {mode_name} ---")
                     logging.info(f"  Molecule Stability: {n_stable}/{n_passed} ({mol_stab_mean:.2f} ± {mol_stab_std:.2f}%)")
                     logging.info(f"  Atom Stability: {atom_stab_mean:.2f} ± {atom_stab_std:.2f}%")
+
+            if len(mol_pairs) > 0:
+                bond_len_mean, bond_len_std = get_split_stats_bond(mol_pairs, "bond_length", args.n_subsets)
+                bond_ang_mean, bond_ang_std = get_split_stats_bond(mol_pairs, "bond_angle", args.n_subsets)
+                tor_mean, tor_std = get_split_stats_bond(mol_pairs, "torsion_angle", args.n_subsets)
+                
+                logging.info(f"--- Geometry Discrepancies (Bond Mode) ---")
+                logging.info(f"  Pairs loaded: {len(mol_pairs)}")
+                logging.info(f"  Bond Length: {bond_len_mean:.4f} ± {bond_len_std:.4f} Å")
+                logging.info(f"  Bond Angle: {bond_ang_mean:.4f} ± {bond_ang_std:.4f}°")
+                logging.info(f"  Torsion Angle: {tor_mean:.4f} ± {tor_std:.4f}°")
+
+    # =========================================================================
+    # SHEPHERD: Drug-likeness and conditional similarity
+    # =========================================================================
+    if args.metrics in ["all", "shepherd"]:
+        from rdkit import Chem
+        logging.info("Computing ShEPhERD-style metrics...")
+        # If the standard list excluded all files (e.g. only *_opt.xyz present), use all xyz
+        _shepherd_xyzs = xyzs if xyzs else glob.glob(f"{xyz_dir}/*.xyz")
+
+        # 1. Load reference molecule if provided (for similarity metrics)
+        ref_data = None
+        # 1. Prepare reference data source
+        data_source = None
+        if hasattr(args, "reference_mol") and args.reference_mol is not None:
+            import pickle
+            path = str(args.reference_mol)
+            mol_idx = getattr(args, "mol_idx", 0)
+            try:
+                if path.endswith('.pkl'):
+                    with open(path, 'rb') as f:
+                        data_source = pickle.load(f)
+                elif path.endswith('.sdf'):
+                    data_source = Chem.SDMolSupplier(path, removeHs=False)
+                else:
+                    raise ValueError(f"Unsupported format (expected .pkl or .sdf): {path}")
+            except Exception as e:
+                logging.error(f"Failed to load reference data source: {e}")
+                data_source = None
+
+        # Helper to extract profiles from a moleucle
+        def extract_shepherd_profiles(mol):
+            if mol is None: return None
+            # Extract surface, pharmacophore and ESP using ported shepherd-score
+            _pos   = mol.GetConformer().GetPositions().astype(np.float32)
+            _radii = get_atomic_vdw_radii(mol)
+            from rdkit.Chem import AllChem as _AllChem
+            _AllChem.ComputeGasteigerCharges(mol)
+            _charges = np.nan_to_num(
+                np.array([float(a.GetProp('_GasteigerCharge')) for a in mol.GetAtoms()],
+                         dtype=np.float32), nan=0.0)
+            surf = get_molecular_surface(_pos, _radii, num_points=75,
+                                             probe_radius=1.2, num_samples_per_atom=25)
+            esp  = get_electrostatic_potential(mol, _charges, surf)
+            p_types, p_pts, p_vecs = get_pharmacophores(
+                mol, multi_vector=False, exclude=[], check_access=False, scale=1.0)
+            return dict(surface=surf, pharm_pts=p_pts,
+                            pharm_types=p_types, pharm_vecs=p_vecs, esp=esp, num_atoms=mol.GetNumAtoms())
+
+        # Precompute reference if not random
+        fixed_ref_data = None
+        if data_source is not None and mol_idx != -1:
+            try:
+                if isinstance(data_source, list): # PKL
+                    entry = data_source[mol_idx]
+                    ref_mol = Chem.MolFromMolBlock(entry[0], removeHs=False)
+                else: # SDF
+                    ref_mol = data_source[mol_idx]
+                
+                fixed_ref_data = extract_shepherd_profiles(ref_mol)
+                if fixed_ref_data:
+                    logging.info(f"Loaded fixed reference mol [{mol_idx}] from {path}: "
+                                 f"{fixed_ref_data['num_atoms']} atoms, {len(fixed_ref_data['pharm_types'])} pharmacophores")
+            except Exception as e:
+                logging.error(f"Failed to load fixed reference molecule: {e}")
+
+        shepherd_results = []
+        for xyz in tqdm(_shepherd_xyzs, desc="Computing Shepherd metrics"):
+            res = {
+                "file": os.path.basename(xyz),
+                "valid_rdkit": False,
+                "smiles": None,
+                "SA_score": 0.0, "QED": 0.0, "LogP": 0.0, "fsp3": 0.0, "MW": 0.0, "HBD": 0, "HBA": 0,
+                "shape_sim": 0.0, "pharm_sim": 0.0, "esp_sim": 0.0
+            }
+            
+            # Validity & Drug-likeness
+            mol = xyz_to_rdkit_mol(xyz)
+            res["valid_rdkit"] = mol is not None
+            if mol:
+                res["smiles"] = Chem.MolToSmiles(mol)
+                drug_likeness = compute_drug_likeness(mol)
+                res.update(drug_likeness)
+                
+                # 2. Determine reference data for this entry
+                ref_data = fixed_ref_data
+                if mol_idx == -1 and data_source is not None:
+                    try:
+                        curr_idx = random.randrange(len(data_source))
+                        if isinstance(data_source, list): # PKL
+                            ref_mol = Chem.MolFromMolBlock(data_source[curr_idx][0], removeHs=False)
+                        else: # SDF
+                            ref_mol = data_source[curr_idx]
+                        ref_data = extract_shepherd_profiles(ref_mol)
+                        logging.info(f"Randomly selected ref mol [{curr_idx}] for {os.path.basename(xyz)}")
+                    except Exception as e:
+                        logging.warning(f"Failed to load random reference for {os.path.basename(xyz)}: {e}")
+                        ref_data = None
+
+                # 3. Conditional similarities
+                if ref_data:
+                    try:
+                        # Try to load modalities from unified .npz or individual files
+                        npz_path = xyz.replace(".xyz", ".npz")
+                        surf_path = xyz.replace(".xyz", "_surface.npy")
+                        esp_path = xyz.replace(".xyz", "_esp.npz")
+                        pharm_path = xyz.replace(".xyz", "_pharm.npz")
+                        
+                        gen_surf, gen_esp, gen_pharm_pts, gen_pharm_types, gen_pharm_vecs = None, None, None, None, None
+                        
+                        if os.path.exists(npz_path):
+                            try:
+                                sidecar = np.load(npz_path)
+                                gen_surf = sidecar.get("surf_pts", None)
+                                gen_esp = sidecar.get("esp_vals", None)
+                                gen_pharm_pts = sidecar.get("pharm_pts", None)
+                                gen_pharm_types = sidecar.get("pharm_types", None)
+                                # Note: Unified .npz doesn't currently store pharm_vecs in Generation code
+                            except: pass
+                        
+                        # Fallback to individual files
+                        if gen_surf is None and os.path.exists(surf_path):
+                             try: gen_surf = np.load(surf_path)
+                             except: pass
+                        if gen_esp is None and os.path.exists(esp_path):
+                             try: gen_esp = np.load(esp_path).get("charges", None)
+                             except: pass
+                        if gen_pharm_pts is None and os.path.exists(pharm_path):
+                             try:
+                                 p_data = np.load(pharm_path)
+                                 gen_pharm_pts = p_data.get("positions", None)
+                                 gen_pharm_types = p_data.get("types", None)
+                                 gen_pharm_vecs = p_data.get("directions", None)
+                             except: pass
+
+                        # --- Fallback: recompute gen profiles from RDKit mol ---
+                        if gen_surf is None:
+                            _gen_pos   = mol.GetConformer().GetPositions().astype(np.float32)
+                            _gen_radii = get_atomic_vdw_radii(mol)
+                            gen_surf = get_molecular_surface(_gen_pos, _gen_radii, num_points=75,
+                                                             probe_radius=1.2, num_samples_per_atom=25)
+                        if gen_pharm_pts is None:
+                            gen_pharm_types, gen_pharm_pts, gen_pharm_vecs = get_pharmacophores(
+                                mol, multi_vector=False, exclude=[], check_access=False, scale=1.0)
+                        if gen_esp is None:
+                            from rdkit.Chem import AllChem as _AllChem2
+                            _AllChem2.ComputeGasteigerCharges(mol)
+                            _gen_charges = np.nan_to_num(
+                                np.array([float(a.GetProp('_GasteigerCharge')) for a in mol.GetAtoms()],
+                                         dtype=np.float32), nan=0.0)
+                            gen_esp = get_electrostatic_potential(mol, _gen_charges, gen_surf)
+
+                        # Compute similarity metrics using ported shepherd-score
+                        def _alpha(n):
+                            try: return float(ALPHA(np.clip(n, 50, 400)))
+                            except: return 0.81
+
+                        # Shape
+                        if gen_surf is not None and len(gen_surf) > 0 and ref_data["surface"] is not None:
+                            _n = len(gen_surf)
+                            _a = _alpha(_n)
+                            _gs = (gen_surf - gen_surf.mean(axis=0)).astype(np.float32)
+                            _rs = (ref_data["surface"] - ref_data["surface"].mean(axis=0)).astype(np.float32)
+                            _aligned, _, _ = optimize_ROCS_overlay(
+                                torch.from_numpy(_rs), torch.from_numpy(_gs), _a, num_repeats=45)
+                            res["shape_sim"] = float(get_overlap_np(_rs, _aligned.numpy(), alpha=_a))
+
+                        # Pharmacophore
+                        if gen_pharm_pts is not None and len(gen_pharm_pts) > 0 and ref_data["pharm_pts"] is not None:
+                            _rpa = (ref_data["pharm_pts"] - ref_data["pharm_pts"].mean(axis=0)).astype(np.float32)
+                            _gpa = (gen_pharm_pts - gen_pharm_pts.mean(axis=0)).astype(np.float32)
+                            _rpv = ref_data["pharm_vecs"].astype(np.float32)
+                            _gpv = (gen_pharm_vecs.astype(np.float32) if gen_pharm_vecs is not None
+                                    else np.zeros_like(_gpa))
+                            _rpt = ref_data["pharm_types"].astype(np.int64)
+                            _gpt = gen_pharm_types.astype(np.int64)
+                            _ga_t, _gv_t, _, _ = optimize_pharm_overlay(
+                                torch.from_numpy(_rpt), torch.from_numpy(_gpt),
+                                torch.from_numpy(_rpa), torch.from_numpy(_gpa),
+                                torch.from_numpy(_rpv), torch.from_numpy(_gpv),
+                                similarity='tanimoto', num_repeats=45)
+                            res["pharm_sim"] = float(get_overlap_pharm_np(
+                                ptype_1=_rpt, ptype_2=_gpt,
+                                anchors_1=_rpa, anchors_2=_ga_t.numpy(),
+                                vectors_1=_rpv, vectors_2=_gv_t.numpy(),
+                                similarity='tanimoto'))
+
+                        # ESP
+                        ref_esp = ref_data["esp"]
+                        if gen_esp is not None and ref_esp is not None and gen_surf is not None and ref_data["surface"] is not None:
+                            _n   = len(gen_surf)
+                            _a   = _alpha(_n)
+                            _lam = 0.3 * LAM_SCALING
+                            _gs  = (gen_surf - gen_surf.mean(axis=0)).astype(np.float32)
+                            _rs  = (ref_data["surface"] - ref_data["surface"].mean(axis=0)).astype(np.float32)
+                            _ge  = gen_esp.astype(np.float32)
+                            _re  = ref_esp.astype(np.float32)
+                            _aligned_e, _, _ = optimize_ROCS_esp_overlay(
+                                torch.from_numpy(_rs), torch.from_numpy(_gs),
+                                torch.from_numpy(_re), torch.from_numpy(_ge),
+                                _a, _lam, num_repeats=45)
+                            res["esp_sim"] = float(get_overlap_esp_np(
+                                _rs, _aligned_e.numpy(), _re, _ge, alpha=_a, lam=_lam))
+                        else:
+                            res["esp_sim"] = 0.0
+
+                    except Exception as e:
+                        import traceback
+                        logging.warning(f"Failed to compute similarity for {os.path.basename(xyz)}: {e}")
+            
+            shepherd_results.append(res)
+            
+        df_shepherd = pd.DataFrame(shepherd_results)
+        
+        # Save output
+        if args.output is None:
+            shepherd_output_path = f"{xyz_dir}/shepherd_metrics.csv"
+        else:
+            base, ext = os.path.splitext(args.output)
+            shepherd_output_path = f"{base}_shepherd{ext}"
+            
+        df_shepherd.to_csv(shepherd_output_path, index=False)
+        logging.info(f"ShEPhERD metrics saved to {shepherd_output_path}")
+        
+        # Summary
+        if "SA_score" in df_shepherd.columns:
+            logging.info(f"Average SA_score: {df_shepherd['SA_score'].mean():.4f}")
+            logging.info(f"Average QED: {df_shepherd['QED'].mean():.4f}")
+        if "shape_sim" in df_shepherd.columns:
+            logging.info(f"Average Shape Similarity: {df_shepherd['shape_sim'].mean():.4f}")
+        if "esp_sim" in df_shepherd.columns:
+            logging.info(f"Average ESP Similarity: {df_shepherd['esp_sim'].mean():.4f}")
+        if "pharm_sim" in df_shepherd.columns:
+            logging.info(f"Average Pharm Similarity: {df_shepherd['pharm_sim'].mean():.4f}")
 
 
 

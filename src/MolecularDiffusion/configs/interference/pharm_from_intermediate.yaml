@@ -1,0 +1,30 @@
+_target_: MolecularDiffusion.runmodes.generate.tasks_generate.PharmacophoreConditionGenerator
+task_type: from_intermediate_time
+num_generate: 10
+batch_size: 1
+N_x1: 23         # must be >= number of atoms in reference mol
+num_steps: 400
+prior_noise_scale: 1.0
+denoising_noise_scale: 1.0
+seed: 42
+verbose: true
+output_path: generated_pharm_intermediate
+# Path to .pkl (list of (molblock, charges) tuples) or .sdf file.
+reference_mol: data/shepherd_data/gdb/molblock_charges_9_test100.pkl
+mol_idx: 0
+# SMARTS pattern for atoms to keep as scaffold.
+# If null, all ring atoms are kept and chains are modified.
+scaffold_smarts: null
+# Fraction of diffusion to start from:
+#   0.3 = subtle analog generation, 0.5 = scaffold hopping, 0.7 = large changes
+start_time: 0.5
+inpaint_x1_bonds: false
+stop_inpainting_at_time_x1_pos: 0.0
+stop_inpainting_at_time_x1_x: 0.0
+stop_inpainting_at_time_x1_bonds: 0.0
+
+# --- Modality Generation Toggles ---
+compute_x1: true
+compute_x2: true
+compute_x3: true
+compute_x4: true

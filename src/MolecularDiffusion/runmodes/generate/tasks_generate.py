@@ -1026,3 +1026,421 @@ class GenerativeFactory:
         )
 
         return feats_t
+
+
+
+class PharmacophoreConditionGenerator:
+    """
+    Entry point for all ShEPhERD pharmacophore generation modes.
+
+    task_type selects the generation mode:
+      - unconditional          : joint x1/x2/x3/x4 from pure noise
+      - pharmacophore_condition: condition on pharmacophores extracted from reference_mol
+      - shape_conditioned      : condition on surface + electrostatics from reference_mol
+      - pharmacophore_inpaint  : scaffold inpainting — keep scaffold_smarts atoms, regenerate rest
+      - from_intermediate_time : soft scaffold hopping starting from a noisy intermediate
+
+    For all conditional modes, provide:
+      reference_mol : path to .pkl (list of (molblock, charges) tuples) or .sdf file
+      mol_idx       : which molecule to use from the file (default 0)
+
+    For pharmacophore_inpaint:
+      scaffold_smarts: SMARTS pattern selecting atoms to keep (e.g. 'c1ccccc1')
+                       If null, keeps all ring atoms and regenerates chains.
+    """
+
+    def __init__(
+        self,
+        task,
+        task_type: str = "pharmacophore_condition",
+        num_generate: int = 10,
+        batch_size: int = 1,
+        N_x1: list = [20],
+        N_x4: int = 5,
+        N_x1_sampling: str = "uniform",
+        distributions_path: str = None,
+        distributions_key: str = "gdb",
+        num_steps: int = 400,
+        prior_noise_scale: float = 1.0,
+        denoising_noise_scale: float = 1.0,
+        output_path: str = "generated_pharmacophore",
+        seed: int = 42,
+        verbose: bool = True,
+        # --- reference molecule (all conditional modes) ---
+        reference_mol: str = None,
+        mol_idx: int = 0,
+        # --- pharmacophore_inpaint scaffold selection ---
+        scaffold_smarts: str = None,
+        inpaint_x1_pos: bool = True,
+        inpaint_x1_x: bool = True,
+        inpaint_x1_bonds: bool = True,
+        stop_inpainting_at_time_x1_pos: float = 0.0,
+        stop_inpainting_at_time_x1_x: float = 0.0,
+        stop_inpainting_at_time_x1_bonds: float = 0.0,
+        stop_inpainting_at_time_x4: float = 0.0,
+        save_modalities: bool = False,
+        # --- multi-profile generation toggles ---
+        compute_x1: bool = True,
+        compute_x2: bool = True,
+        compute_x3: bool = True,
+        compute_x4: bool = True,
+        # --- from_intermediate_time ---
+        start_time: float = 0.5,
+        condition_configs: dict = {},
+    ):
+        self.task = task
+        self.task_type = task_type
+        self.num_generate = num_generate
+        self.batch_size = batch_size
+        # Normalise N_x1: accept int for back-compat, convert to list
+        if isinstance(N_x1, int):
+            N_x1 = [N_x1]
+        self.N_x1 = N_x1
+        if N_x1_sampling not in ("uniform", "normal"):
+            raise ValueError(f"N_x1_sampling must be 'uniform' or 'normal', got '{N_x1_sampling}'")
+        self.N_x1_sampling = N_x1_sampling
+        self.N_x4 = N_x4
+        self.num_steps = num_steps
+
+        # Load empirical P(N_x4 | N_x1) distribution if N_x4 == 0
+        self._nx4_dist = None
+        if N_x4 == 0:
+            if distributions_path is None:
+                raise ValueError("distributions_path must be set when N_x4=0")
+            import numpy as np
+            data = np.load(distributions_path)
+            if distributions_key not in data:
+                raise ValueError(f"distributions_key '{distributions_key}' not found in {distributions_path}. Available: {list(data.keys())}")
+            self._nx4_dist = data[distributions_key]
+            logger.info(f"N_x4 will be sampled from '{distributions_key}' distribution in {distributions_path}")
+        self.prior_noise_scale = prior_noise_scale
+        self.denoising_noise_scale = denoising_noise_scale
+        self.output_path = output_path
+        self.seed = seed
+        self.verbose = verbose
+        self.reference_mol = reference_mol
+        self.mol_idx = mol_idx
+        self.scaffold_smarts = scaffold_smarts
+        self.inpaint_x1_pos = inpaint_x1_pos
+        self.inpaint_x1_x = inpaint_x1_x
+        self.inpaint_x1_bonds = inpaint_x1_bonds
+        self.stop_inpainting_at_time_x1_pos = stop_inpainting_at_time_x1_pos
+        self.stop_inpainting_at_time_x1_x = stop_inpainting_at_time_x1_x
+        self.stop_inpainting_at_time_x1_bonds = stop_inpainting_at_time_x1_bonds
+        self.stop_inpainting_at_time_x4 = stop_inpainting_at_time_x4
+        self.start_time = start_time
+        self.save_modalities = save_modalities
+        self.compute_x1 = compute_x1
+        self.compute_x2 = compute_x2
+        self.compute_x3 = compute_x3
+        self.compute_x4 = compute_x4
+        self.condition_configs = condition_configs
+
+        # Load and cache conditioning data from reference molecule
+        self._ref = None
+        if task_type != "unconditional":
+            if reference_mol is None:
+                raise ValueError(f"reference_mol is required for task_type='{task_type}'")
+            self._ref = self._load_reference(reference_mol, mol_idx)
+
+    def _load_reference(self, path: str, mol_idx: int) -> dict:
+        """
+        Load a reference molecule from a .pkl or .sdf file and extract all
+        conditioning arrays needed by the sampler.
+
+        Returns a dict with keys:
+          mol, charges, surface, electrostatics, center_of_mass,
+          pharm_types, pharm_pos, pharm_direction
+        """
+        import numpy as np
+        from rdkit import Chem
+
+        path = str(path)
+
+        # --- Load mol + charges ---
+        if path.endswith('.pkl'):
+            import pickle
+            with open(path, 'rb') as f:
+                data = pickle.load(f)
+            entry = data[mol_idx]
+            molblock, charges = entry[0], np.array(entry[1], dtype=np.float32)
+            mol = Chem.MolFromMolBlock(molblock, removeHs=False)
+            if mol is None:
+                raise ValueError(f"Failed to parse molblock at index {mol_idx} in {path}")
+        elif path.endswith('.sdf'):
+            supplier = Chem.SDMolSupplier(path, removeHs=False)
+            mol = supplier[mol_idx]
+            if mol is None:
+                raise ValueError(f"Failed to parse molecule at index {mol_idx} in {path}")
+            from rdkit.Chem import AllChem
+            AllChem.ComputeGasteigerCharges(mol)
+            charges = np.array(
+                [float(mol.GetAtomWithIdx(i).GetPropsAsDict().get('_GasteigerCharge', 0.0))
+                 for i in range(mol.GetNumAtoms())],
+                dtype=np.float32,
+            )
+        else:
+            raise ValueError(f"Unsupported reference_mol format (expected .pkl or .sdf): {path}")
+
+        # Center molecule at origin (required by ShEPhERD)
+        conf = mol.GetConformer()
+        coords = conf.GetPositions()
+        com = coords.mean(axis=0)
+        new_conf = Chem.Conformer(mol.GetNumAtoms())
+        for i, pos in enumerate(coords - com):
+            new_conf.SetAtomPosition(i, pos.tolist())
+        mol.RemoveAllConformers()
+        mol.AddConformer(new_conf, assignId=True)
+
+        centers = mol.GetConformer().GetPositions().astype(np.float32)
+        num_surf = self.task.model.dynamics.params.get('dataset', {}).get('x2', {}).get('num_points', 75)
+
+        from MolecularDiffusion.utils.shepherd_utils import (
+            get_molecular_surface, get_atomic_vdw_radii, get_electrostatics_given_point_charges,
+            get_pharmacophores
+        )
+
+        # --- Surface (x2) + electrostatics (x3) ---
+        radii = get_atomic_vdw_radii(mol)
+        surface = get_molecular_surface(centers, radii, num_points=num_surf, probe_radius=0.6, num_samples_per_atom=20)
+        electrostatics = get_electrostatics_given_point_charges(charges, centers, surface)
+
+        # --- Pharmacophores (x4) ---
+        # Note: check_accessibility=False in original tasks_generate.py
+        pharm_types, pharm_pos, pharm_direction = get_pharmacophores(mol, multi_vector=False)
+
+        logger.info(
+            f"Loaded reference mol [{mol_idx}] from {path}: "
+            f"{mol.GetNumAtoms()} atoms, {len(pharm_types)} pharmacophores"
+        )
+
+        return dict(
+            mol=mol,
+            charges=charges,
+            surface=surface,
+            electrostatics=electrostatics,
+            center_of_mass=np.zeros(3, dtype=np.float32),
+            pharm_types=pharm_types,
+            pharm_pos=pharm_pos,
+            pharm_direction=pharm_direction,
+        )
+
+    def _get_scaffold_inds(self, mol):
+        """
+        Return (atom_inds_to_inpaint, exit_vector_atom_inds) for inpainting.
+
+        Uses scaffold_smarts if provided; otherwise keeps all ring atoms.
+        """
+        from rdkit import Chem
+        if self.scaffold_smarts:
+            pattern = Chem.MolFromSmarts(self.scaffold_smarts)
+            matches = mol.GetSubstructMatches(pattern)
+            if not matches:
+                raise ValueError(f"scaffold_smarts '{self.scaffold_smarts}' had no match in reference mol")
+            scaffold_set = set(matches[0])
+        else:
+            # Default: keep all ring atoms
+            scaffold_set = set(idx for ring in mol.GetRingInfo().AtomRings() for idx in ring)
+            if not scaffold_set:
+                raise ValueError("No ring atoms found and scaffold_smarts not provided")
+
+        atom_inds_to_inpaint = sorted(scaffold_set)
+        exit_vector_atom_inds = [
+            i for i in atom_inds_to_inpaint
+            if any(n.GetIdx() not in scaffold_set for n in mol.GetAtomWithIdx(i).GetNeighbors())
+        ]
+        # If every scaffold atom is an exit vector there are no interior scaffold atoms,
+        # which causes an indexing error in the sampler bond inpainting code.
+        # In that case treat them all as interior (pass no exit vectors).
+        if set(exit_vector_atom_inds) == set(atom_inds_to_inpaint):
+            exit_vector_atom_inds = []
+        return atom_inds_to_inpaint, exit_vector_atom_inds
+
+    def run(self):
+        from MolecularDiffusion.utils.geom_utils import save_shepherd_outputs
+        torch.manual_seed(self.seed)
+        os.makedirs(self.output_path, exist_ok=True)
+
+        num_rounds = self.num_generate // self.batch_size
+        if self.num_generate % self.batch_size:
+            num_rounds += 1
+
+        idx_offset = 0
+        for i in tqdm(range(num_rounds), desc=f"PharmacophoreConditionGenerator [{self.task_type}]"):
+            bs = self.batch_size
+            if i == num_rounds - 1 and self.num_generate % self.batch_size:
+                bs = self.num_generate % self.batch_size
+            try:
+                structures = self._generate_batch(bs)
+                save_shepherd_outputs(self.output_path, structures, idx_offset=idx_offset, save_modalities=self.save_modalities)
+                idx_offset += len(structures)
+            except Exception as e:
+                logger.warning(f"[Batch {i}] Generation failed: {e}")
+
+        logger.info(f"Generated {idx_offset} structures → {self.output_path}")
+
+    def _sample_N_x1(self) -> int:
+        """Return N_x1 for one batch.
+        [N]       -> always N
+        [N1, N2]  -> sample in [N1, N2] via uniform or normal distribution
+        """
+        import numpy as np
+        if len(self.N_x1) == 1:
+            return self.N_x1[0]
+        n1, n2 = self.N_x1[0], self.N_x1[1]
+        if self.N_x1_sampling == "uniform":
+            return int(np.random.randint(n1, n2 + 1))
+        else:  # normal
+            mean = (n1 + n2) / 2
+            std = (n2 - n1) / 4
+            val = int(round(np.random.normal(mean, std)))
+            return int(np.clip(val, n1, n2))
+
+    def _sample_N_x4(self, N_x1: int) -> int:
+        """Sample N_x4 from P(N_x4 | N_x1) when N_x4==0 was specified."""
+        import numpy as np
+        row = self._nx4_dist[N_x1, :]
+        if row.sum() > 0:
+            prob = row / row.sum()
+        else:
+            prob = self._nx4_dist.sum(axis=0)
+            prob = prob / prob.sum()
+        return int(np.random.multinomial(1, pvals=prob).argmax())
+
+    def _generate_batch(self, batch_size: int) -> list:
+        from MolecularDiffusion.modules.models.shepherd_arch.inference import (
+            generate, generate_from_intermediate_time,
+        )
+        r = self._ref  # shorthand; None for unconditional
+
+        # Filter the generated profiles based on toggles and the model's capabilities
+        if hasattr(self.task, 'model') and hasattr(self.task.model, 'dynamics'):
+            p = self.task.model.dynamics.params
+            if not hasattr(self, '_original_vars'):
+                self._original_vars = list(p.get('explicit_diffusion_variables', ['x1', 'x2', 'x3', 'x4']))
+            
+            new_vars = []
+            if self.compute_x1 and 'x1' in self._original_vars: new_vars.append('x1')
+            if self.compute_x2 and 'x2' in self._original_vars: new_vars.append('x2')
+            if self.compute_x3 and 'x3' in self._original_vars: new_vars.append('x3')
+            if self.compute_x4 and 'x4' in self._original_vars: new_vars.append('x4')
+            p['explicit_diffusion_variables'] = new_vars
+
+        N_x1 = self._sample_N_x1()
+
+        if self.task_type == "unconditional":
+            N_x4 = self._sample_N_x4(N_x1) if self._nx4_dist is not None else self.N_x4
+            return generate(
+                model_pl=self.task.model,
+                batch_size=batch_size,
+                N_x1=N_x1,
+                N_x4=N_x4,
+                unconditional=True,
+                prior_noise_scale=self.prior_noise_scale,
+                denoising_noise_scale=self.denoising_noise_scale,
+                num_steps=self.num_steps,
+                verbose=self.verbose,
+            )
+
+        elif self.task_type == "pharmacophore_condition":
+            return generate(
+                model_pl=self.task.model,
+                batch_size=batch_size,
+                N_x1=N_x1,
+                N_x4=len(r['pharm_types']),
+                unconditional=False,
+                inpaint_x4_pos=True,
+                inpaint_x4_direction=True,
+                inpaint_x4_type=True,
+                pharm_types=r['pharm_types'],
+                pharm_pos=r['pharm_pos'],
+                pharm_direction=r['pharm_direction'],
+                surface=r['surface'],
+                electrostatics=r['electrostatics'],
+                center_of_mass=r['center_of_mass'],
+                prior_noise_scale=self.prior_noise_scale,
+                denoising_noise_scale=self.denoising_noise_scale,
+                num_steps=self.num_steps,
+                verbose=self.verbose,
+            )
+
+        elif self.task_type == "shape_conditioned":
+            return generate(
+                model_pl=self.task.model,
+                batch_size=batch_size,
+                N_x1=N_x1,
+                N_x4=self.N_x4,
+                unconditional=False,
+                inpaint_x2_pos=True,
+                inpaint_x3_pos=True,
+                inpaint_x3_x=True,
+                surface=r['surface'],
+                electrostatics=r['electrostatics'],
+                center_of_mass=r['center_of_mass'],
+                prior_noise_scale=self.prior_noise_scale,
+                denoising_noise_scale=self.denoising_noise_scale,
+                num_steps=self.num_steps,
+                verbose=self.verbose,
+            )
+
+        elif self.task_type == "pharmacophore_inpaint":
+            atom_inds, exit_inds = self._get_scaffold_inds(r['mol'])
+            return generate(
+                model_pl=self.task.model,
+                batch_size=batch_size,
+                N_x1=N_x1,
+                N_x4=len(r['pharm_types']),
+                unconditional=False,
+                inpaint_x1_pos=self.inpaint_x1_pos,
+                inpaint_x1_x=self.inpaint_x1_x,
+                inpaint_x1_bonds=self.inpaint_x1_bonds,
+                inpaint_x4_pos=True,
+                inpaint_x4_direction=True,
+                inpaint_x4_type=True,
+                stop_inpainting_at_time_x1_pos=self.stop_inpainting_at_time_x1_pos,
+                stop_inpainting_at_time_x1_x=self.stop_inpainting_at_time_x1_x,
+                stop_inpainting_at_time_x1_bonds=self.stop_inpainting_at_time_x1_bonds,
+                stop_inpainting_at_time_x4=self.stop_inpainting_at_time_x4,
+                mol=r['mol'],
+                atom_inds_to_inpaint=atom_inds,
+                exit_vector_atom_inds=exit_inds,
+                pharm_types=r['pharm_types'],
+                pharm_pos=r['pharm_pos'],
+                pharm_direction=r['pharm_direction'],
+                surface=r['surface'],
+                electrostatics=r['electrostatics'],
+                center_of_mass=r['center_of_mass'],
+                prior_noise_scale=self.prior_noise_scale,
+                denoising_noise_scale=self.denoising_noise_scale,
+                num_steps=self.num_steps,
+                verbose=self.verbose,
+            )
+
+        elif self.task_type == "from_intermediate_time":
+            atom_inds, exit_inds = self._get_scaffold_inds(r['mol'])
+            return generate_from_intermediate_time(
+                model_pl=self.task.model,
+                batch_size=batch_size,
+                start_time=self.start_time,
+                N_x1=max(N_x1, r['mol'].GetNumAtoms()),
+                N_x4=len(r['pharm_types']),
+                mol=r['mol'],
+                atom_inds_to_inpaint=atom_inds,
+                exit_vector_atom_inds=exit_inds,
+                inpaint_x1_bonds=self.inpaint_x1_bonds,
+                pharm_types=r['pharm_types'],
+                pharm_pos=r['pharm_pos'],
+                pharm_direction=r['pharm_direction'],
+                surface=r['surface'],
+                electrostatics=r['electrostatics'],
+                center_of_mass=r['center_of_mass'],
+                stop_inpainting_at_time_x1_pos=self.stop_inpainting_at_time_x1_pos,
+                stop_inpainting_at_time_x1_x=self.stop_inpainting_at_time_x1_x,
+                stop_inpainting_at_time_x1_bonds=self.stop_inpainting_at_time_x1_bonds,
+                denoising_noise_scale=self.denoising_noise_scale,
+                num_steps=self.num_steps,
+                verbose=self.verbose,
+            )
+
+        else:
+            raise ValueError(f"Unknown task_type for PharmacophoreConditionGenerator: {self.task_type}")

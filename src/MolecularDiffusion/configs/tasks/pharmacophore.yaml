@@ -1,0 +1,227 @@
+_target_: MolecularDiffusion.modules.tasks.pharmacophore.PharmacophoreGenerative
+task_type: diffusion_pharmacophore
+
+# === Model Loading ===
+# Set checkpoint_path to load pretrained weights, or null to train from scratch
+checkpoint_path: null
+
+# === Loss Configuration ===
+loss_type: "mse"
+
+# === Modality Weights ===
+modality_weights:
+  x1: 1.0
+  x2: 1.0
+  x3: 1.0
+  x4: 1.0
+
+# === ShEPhERD Model Architecture ===
+# From shepherd/training/parameters/params_x1x3x4_diffusion_mosesaq_20240824.py
+model_params:
+  data: "MOSES_aq"
+  use_ema: false
+  x1_bond_diffusion: true
+  x1_formal_charge_diffusion: true
+
+  explicit_diffusion_variables: ["x1", "x3", "x4"]
+  exclude_variables_from_decoder_heterogeneous_graph: []
+
+  # Atom/bond/charge type definitions
+  atom_types: [null, "H", "C", "N", "O", "F", "Cl", "Br", "I", "S", "P", "Si"]
+  num_atom_types: 12
+  bond_types: [null, "SINGLE", "DOUBLE", "TRIPLE", "AROMATIC"]
+  num_bond_types: 5
+  charge_types: [0, 1, 2, -1, -2]
+  num_charge_types: 5
+  num_pharmacophore_types: 10
+  num_channels: 64
+
+  # Global model hyperparams (shared SO3 grid)
+  lmax_list: [1]
+  mmax_list: [1]
+  ffn_hidden_channels: 32
+  grid_resolution: 16
+
+  # Heterogeneous graph encoder (joint across modalities)
+  decoder_heterogeneous_graph_encoder:
+    use: true
+    num_layers: 2
+    input_sphere_channels: 64
+    sphere_channels: 64
+    attn_hidden_channels: 24
+    num_heads: 2
+    attn_alpha_channels: 24
+    attn_value_channels: 24
+    ffn_hidden_channels: 32
+    lmax_list: [1]
+    mmax_list: [1]
+    grid_resolution: 16
+    cutoff: 5.0
+    max_neighbors: 1000000
+    num_sphere_samples: 128
+    edge_channels: 128
+
+  # --- x1: Molecular structure (atoms + bonds + charges) ---
+  x1:
+    decoder:
+      input_node_channels: 17  # num_atom_types(12) + num_charge_types(5)
+      node_channels: 64
+      time_embedding_size: 32
+      force_edges_to_virtual_nodes: true
+      encoder:
+        fully_connected: true
+        num_layers: 4
+        input_sphere_channels: 64
+        sphere_channels: 64
+        input_bond_channels: 5   # num_bond_types
+        edge_attr_channels: 64
+        attn_hidden_channels: 32
+        num_heads: 4
+        attn_alpha_channels: 32
+        attn_value_channels: 32
+        ffn_hidden_channels: 64
+        lmax_list: [1]
+        mmax_list: [1]
+        grid_resolution: 16
+        cutoff: 5.0
+        max_neighbors: 1000000
+        num_sphere_samples: 128
+        edge_channels: 128
+      denoiser:
+        output_node_channels: 17  # must equal input_node_channels
+        output_bond_channels: 5   # must equal num_bond_types
+        MLP_hidden_dim: 64
+        num_MLP_hidden_layers: 2
+        use_e3nn: true
+        e3nn:
+          lmax_list: [1]
+          mmax_list: [1]
+          ffn_hidden_channels: 32
+          grid_resolution: 16
+        use_egnn_positions_update: true
+        egnn:
+          normalize_egnn_vectors: true
+          distance_expansion_dim: 32
+          num_MLP_hidden_layers: 2
+          MLP_hidden_dim: 64
+
+  # --- x2: Shape (point cloud) - not trained in x1x3x4 config ---
+  x2:
+    decoder:
+      input_node_channels: 2
+      node_channels: 64
+      time_embedding_size: 32
+      force_edges_to_virtual_nodes: true
+      encoder:
+        num_layers: 2
+        input_sphere_channels: 64
+        sphere_channels: 64
+        attn_hidden_channels: 24
+        num_heads: 2
+        attn_alpha_channels: 24
+        attn_value_channels: 24
+        ffn_hidden_channels: 32
+        lmax_list: [1]
+        mmax_list: [1]
+        grid_resolution: 16
+        cutoff: 5.0
+        max_neighbors: 1000000
+        num_sphere_samples: 128
+        edge_channels: 128
+      denoiser:
+        output_node_channels: 64
+        use_e3nn: true
+        e3nn:
+          lmax_list: [1]
+          mmax_list: [1]
+          ffn_hidden_channels: 32
+          grid_resolution: 16
+        use_egnn_positions_update: false
+        egnn:
+          normalize_egnn_vectors: true
+          distance_expansion_dim: 32
+          num_MLP_hidden_layers: 2
+          MLP_hidden_dim: 64
+
+  # --- x3: Electrostatics (point cloud + potential) ---
+  x3:
+    decoder:
+      scalar_expansion_min: -10.0
+      scalar_expansion_max: 10.0
+      input_node_channels: 64
+      node_channels: 64
+      time_embedding_size: 32
+      force_edges_to_virtual_nodes: true
+      encoder:
+        num_layers: 2
+        input_sphere_channels: 64
+        sphere_channels: 64
+        attn_hidden_channels: 24
+        num_heads: 2
+        attn_alpha_channels: 24
+        attn_value_channels: 24
+        ffn_hidden_channels: 32
+        lmax_list: [1]
+        mmax_list: [1]
+        grid_resolution: 16
+        cutoff: 5.0
+        max_neighbors: 1000000
+        num_sphere_samples: 128
+        edge_channels: 128
+      denoiser:
+        output_node_channels: 1
+        MLP_hidden_dim: 64
+        num_MLP_hidden_layers: 2
+        use_e3nn: true
+        e3nn:
+          lmax_list: [1]
+          mmax_list: [1]
+          ffn_hidden_channels: 32
+          grid_resolution: 16
+        use_egnn_positions_update: false
+        egnn:
+          normalize_egnn_vectors: true
+          distance_expansion_dim: 32
+          num_MLP_hidden_layers: 2
+          MLP_hidden_dim: 64
+
+  # --- x4: Pharmacophores (points + directions) ---
+  x4:
+    decoder:
+      input_node_channels: 10  # num_pharmacophore_types
+      node_channels: 64
+      time_embedding_size: 32
+      force_edges_to_virtual_nodes: true
+      encoder:
+        num_layers: 2
+        input_sphere_channels: 64
+        sphere_channels: 64
+        attn_hidden_channels: 24
+        num_heads: 2
+        attn_alpha_channels: 24
+        attn_value_channels: 24
+        ffn_hidden_channels: 32
+        lmax_list: [1]
+        mmax_list: [1]
+        grid_resolution: 16
+        cutoff: 5.0
+        max_neighbors: 1000000
+        num_sphere_samples: 128
+        edge_channels: 128
+      denoiser:
+        output_node_channels: 10  # must equal input_node_channels
+        MLP_hidden_dim: 64
+        num_MLP_hidden_layers: 2
+        use_e3nn: true
+        e3nn:
+          lmax_list: [1]
+          mmax_list: [1]
+          ffn_hidden_channels: 32
+          grid_resolution: 16
+        use_egnn_positions_update: false
+        egnn:
+          normalize_egnn_vectors: true
+          distance_expansion_dim: 32
+          num_MLP_hidden_layers: 2
+          MLP_hidden_dim: 64
+

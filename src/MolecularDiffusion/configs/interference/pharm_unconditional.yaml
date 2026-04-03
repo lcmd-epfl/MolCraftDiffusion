@@ -1,0 +1,18 @@
+_target_: MolecularDiffusion.runmodes.generate.tasks_generate.PharmacophoreConditionGenerator
+task_type: unconditional
+num_generate: 100
+batch_size: 1
+N_x1: 20         # number of atoms to generate
+N_x4: 5          # number of pharmacophores to generate
+num_steps: 400
+prior_noise_scale: 1.0
+denoising_noise_scale: 1.0
+seed: 42
+verbose: true
+output_path: generated_pharm_unconditional
+
+# --- Modality Generation Toggles ---
+compute_x1: true
+compute_x2: true
+compute_x3: true
+compute_x4: true

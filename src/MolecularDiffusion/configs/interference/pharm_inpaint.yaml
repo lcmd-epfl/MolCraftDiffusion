@@ -1,0 +1,33 @@
+_target_: MolecularDiffusion.runmodes.generate.tasks_generate.PharmacophoreConditionGenerator
+task_type: pharmacophore_inpaint
+num_generate: 10
+batch_size: 1
+N_x1: 23         # total atoms (>= scaffold atoms)
+num_steps: 400
+prior_noise_scale: 1.0
+denoising_noise_scale: 1.0
+seed: 42
+verbose: true
+output_path: generated_pharm_inpaint
+# Path to .pkl (list of (molblock, charges) tuples) or .sdf file.
+# The scaffold is identified from this molecule via scaffold_smarts (or ring atoms if null).
+reference_mol: data/shepherd_data/gdb/molblock_charges_9_test100.pkl
+mol_idx: 0
+# SMARTS pattern for atoms to keep as scaffold.
+# If null, all ring atoms are kept and chains are regenerated.
+scaffold_smarts: null
+# Inpainting flags — control what is regenerated:
+inpaint_x1_pos: true
+inpaint_x1_x: true
+inpaint_x1_bonds: true
+# Stop inpainting at these fractional times (0.0 = keep inpainting until t=0):
+stop_inpainting_at_time_x1_pos: 0.0
+stop_inpainting_at_time_x1_x: 0.0
+stop_inpainting_at_time_x1_bonds: 0.0
+stop_inpainting_at_time_x4: 0.0
+
+# --- Modality Generation Toggles ---
+compute_x1: true
+compute_x2: true
+compute_x3: true
+compute_x4: true

@@ -63,6 +63,18 @@ TASK_REGISTRY: dict[str, TaskEvalConfig] = {
         needs_generative=True,
         split_reset_hook=None,
     ),
+    "diffusion_adit": TaskEvalConfig(
+        higher_is_better=False,
+        metric_key="valid_posebuster",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
+    "diffusion_pharmacophore": TaskEvalConfig(
+        higher_is_better=False,
+        metric_key="valid_posebuster",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
     # --- regression / guidance ------------------------------------------------
     "regression": TaskEvalConfig(
         higher_is_better=False,
@@ -84,13 +96,6 @@ TASK_REGISTRY: dict[str, TaskEvalConfig] = {
         metric_key="match_rate",
         needs_generative=False,
         split_reset_hook="on_validation_epoch_start",
-    ),
-    # --- LDM ------------------------------------------------------------------
-    "diffusion_adit": TaskEvalConfig(
-        higher_is_better=False,
-        metric_key="valid_posebuster",
-        needs_generative=True,
-        split_reset_hook=None,
     ),
 }
 

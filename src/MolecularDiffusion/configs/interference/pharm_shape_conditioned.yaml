@@ -1,0 +1,22 @@
+_target_: MolecularDiffusion.runmodes.generate.tasks_generate.PharmacophoreConditionGenerator
+task_type: shape_conditioned
+num_generate: 100
+batch_size: 1
+N_x1: 23         # atoms to generate
+N_x4: 5          # pharmacophores to generate (not conditioned — sampled from prior)
+num_steps: 400
+prior_noise_scale: 1.0
+denoising_noise_scale: 1.0
+seed: 42
+verbose: true
+output_path: generated_pharm_shape
+# Path to .pkl (list of (molblock, charges) tuples) or .sdf file.
+# Surface and electrostatics are extracted automatically from this molecule.
+reference_mol: data/shepherd_data/gdb/molblock_charges_9_test100.pkl
+mol_idx: 0
+
+# --- Modality Generation Toggles ---
+compute_x1: true
+compute_x2: true
+compute_x3: true
+compute_x4: true

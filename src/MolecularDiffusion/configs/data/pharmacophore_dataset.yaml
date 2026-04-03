@@ -1,0 +1,28 @@
+_target_: MolecularDiffusion.data.component.pharmacophore.PharmacophoreDataModule
+
+# === Data Source ===
+pkl_files:
+  - "data/shepherd_data/gdb/molblock_charges_0.pkl"
+
+root: "data/pharmacophore_cache"
+dataset_name: "pharmacophore_gdb"
+
+# === Data Limit (for testing) ===
+num_samples: null  # null = use all, or set to e.g. 100 for testing
+data_fraction: 1.0
+
+# === Checkpoint (provides noise schedule + dataset params) ===
+# Set to a ShEPhERD .ckpt path to use its noise schedule and dataset config.
+# If null, uses default cosine+linear noise schedule with default dataset params.
+checkpoint_path: null
+
+# === Interaction Profiles ===
+compute_x1: true
+compute_x2: false
+compute_x3: true
+compute_x4: true
+
+# === DataLoader Parameters ===
+batch_size: 32
+num_workers: 0
+train_ratio: 0.8
