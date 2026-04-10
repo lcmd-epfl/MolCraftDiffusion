@@ -1,0 +1,31 @@
+# Tutorial 7: Property-Directed Generation — Classifier-Free Guidance (CFG)
+# Usage: MolCraftDiff generate docs/cfg_examples/gen_cfg
+#
+# Requires a diffusion model fine-tuned with conditioning (context_mask_rate > 0).
+# Set target_values and property_names to match the conditions the model was
+# trained on.
+
+defaults:
+  - tasks: diffusion
+  - interference: gen_cfg
+  - _self_
+
+chkpt_directory: "training_outputs/benchmark/EDM_tlgeom_formed_energyscore/"  # <-- conditioned model
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
+diffusion_steps: 900
+
+interference:
+  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
+  task_type: cfg
+  sampling_mode: "ddpm"
+  num_generate: 100
+  batch_size: 12
+  max_mol_size: 100
+  mol_size: [0, 0]
+  target_values: [3.0, 1.5]      # <-- target value(s) for each property
+  property_names: ["S1_exc", "T1_exc"]  # <-- must match training conditions
+  seed: 86
+  output_path: "${chkpt_directory}/output_cfg"
+
+  condition_configs:
+    cfg_scale: 1.0                # guidance strength — increase for stronger push

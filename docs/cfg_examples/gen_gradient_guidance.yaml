@@ -1,0 +1,39 @@
+# Tutorial 7: Property-Directed Generation — Gradient Guidance (GG)
+# Usage: MolCraftDiff generate docs/cfg_examples/gen_gradient_guidance
+#
+# Uses a trained time-aware guidance model (Tutorial 3) to compute
+# gradients that steer sampling. The base diffusion model does NOT
+# need to be conditioned.
+
+defaults:
+  - tasks: diffusion
+  - interference: gen_gg
+  - _self_
+
+chkpt_directory: "training_outputs/benchmark/EDM_geom/"  # <-- base diffusion model
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
+diffusion_steps: 900
+
+interference:
+  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
+  task_type: gg
+  sampling_mode: "ddpm"
+  num_generate: 100
+  batch_size: 12
+  max_mol_size: 100
+  mol_size: [0, 0]
+  target_values: []
+  property_names: []
+  seed: 86
+  output_path: "${chkpt_directory}/output_gg"
+
+  condition_configs:
+    gg_scale: 1e-3            # gradient scale — increase for stronger guidance
+    max_norm: 0.1             # gradient clipping norm
+    guidance_at: 1            # start guidance at this fraction of diffusion steps
+    guidance_stop: 0          # stop guidance at this fraction
+    n_backwards: 2            # number of backward passes per step
+    target_function:
+      _target_: scripts.gradient_guidance.sf_energy_score.SFEnergyScore
+      _partial_: true
+      chkpt_directory: "training_outputs/EGCL_guidance_my_property/last.ckpt"  # <-- guidance model

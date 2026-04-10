@@ -1,0 +1,68 @@
+# Tutorial 4: Fine-Tuning a Pre-Trained Diffusion Model
+# Usage: MolCraftDiff train docs/cfg_examples/finetune_diffusion
+#
+# Adapts a pre-trained model to a new dataset or adds conditioning.
+# Architecture settings (hidden_size, num_layers, …) MUST match the
+# checkpoint you are loading.
+#
+# Common scenarios:
+#   Scenario 1 – New dataset:  point data.* to your new dataset
+#   Scenario 2 – Add CFG:      set contexts and condition_names,
+#                               and use a conditioned dataset
+
+defaults:
+  - data: mol_dataset
+  - tasks: diffusion
+  - logger: default
+  - trainer: default
+  - engine: original
+  - hydra: default
+  - _self_
+
+name: "EDM_finetune_my_dataset"
+seed: 86
+tags: ["EDM", "finetune"]
+contexts: []                           # <-- set to ["my_property"] for CFG fine-tuning
+
+trainer:
+  load_weights_from: "training_outputs/benchmark/EDM_qm9/edm_chem.pkl"  # <-- pre-trained weights
+  output_path: "training_outputs/benchmark/${name}"
+  num_steps: 300000
+  lr: 0.0001                           # lower LR (e.g. 1e-5) for gentle adaptation
+  init_grad_norm: 3000
+  ema_decay: 0.999
+  validation_interval: 2
+  gradient_clip_algorithm: "adaptive"
+
+logger:
+  project_wandb: "MolCraftDiffusion"
+
+data:
+  data_type: "pointcloud"
+  atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
+  use_ohe_feature: True
+  batch_size: 64
+  root: "data/"
+  max_atom: 86
+  dataset_name: "my_finetune_dataset"  # unique name to avoid cache collision
+  ase_db_path: "data/my_dataset.db"   # <-- path to your ASE database
+  data_efficient_collator: true
+  target_fields: ${contexts}
+
+tasks:
+  # Must match the architecture of the loaded checkpoint
+  hidden_size: 192
+  num_sublayers: 1
+  num_layers: 9
+  condition_names: ${contexts}
+  context_mask_rate: 0.1              # > 0 enables CFG training
+  mask_value: -1
+  generative_analysis: True
+  use_posebuster: True
+  n_samples: 64
+  sp_regularizer_deploy: False
+  sp_regularizer_regularizer: hard
+  sp_regularizer_lambda_: 1000
+  sp_regularizer_lambda_2: 1000
+  sp_regularizer_lambda_update_value: 0.5
+  sp_regularizer_warm_up_steps: 0

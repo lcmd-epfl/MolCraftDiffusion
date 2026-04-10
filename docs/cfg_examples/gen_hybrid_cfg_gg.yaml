@@ -1,0 +1,42 @@
+# Tutorial 7: Property-Directed Generation — Hybrid CFG + Gradient Guidance
+# Usage: MolCraftDiff generate docs/cfg_examples/gen_hybrid_cfg_gg
+#
+# Combines CFG (amplifies the model's conditional distribution) with
+# gradient guidance (uses an external guidance model) for multi-objective
+# property-directed generation.
+
+defaults:
+  - tasks: diffusion
+  - interference: gen_cfggg
+  - _self_
+
+chkpt_directory: "training_outputs/benchmark/EDM_tlgeom_formed_energyscore/"  # <-- conditioned model
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
+diffusion_steps: 900
+
+interference:
+  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
+  task_type: cfggg
+  sampling_mode: "ddpm"
+  num_generate: 100
+  batch_size: 12
+  max_mol_size: 100
+  mol_size: [0, 0]
+  target_values: [3.0, 1.5]      # <-- target value(s) for CFG properties
+  property_names: ["S1_exc", "T1_exc"]  # <-- must match CFG training conditions
+  seed: 86
+  output_path: "${chkpt_directory}/output_cfggg"
+
+  condition_configs:
+    cfg_scale: 1.0              # CFG guidance strength
+
+    # Gradient guidance settings
+    gg_scale: 1e-3
+    max_norm: 0.1
+    guidance_at: 1
+    guidance_stop: 0
+    n_backwards: 2
+    target_function:
+      _target_: scripts.gradient_guidance.sf_energy_score.SFEnergyScore
+      _partial_: true
+      chkpt_directory: "training_outputs/EGCL_guidance_my_property/last.ckpt"  # <-- guidance model
