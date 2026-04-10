@@ -6,6 +6,7 @@ weight_decay: 1e-12
 betas: [0.9, 0.999]
 foreach: False
 num_epochs: 200
+num_steps: null # <- This overrides the num_epochs if specified
 scheduler: cosineannealing # None, steplr, multisteplr, exponentiarlr, cosineannealing, caws, onecyclelr, reducelronplateau        elif sch == "exponentiarlr":
 scheduler_kwargs:
   T_max: ${trainer.num_epochs}

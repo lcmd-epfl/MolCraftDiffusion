@@ -168,7 +168,7 @@ class TransformerModule(nn.Module):
                 coords.shape[0], coords.shape[1], self.hidden_dim
             ).to(coords.device)
 
-        embed_time = self.time_encoding(t).unsqueeze(1)
+        embed_time = self.time_encoding(t).unsqueeze(1).to(coords.device)
 
         assert embed_posenc.shape == embed_coords.shape == embed_atom_types.shape, (
             f"embed_posenc.shape: {embed_posenc.shape}, embed_coords.shape: {embed_coords.shape}, embed_atom_types.shape: {embed_atom_types.shape}"
@@ -189,6 +189,7 @@ class TransformerModule(nn.Module):
                 f"h_in.shape: {h_in.shape}"
             )
         else:
+            
             h_in = embed_coords + embed_atom_types + embed_posenc + embed_time
         h_in = h_in * real_mask.unsqueeze(-1)
 

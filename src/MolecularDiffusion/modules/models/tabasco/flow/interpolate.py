@@ -207,8 +207,8 @@ class DiscreteInterpolant(Interpolant):
         Returns:
             Tensor: One-hot tensor representing the new discrete state.
         """
-        t = t.unsqueeze(-1).unsqueeze(-1)
-        dt = dt.unsqueeze(-1).unsqueeze(-1)
+        t = t.unsqueeze(-1).unsqueeze(-1).to(batch_t[self.key].device)
+        dt = dt.unsqueeze(-1).unsqueeze(-1).to(batch_t[self.key].device)
         assert dt.shape == t.shape == (batch_t[self.key].shape[0], 1, 1), (
             f"t shape: {t.shape}, dt shape: {dt.shape}, batch_t shape: {batch_t[self.key].shape}"
         )
@@ -385,8 +385,8 @@ class SDEMetricInterpolant(CenteredMetricInterpolant):
     def step(self, batch_t: TensorDict, pred: TensorDict, t: Tensor, dt: float):
         """Forward Euler integration step with score components and white noise injection."""
 
-        t = t.unsqueeze(-1).unsqueeze(-1)
-        dt = dt.unsqueeze(-1).unsqueeze(-1)
+        t = t.unsqueeze(-1).unsqueeze(-1).to(batch_t[self.key].device)
+        dt = dt.unsqueeze(-1).unsqueeze(-1).to(batch_t[self.key].device)
         assert dt.shape == t.shape == (batch_t[self.key].shape[0], 1, 1), (
             f"t shape: {t.shape}, dt shape: {dt.shape}, batch_t shape: {batch_t[self.key].shape}"
         )
