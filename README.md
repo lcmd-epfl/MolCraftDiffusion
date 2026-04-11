@@ -22,7 +22,7 @@ MolCraftDiffusion provides a complete pipeline for training/fine-tuning diffusio
 
 [![PyPI](https://img.shields.io/pypi/v/molcraftdiffusion)](https://pypi.org/project/molcraftdiffusion/)
 [![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18121166.svg)](https://zenodo.org/records/18121166)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19511401.svg)](https://doi.org/10.5281/zenodo.19511401)
 [![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
 [![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
 [![Tutorials](https://img.shields.io/badge/Tutorials-Docs-blue)](https://preghosh.github.io/MolCraftDiffusion/)
