@@ -1,0 +1,307 @@
+MolecularDiffusion.runmodes.generate.tasks_generate
+===================================================
+
+.. py:module:: MolecularDiffusion.runmodes.generate.tasks_generate
+
+
+Attributes
+----------
+
+.. autoapisummary::
+
+   MolecularDiffusion.runmodes.generate.tasks_generate.logger
+
+
+Classes
+-------
+
+.. autoapisummary::
+
+   MolecularDiffusion.runmodes.generate.tasks_generate.GenerativeFactory
+   MolecularDiffusion.runmodes.generate.tasks_generate.PharmacophoreConditionGenerator
+
+
+Module Contents
+---------------
+
+.. py:class:: GenerativeFactory(task: MolecularDiffusion.modules.tasks.task.Task, task_type: str = 'unconditional', sampling_mode: str = 'ddpm', num_generate: int = 100, mol_size: List[int] = [0, 0], target_values: List[float] = [], property_names: List[str] = [], negative_target_values: List[float] = [], batch_size: int = 1, seed: int = 86, n_frames: int = 0, output_path: str = 'generated_mol', condition_configs={}, max_mol_size: int = 0)
+
+   .. py:method:: conditional_generation()
+
+
+   .. py:method:: hybrid_guidance()
+
+
+   .. py:method:: preprocess_ref_structure(device)
+
+      Load and preprocess a reference molecular structure from an XYZ file.
+
+      This function reads an XYZ file, encodes atomic features, normalizes
+      coordinates and features, and returns a tensor combining positions
+      and processed features.  When the model uses extra node features
+      (ndim_extra > 0), they are either computed from the reference
+      structure or zero-padded.
+
+      :returns:
+
+                Tensor of shape (1, n_atoms, 3 + n_features + ndim_extra + 1)
+                            containing [normalized_coords | normalized_onehot | normalized_extra | normalized_charges].
+      :rtype: torch.Tensor
+
+      :raises FileNotFoundError: If the reference structure file is not found.
+      :raises ValueError: If the processed reference structure is empty.
+
+
+
+   .. py:method:: property_guidance()
+
+
+   .. py:method:: property_prediction(xh: torch.Tensor, t: int)
+
+
+   .. py:method:: run()
+
+
+   .. py:method:: structural_guidance()
+
+
+   .. py:method:: unconditional_generation()
+
+
+   .. py:attribute:: batch_size
+      :value: 1
+
+
+
+   .. py:attribute:: condition_configs
+
+
+   .. py:attribute:: max_mol_size
+      :value: 0
+
+
+
+   .. py:attribute:: mol_size
+      :value: [0, 0]
+
+
+
+   .. py:attribute:: n_frames
+      :value: 0
+
+
+
+   .. py:attribute:: negative_target_values
+      :value: []
+
+
+
+   .. py:attribute:: num_generate
+      :value: 100
+
+
+
+   .. py:attribute:: output_path
+      :value: 'generated_mol'
+
+
+
+   .. py:attribute:: property_names
+      :value: []
+
+
+
+   .. py:attribute:: sampling_mode
+      :value: 'ddpm'
+
+
+
+   .. py:attribute:: seed
+      :value: 86
+
+
+
+   .. py:attribute:: target_values
+      :value: []
+
+
+
+   .. py:attribute:: task
+
+
+   .. py:attribute:: task_type
+      :value: 'unconditional'
+
+
+
+.. py:class:: PharmacophoreConditionGenerator(task, task_type: str = 'pharmacophore_condition', num_generate: int = 10, batch_size: int = 1, N_x1: list = [20], N_x4: int = 5, N_x1_sampling: str = 'uniform', distributions_path: str = None, distributions_key: str = 'gdb', num_steps: int = 400, prior_noise_scale: float = 1.0, denoising_noise_scale: float = 1.0, output_path: str = 'generated_pharmacophore', seed: int = 42, verbose: bool = True, reference_mol: str = None, mol_idx: int = 0, scaffold_smarts: str = None, inpaint_x1_pos: bool = True, inpaint_x1_x: bool = True, inpaint_x1_bonds: bool = True, stop_inpainting_at_time_x1_pos: float = 0.0, stop_inpainting_at_time_x1_x: float = 0.0, stop_inpainting_at_time_x1_bonds: float = 0.0, stop_inpainting_at_time_x4: float = 0.0, save_modalities: bool = False, compute_x1: bool = True, compute_x2: bool = True, compute_x3: bool = True, compute_x4: bool = True, start_time: float = 0.5, condition_configs: dict = {})
+
+   Entry point for all ShEPhERD pharmacophore generation modes.
+
+   task_type selects the generation mode:
+     - unconditional          : joint x1/x2/x3/x4 from pure noise
+     - pharmacophore_condition: condition on pharmacophores extracted from reference_mol
+     - shape_conditioned      : condition on surface + electrostatics from reference_mol
+     - pharmacophore_inpaint  : scaffold inpainting — keep scaffold_smarts atoms, regenerate rest
+     - from_intermediate_time : soft scaffold hopping starting from a noisy intermediate
+
+   For all conditional modes, provide:
+     reference_mol : path to .pkl (list of (molblock, charges) tuples) or .sdf file
+     mol_idx       : which molecule to use from the file (default 0)
+
+   For pharmacophore_inpaint:
+     scaffold_smarts: SMARTS pattern selecting atoms to keep (e.g. 'c1ccccc1')
+                      If null, keeps all ring atoms and regenerates chains.
+
+
+   .. py:method:: run()
+
+
+   .. py:attribute:: N_x1
+      :value: [20]
+
+
+
+   .. py:attribute:: N_x1_sampling
+      :value: 'uniform'
+
+
+
+   .. py:attribute:: N_x4
+      :value: 5
+
+
+
+   .. py:attribute:: batch_size
+      :value: 1
+
+
+
+   .. py:attribute:: compute_x1
+      :value: True
+
+
+
+   .. py:attribute:: compute_x2
+      :value: True
+
+
+
+   .. py:attribute:: compute_x3
+      :value: True
+
+
+
+   .. py:attribute:: compute_x4
+      :value: True
+
+
+
+   .. py:attribute:: condition_configs
+
+
+   .. py:attribute:: denoising_noise_scale
+      :value: 1.0
+
+
+
+   .. py:attribute:: inpaint_x1_bonds
+      :value: True
+
+
+
+   .. py:attribute:: inpaint_x1_pos
+      :value: True
+
+
+
+   .. py:attribute:: inpaint_x1_x
+      :value: True
+
+
+
+   .. py:attribute:: mol_idx
+      :value: 0
+
+
+
+   .. py:attribute:: num_generate
+      :value: 10
+
+
+
+   .. py:attribute:: num_steps
+      :value: 400
+
+
+
+   .. py:attribute:: output_path
+      :value: 'generated_pharmacophore'
+
+
+
+   .. py:attribute:: prior_noise_scale
+      :value: 1.0
+
+
+
+   .. py:attribute:: reference_mol
+      :value: None
+
+
+
+   .. py:attribute:: save_modalities
+      :value: False
+
+
+
+   .. py:attribute:: scaffold_smarts
+      :value: None
+
+
+
+   .. py:attribute:: seed
+      :value: 42
+
+
+
+   .. py:attribute:: start_time
+      :value: 0.5
+
+
+
+   .. py:attribute:: stop_inpainting_at_time_x1_bonds
+      :value: 0.0
+
+
+
+   .. py:attribute:: stop_inpainting_at_time_x1_pos
+      :value: 0.0
+
+
+
+   .. py:attribute:: stop_inpainting_at_time_x1_x
+      :value: 0.0
+
+
+
+   .. py:attribute:: stop_inpainting_at_time_x4
+      :value: 0.0
+
+
+
+   .. py:attribute:: task
+
+
+   .. py:attribute:: task_type
+      :value: 'pharmacophore_condition'
+
+
+
+   .. py:attribute:: verbose
+      :value: True
+
+
+
+.. py:data:: logger
+
