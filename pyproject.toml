@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molcraftdiffusion"
-version = "1.1.0"
+version = "1.2.0"
 description = "A unified generative AI framework for 3D molecular generation using diffusion models"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -47,6 +47,13 @@ dependencies = [
     "rootutils",
     "psutil",
     "mendeleev",
+    "e3nn",
+    "torchmetrics",
+    "lmdb",
+    "open3d",
+    "biotite",
+    "datamol",
+    "posecheck",
 ]
 
 [project.optional-dependencies]
@@ -69,6 +76,10 @@ cpu = [
     "torchvision==0.21.0",
     "torchaudio==2.6.0",
     "torch_geometric",
+    "torch_scatter",
+    "torch_sparse",
+    "torch_cluster",
+    "torch_spline_conv",
 ]
 dev = [
     "pytest>=7.0.0",
