@@ -870,7 +870,6 @@ class Engine(core.Configurable):
                     
             torch.save(state, checkpoint)
 
-    @classmethod
     def load_config_dict(cls, config):
         """
         Construct an instance from the configuration dict.
@@ -881,15 +880,16 @@ class Engine(core.Configurable):
                 % (cls.__name__, config["class"])
             )
 
+        _metadata_keys = {"class", "task_type", "condition_names"}
         new_config = {}
         for k, v in config.items():
             if isinstance(v, dict) and "class" in v:
                 v = core.Configurable.load_config_dict(v)
-            if k != "class":
+            if k not in _metadata_keys:
                 new_config[k] = v
-                
-        return cls(**new_config)
 
+        return cls(**new_config)
+    
     @property
     def epoch(self):
         """Current epoch."""

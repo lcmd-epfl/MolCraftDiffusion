@@ -197,6 +197,7 @@ def size_cmd(input, output, s_start, t_start, s_end, t_end, strength, decay, inv
     )
 
 
+
 # --- ASE Operations Commands ---
 
 @data.group("ase-ops")
@@ -208,9 +209,10 @@ def ase_ops_group():
 @click.option("--input", "-i", "--inp", required=True, type=click.Path(exists=True), help="Input directory containing DBs")
 @click.option("--output", "-o", "--out", required=True, type=click.Path(), help="Output merged DB path")
 @click.option("--recursive", "-r", "--rec", is_flag=True, help="Search recursively")
-def merge_cmd(input, output, recursive):
+@click.option("--verify/--no-verify", default=True, help="Verify atom order matches RDKit")
+def merge_cmd(input, output, recursive, verify):
     """Merge multiple ASE databases."""
-    ase_ops.merge_dbs(Path(input), Path(output), recursive=recursive)
+    ase_ops.merge_dbs(Path(input), Path(output), recursive=recursive, verify=verify)
 
 @ase_ops_group.command("inspect")
 @click.option("--db", "-d", required=True, type=click.Path(exists=True), help="ASE DB path")
@@ -218,9 +220,35 @@ def merge_cmd(input, output, recursive):
 @click.option("--keys", "-k", cls=VariadicOption, multiple=True, help="Specific keys to plot")
 @click.option("--sample-size", "-s", default=5000, show_default=True, help="Number of entries to sample for stats/plots")
 @click.option("--limit", "-l", "--lim", default=10, show_default=True, help="Number of entries to print/sample for keys")
-def inspect_cmd(db, output, keys, sample_size, limit):
+@click.option("--check-nan", is_flag=True, help="Identify rows with NaN values")
+@click.option("--nan-key", help="Specific key to check for NaNs")
+@click.option("--discard-nan", is_flag=True, help="Discard rows with NaNs (requires --clean-db for saving)")
+@click.option("--detect-outliers", is_flag=True, help="Detect and report outliers in numeric keys")
+@click.option("--outlier-threshold", default=3.0, show_default=True, help="Z-score threshold for outlier detection")
+@click.option("--discard-outliers", is_flag=True, help="Discard rows with outliers (requires --clean-db for saving)")
+@click.option("--outlier-key", help="Specific key to check for outliers")
+@click.option("--clean-db", type=click.Path(), help="Path to save cleaned database (if --discard-nan or --discard-outliers is used)")
+def inspect_cmd(db, output, keys, sample_size, limit, check_nan, nan_key, discard_nan, detect_outliers, outlier_threshold, discard_outliers, outlier_key, clean_db):
     """Inspect an ASE database and optionally plot statistics."""
-    ase_ops.inspect_db(Path(db), output_dir=Path(output) if output else None, keys_to_plot=list(keys), sample_size=sample_size, limit_print=limit)
+    db_path = Path(db)
+    if (discard_nan or discard_outliers) and not clean_db:
+        clean_db = db_path.parent / f"{db_path.stem}_cleaned.db"
+        
+    ase_ops.inspect_db(
+        db_path, 
+        output_dir=Path(output) if output else None, 
+        keys_to_plot=list(keys), 
+        sample_size=sample_size, 
+        limit_print=limit,
+        check_nan=check_nan,
+        nan_key=nan_key,
+        discard_nan=discard_nan,
+        detect_outliers=detect_outliers,
+        outlier_threshold=outlier_threshold,
+        discard_outliers=discard_outliers,
+        outlier_key=outlier_key,
+        clean_db_path=Path(clean_db) if clean_db else None
+    )
 
 
 @ase_ops_group.command("split")

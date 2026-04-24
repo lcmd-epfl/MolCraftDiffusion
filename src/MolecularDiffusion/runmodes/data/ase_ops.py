@@ -277,10 +277,19 @@ def inspect_db(
     output_dir: Path = None, 
     keys_to_plot: List[str] = None, 
     sample_size: int = 5000,
-    limit_print: int = 10
+    limit_print: int = 10,
+    check_nan: bool = False,
+    nan_key: str = None,
+    discard_nan: bool = False,
+    detect_outliers: bool = False,
+    outlier_threshold: float = 3.0,
+    discard_outliers: bool = False,
+    outlier_key: str = None,
+    clean_db_path: Path = None
 ):
     """
     Inspects an ASE DB, printing stats and optionally plotting distributions.
+    Allows identifying NaNs and outliers, and optionally saving a cleaned DB.
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -299,20 +308,11 @@ def inspect_db(
     for rid in sample_ids:
         row = db.get(rid)
         keys.update(row.key_value_pairs.keys())
-        # Also check data
         keys.update(row.data.keys())
     logger.info(f"Available Keys (sampled {min(n_rows, limit_print)}): {keys}")
 
-    if not output_dir:
-        return
-
-    # Full inspection with plots
-    output_dir = Path(output_dir)
-    output_dir.mkdir(exist_ok=True)
-    
-    # Determine keys to plot
-    if not keys_to_plot:
-        # Discovery
+    # Discovery logic if keys_to_plot is empty
+    if not keys_to_plot and (output_dir or detect_outliers or (check_nan and not nan_key) or (discard_outliers and not outlier_key)):
         sample_ids = random.sample(range(1, n_rows + 1), min(n_rows, sample_size))
         discovered = set()
         for rid in sample_ids:
@@ -321,12 +321,10 @@ def inspect_db(
                 if isinstance(v, (int, float, np.number)): discovered.add(k)
             for k, v in row.key_value_pairs.items():
                 if isinstance(v, (int, float, np.number)): discovered.add(k)
-            # Check attributes
             if hasattr(row, 'natoms'): discovered.add('natoms')
-            # ... check other attrs ...
         keys_to_plot = sorted(list(discovered))
         logger.info(f"Discovered numeric keys: {keys_to_plot}")
-    else:
+    elif keys_to_plot:
         # Process specified keys (handle strings/commas/tuples from CLI)
         if not isinstance(keys_to_plot, (list, tuple)):
             keys_to_plot = [keys_to_plot]
@@ -340,34 +338,41 @@ def inspect_db(
                     final_keys.append(k)
                 continue
             
-            # String handling: strip wrapping junk and split by comma
             k = k.strip("'\"()[] ")
             if ',' in k:
                 final_keys.extend([ki.strip("'\"()[] ") for ki in k.split(',')])
             elif k:
                 final_keys.append(k)
-                
         keys_to_plot = final_keys
-            
-    # Always include mandatory keys
-    for k in ['natoms', 'mol_weight', 'num_heteroatoms']:
-        if k not in keys_to_plot:
-            keys_to_plot.append(k)
-            logger.info(f"Added mandatory '{k}' to keys to plot.")
 
     # Data Collection
     ids_to_fetch = random.sample(range(1, n_rows + 1), min(n_rows, sample_size))
-    logger.info(f"Final keys to plot: {keys_to_plot}")
-
+    
     data_map = defaultdict(list)
+    row_id_map = defaultdict(list) # Track which row had which value
     atom_counts = Counter()
+    
+    nan_rows = []
+    keys_to_check = keys_to_plot or []
     
     for rid in tqdm(ids_to_fetch, desc="Collecting Stats"):
         row = db.get(rid)
         atoms = row.toatoms()
         atom_counts.update(atoms.get_chemical_symbols())
         
-        for k in keys_to_plot:
+        row_has_nan = False
+        
+        # Determine value for nan_key check
+        if check_nan and nan_key:
+            val = None
+            if hasattr(row, nan_key): val = getattr(row, nan_key)
+            elif nan_key in row.data: val = row.data[nan_key]
+            elif nan_key in row.key_value_pairs: val = row.key_value_pairs[nan_key]
+            
+            if val is None or (isinstance(val, (float, np.number)) and np.isnan(val)):
+                row_has_nan = True
+        
+        for k in keys_to_check:
             val = None
             if k == 'natoms': val = len(atoms)
             elif k == 'mol_weight': val = sum(atoms.get_masses())
@@ -377,31 +382,146 @@ def inspect_db(
             elif k in row.key_value_pairs: val = row.key_value_pairs[k]
             
             if val is not None and isinstance(val, (int, float, np.number)):
+                if np.isnan(val):
+                    row_has_nan = True
                 data_map[k].append(val)
+                row_id_map[k].append(rid)
+        
+        if row_has_nan:
+            nan_rows.append(rid)
+
+    if check_nan:
+        logger.info(f"--- NaN Detection ---")
+        logger.info(f"Rows with NaNs: {len(nan_rows)}")
+        if nan_rows:
+            logger.info(f"Sample NaN Row IDs: {nan_rows[:limit_print]}")
+
+    # Outlier Detection
+    outlier_map = defaultdict(list)
+    all_outlier_ids = set()
+    if detect_outliers or discard_outliers:
+        logger.info(f"--- Outlier Detection (Z-score threshold={outlier_threshold}) ---")
+        for k, vals in data_map.items():
+            vals = np.array(vals)
+            finite_mask = np.isfinite(vals)
+            f_vals = vals[finite_mask]
+            f_ids = np.array(row_id_map[k])[finite_mask]
+            
+            if len(f_vals) > 0:
+                mean = np.mean(f_vals)
+                std = np.std(f_vals)
+                if std > 0:
+                    z_scores = np.abs((f_vals - mean) / std)
+                    outlier_indices = np.where(z_scores > outlier_threshold)[0]
+                    for idx in outlier_indices:
+                        oid = f_ids[idx]
+                        oval = f_vals[idx]
+                        outlier_map[k].append((oid, oval))
+                        # If a specific key is provided for outlier discard, only track that
+                        if not outlier_key or k == outlier_key:
+                            all_outlier_ids.add(oid)
+                    
+                    if len(outlier_indices) > 0:
+                        logger.info(f"Key '{k}': Found {len(outlier_indices)} outliers.")
+                        sample_outliers = outlier_map[k][:5]
+                        logger.info(f"  Sample (ID, Val): {sample_outliers}")
+
+    # Discard / Clean DB logic
+    if (discard_nan or discard_outliers) and clean_db_path:
+        clean_db_path = Path(clean_db_path)
+        logger.info(f"Saving cleaned database to {clean_db_path}...")
+        
+        # Calculate stats for outliers if we need to check ALL rows during cleaning
+        # Note: outliers are currently only estimated from IDs to fetch.
+        # If discard_outliers is True, we might need stats from the sample to apply to ALL rows.
+        outlier_stats = {}
+        if discard_outliers:
+            for k, vals in data_map.items():
+                vals = np.array(vals)
+                finite_vals = vals[np.isfinite(vals)]
+                if len(finite_vals) > 0:
+                    outlier_stats[k] = (np.mean(finite_vals), np.std(finite_vals))
+
+        clean_db = connect(str(clean_db_path))
+        
+        discard_count = 0
+        with clean_db:
+            for row in tqdm(db.select(), total=n_rows, desc="Cleaning DB"):
+                discard = False
                 
-    # Plotting
+                # Check NaNs
+                if discard_nan:
+                    row_has_nan = False
+                    if nan_key:
+                        val = row.data.get(nan_key) or row.key_value_pairs.get(nan_key)
+                        if val is None or (isinstance(val, (float, np.number)) and np.isnan(val)):
+                            row_has_nan = True
+                    else:
+                        for k in (keys_to_check or []):
+                            val = None
+                            if k == 'natoms': val = len(row.toatoms())
+                            elif hasattr(row, k): val = getattr(row, k)
+                            elif k in row.data: val = row.data[k]
+                            elif k in row.key_value_pairs: val = row.key_value_pairs[k]
+                            if val is not None and isinstance(val, (float, np.number)) and np.isnan(val):
+                                row_has_nan = True; break
+                    if row_has_nan: discard = True
+                
+                # Check Outliers
+                if not discard and discard_outliers:
+                    row_has_outlier = False
+                    keys_to_verify = [outlier_key] if outlier_key else (keys_to_check or [])
+                    for k in keys_to_verify:
+                        if k not in outlier_stats: continue
+                        mean, std = outlier_stats[k]
+                        if std == 0: continue
+                        
+                        val = None
+                        if k == 'natoms': val = len(row.toatoms())
+                        elif hasattr(row, k): val = getattr(row, k)
+                        elif k in row.data: val = row.data[k]
+                        elif k in row.key_value_pairs: val = row.key_value_pairs[k]
+                        
+                        if val is not None and isinstance(val, (int, float, np.number)) and not np.isnan(val):
+                            if np.abs((val - mean) / std) > outlier_threshold:
+                                row_has_outlier = True; break
+                    if row_has_outlier: discard = True
+
+                if not discard:
+                    clean_db.write(row.toatoms(), key_value_pairs=row.key_value_pairs, data=row.data)
+                else:
+                    discard_count += 1
+        logger.info(f"Cleaned DB saved at {clean_db_path}. Discarded {discard_count} rows.")
+
+    # Plotting & Stats (filtered if discard_nan is True)
+    if not output_dir:
+        return
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Atom stats
     if atom_counts:
-        # Print atom type statistics
         total_atoms = sum(atom_counts.values())
         logger.info("--- Atom Type Statistics ---")
         for sym, count in atom_counts.most_common():
             logger.info(f"{sym}: {count} ({count/total_atoms*100:.2f}%)")
             
-        # Plot atom types
-        if output_dir:
-            try:
-                symbols, counts = zip(*atom_counts.most_common())
-                plt.figure(figsize=(10, 6))
-                plt.bar(symbols, counts)
-                plt.xlabel("Atom Type")
-                plt.ylabel("Count")
-                plt.title("Atom Type Distribution")
-                plt.savefig(output_dir / "hist_atom_types.png")
-                plt.close()
-            except Exception as e:
-                logger.error(f"Failed to plot atom types: {e}")
+        try:
+            symbols, counts = zip(*atom_counts.most_common())
+            plt.figure(figsize=(10, 6))
+            plt.bar(symbols, counts)
+            plt.xlabel("Atom Type")
+            plt.ylabel("Count")
+            plt.title("Atom Type Distribution")
+            plt.savefig(output_dir / "hist_atom_types.png")
+            plt.close()
+        except Exception as e:
+            logger.error(f"Failed to plot atom types: {e}")
+
     for k, vals in data_map.items():
         vals = np.array(vals)
+        # Filter NaNs for plotting/stats unless we want to see them (usually we don't)
         vals = vals[np.isfinite(vals)]
         if len(vals) == 0: continue
         
@@ -415,8 +535,9 @@ def inspect_db(
     logger.info("--- Statistics ---")
     for k, vals in data_map.items():
         vals = np.array(vals)
-        if len(vals) > 0:
-             logger.info(f"{k}: Mean={np.mean(vals):.4f}, Std={np.std(vals):.4f}, Min={np.min(vals)}, Max={np.max(vals)}")
+        finite_vals = vals[np.isfinite(vals)]
+        if len(finite_vals) > 0:
+             logger.info(f"{k}: Mean={np.mean(finite_vals):.4f}, Std={np.std(finite_vals):.4f}, Min={np.min(finite_vals)}, Max={np.max(finite_vals)}")
 
 
 

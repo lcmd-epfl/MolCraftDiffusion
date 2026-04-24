@@ -2521,7 +2521,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
-        if len(mask_node_index) > 0:
+        if len(mask_node_index) > 0 and len(connector_dicts) > 0:
             zs = torch.cat(
                 [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
             )
@@ -3064,8 +3064,12 @@ class EnVariationalDiffusion(torch.nn.Module):
             if denoising_strength is None:
                 raise ValueError("denoising_strength must be specified in to use inpainting")
             noise_initial_mask = getattr(inpaint_cfgs, "noise_initial_mask", False)
-            mask_node_index = getattr(inpaint_cfgs, "mask_node_index", torch.tensor([], device=z.device, dtype=torch.long))
-            mask_node_index = torch.tensor([mask_node_index], device=z.device, dtype=torch.long)
+            mask_node_index_raw = inpaint_cfgs.get("mask_node_index", [])
+            if mask_node_index_raw is None:
+                mask_node_index_raw = []
+            mask_node_index = torch.tensor(mask_node_index_raw, device=z.device, dtype=torch.long)
+            if mask_node_index.dim() == 1:
+                mask_node_index = mask_node_index.unsqueeze(0)
             scale_factor = getattr(inpaint_cfgs, "scale_factor", 1.1)
             d_threshold_f = getattr(inpaint_cfgs, "d_threshold_f", 1.8)
             w_b = getattr(inpaint_cfgs, "w_b", 2)
@@ -3224,7 +3228,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                             z[:, :, self.n_dims :],
                         ],
                         dim=2,)
-                mask_node_bool_corr = []
+                mask_node_bool_corr = torch.ones(condition_tensor.size(1), dtype=torch.bool, device=z.device)
                 connector_dicts = {}
             #-----------------------extended inpainting-----------------------------------
             n_node_extend = n_nodes - n_node_cond
