@@ -46,7 +46,8 @@ def merge_dbs(
     input_dir: Path,
     output_db: Path,
     recursive: bool = False,
-    pattern: str = "*.db"
+    pattern: str = "*.db",
+    verify: bool = True,
 ):
     """
     Merges multiple ASE databases into one.
@@ -91,7 +92,7 @@ def merge_dbs(
                 # Verify
                 atoms = row.toatoms()
                 mol_block = row.data.get("mol_block")
-                if verify_datapoint(atoms, mol_block):
+                if not verify or verify_datapoint(atoms, mol_block):
                     data = row.data.copy()
                     data['source_db'] = str(db_file)
                     # Ensure no KVPs leak into write via kwargs

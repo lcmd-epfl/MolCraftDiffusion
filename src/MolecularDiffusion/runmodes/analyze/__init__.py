@@ -9,11 +9,6 @@ This module provides tools for:
 - XYZ to SMILES conversion
 """
 
-from .xtb_optimization import optimize_molecule, get_xtb_optimized_xyz
-from .xtb_electronic import compute_xtb_electronic, batch_xtb_electronic
-from .compare_to_optimized import run_compare_analysis
-from .xyz2mol import run_processing as run_xyz2mol
-
 __all__ = [
     "optimize_molecule",
     "get_xtb_optimized_xyz",
@@ -22,3 +17,22 @@ __all__ = [
     "run_compare_analysis",
     "run_xyz2mol"
 ]
+
+
+def __getattr__(name: str):
+    if name in {"optimize_molecule", "get_xtb_optimized_xyz"}:
+        from . import xtb_optimization
+
+        value = getattr(xtb_optimization, name)
+    elif name in {"compute_xtb_electronic", "batch_xtb_electronic"}:
+        from . import xtb_electronic
+
+        value = getattr(xtb_electronic, name)
+    elif name == "run_compare_analysis":
+        from .compare_to_optimized import run_compare_analysis as value
+    elif name == "run_xyz2mol":
+        from .xyz2mol import run_processing as value
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value

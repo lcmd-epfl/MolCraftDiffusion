@@ -5,34 +5,44 @@ import numpy as np
 import pandas as pd
 import random
 from tqdm import tqdm
-from MolecularDiffusion.utils.geom_utils import read_xyz_file, create_pyg_graph, correct_edges
-from MolecularDiffusion.utils.geom_metrics import (check_validity_v1,
-                                                   check_chem_validity,
-                                                   run_postbuster,
-                                                   smilify_wrapper,
-                                                   load_molecules_from_xyz,
-                                                   check_neutrality,
-                                                   xyz_to_rdkit_mol,
-                                                   compute_drug_likeness)
-from MolecularDiffusion.utils.shepherd_score.extract_profiles import get_electrostatic_potential
-from MolecularDiffusion.utils.shepherd_score.generate_point_cloud import (
-    get_molecular_surface, get_atomic_vdw_radii)
-from MolecularDiffusion.utils.shepherd_score.pharm_utils.pharmacophore import get_pharmacophores
-from MolecularDiffusion.utils.shepherd_score.score.constants import ALPHA, LAM_SCALING
-from MolecularDiffusion.utils.shepherd_score.score.gaussian_overlap_np import get_overlap_np
-from MolecularDiffusion.utils.shepherd_score.score.electrostatic_scoring_np import get_overlap_esp_np
-from MolecularDiffusion.utils.shepherd_score.score.pharmacophore_scoring_np import get_overlap_pharm_np
-from MolecularDiffusion.utils.shepherd_score.alignment import (
-    optimize_ROCS_overlay, optimize_ROCS_esp_overlay, optimize_pharm_overlay)
-from MolecularDiffusion.utils import smilify_xyz2mol, smilify_openbabel
-from MolecularDiffusion.utils.geom_stability import compute_molecules_stability
+from MolecularDiffusion.optional import OptionalDependencyError, optional_import_error, require_modules
+
+_IMPORT_ERROR = None
+try:
+    from MolecularDiffusion.utils.geom_utils import read_xyz_file, create_pyg_graph, correct_edges
+    from MolecularDiffusion.utils.geom_metrics import (check_validity_v1,
+                                                       check_chem_validity,
+                                                       run_postbuster,
+                                                       smilify_wrapper,
+                                                       load_molecules_from_xyz,
+                                                       check_neutrality,
+                                                       xyz_to_rdkit_mol,
+                                                       compute_drug_likeness)
+    from MolecularDiffusion.utils.shepherd_score.extract_profiles import get_electrostatic_potential
+    from MolecularDiffusion.utils.shepherd_score.generate_point_cloud import (
+        get_molecular_surface, get_atomic_vdw_radii)
+    from MolecularDiffusion.utils.shepherd_score.pharm_utils.pharmacophore import get_pharmacophores
+    from MolecularDiffusion.utils.shepherd_score.score.constants import ALPHA, LAM_SCALING
+    from MolecularDiffusion.utils.shepherd_score.score.gaussian_overlap_np import get_overlap_np
+    from MolecularDiffusion.utils.shepherd_score.score.electrostatic_scoring_np import get_overlap_esp_np
+    from MolecularDiffusion.utils.shepherd_score.score.pharmacophore_scoring_np import get_overlap_pharm_np
+    from MolecularDiffusion.utils.shepherd_score.alignment import (
+        optimize_ROCS_overlay, optimize_ROCS_esp_overlay, optimize_pharm_overlay)
+    from MolecularDiffusion.utils import smilify_xyz2mol, smilify_openbabel
+    from MolecularDiffusion.utils.geom_stability import compute_molecules_stability
+except ImportError as exc:
+    _IMPORT_ERROR = optional_import_error("analyze", exc)
 
 import logging
-from rdkit import RDLogger
 import matplotlib.pyplot as plt
+try:
+    from rdkit import RDLogger
+except ImportError:
+    RDLogger = None
 
 # Suppress RDKit warnings
-RDLogger.DisableLog('rdApp.*')
+if RDLogger is not None:
+    RDLogger.DisableLog('rdApp.*')
 
 # Constants
 EDGE_THRESHOLD = 4
@@ -42,6 +52,21 @@ SCORES_THRESHOLD = 3.0
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def runner(args):
+    if _IMPORT_ERROR is not None:
+        logging.warning(str(_IMPORT_ERROR))
+        raise SystemExit(1) from _IMPORT_ERROR
+    required_modules = {"torch", "torch_geometric", "ase", "rdkit"}
+    if args.metrics in ["all", "core", "geom_revised"]:
+        required_modules.add("cosymlib")
+    if args.metrics in ["all", "posebuster", "geom_revised"]:
+        required_modules.update({"openbabel", "posebusters"})
+    if args.metrics in ["all", "shepherd"]:
+        required_modules.add("open3d")
+    try:
+        require_modules("analyze", required_modules)
+    except OptionalDependencyError as exc:
+        logging.warning(str(exc))
+        raise SystemExit(1) from exc
     
     xyz_dir = args.input
     recheck_topo = args.recheck_topo

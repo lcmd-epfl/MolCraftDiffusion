@@ -10,9 +10,20 @@ Provides subcommands for:
 import os
 
 import click
+from MolecularDiffusion.optional import optional_import_error
 
 # Enable -h as alias for --help
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
+
+
+def _load_analyze_module(module_name: str):
+    try:
+        return __import__(
+            f"MolecularDiffusion.runmodes.analyze.{module_name}",
+            fromlist=[module_name],
+        )
+    except ImportError as exc:
+        raise click.ClickException(str(optional_import_error("analyze", exc))) from exc
 
 
 @click.group(context_settings=CONTEXT_SETTINGS)
@@ -57,7 +68,7 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
         MolCraftDiff analyze optimize gen_xyz/
         MolCraftDiff analyze optimize gen_xyz/ --o optimized/ --level gfn2
     """
-    from MolecularDiffusion.runmodes.analyze.xtb_optimization import get_xtb_optimized_xyz
+    get_xtb_optimized_xyz = _load_analyze_module("xtb_optimization").get_xtb_optimized_xyz
     
     output_dir = output_dir or os.path.join(input_dir, "optimized_xyz")
     
@@ -122,7 +133,7 @@ def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion
         MolCraftDiff analyze metrics gen_xyz/ --metrics geom_revised --mol-converter openbabel
     """
     import argparse
-    from MolecularDiffusion.runmodes.analyze.compute_metrics import runner
+    runner = _load_analyze_module("compute_metrics").runner
     
     args = argparse.Namespace(
         input=input_dir,
@@ -168,7 +179,7 @@ def compare(directory, mol_converter, n_subsets, csv_path, charge, level, timeou
     Requires 'optimized_xyz' subdirectory with *_opt.xyz files.
     """
     import argparse
-    from MolecularDiffusion.runmodes.analyze.compare_to_optimized import run_compare_analysis
+    run_compare_analysis = _load_analyze_module("compare_to_optimized").run_compare_analysis
     
     # Construct args namespace to pass to run_compare_analysis
     args = argparse.Namespace(
@@ -220,9 +231,10 @@ def xyz2mol(xyz_dir, input_csv, label, timeout, bits, verbose):
     import json
     import logging
     
-    from MolecularDiffusion.runmodes.analyze.xyz2mol import (
-        load_file_list_from_dir, run_processing, extract_scaffold_and_fingerprints
-    )
+    xyz2mol_module = _load_analyze_module("xyz2mol")
+    load_file_list_from_dir = xyz2mol_module.load_file_list_from_dir
+    run_processing = xyz2mol_module.run_processing
+    extract_scaffold_and_fingerprints = xyz2mol_module.extract_scaffold_and_fingerprints
     
     if verbose:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -333,7 +345,7 @@ def xtb_electronic(input_dir, output, method, charge, n_unpaired,
         MolCraftDiff analyze xtb-electronic gen_xyz/ -s water -p solvation
         MolCraftDiff analyze xtb-electronic gen_xyz/ -p all -f ase -o results.db
     """
-    from MolecularDiffusion.runmodes.analyze.xtb_electronic import batch_xtb_electronic
+    batch_xtb_electronic = _load_analyze_module("xtb_electronic").batch_xtb_electronic
     
     # Parse method
     if method in ["1", "2"]:
@@ -377,4 +389,3 @@ def xtb_electronic(input_dir, output, method, charge, n_unpaired,
     click.echo(f"Successful: {n_success}")
     click.echo(f"Failed: {n_total - n_success}")
     click.echo(f"Output saved to: {output}")
-

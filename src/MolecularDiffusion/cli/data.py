@@ -8,15 +8,28 @@ import click
 import logging
 from pathlib import Path
 
-# Implements the structure defined in the plan
-from MolecularDiffusion.runmodes.data import preparation as prep
-from MolecularDiffusion.runmodes.data import augmentation as aug
-from MolecularDiffusion.runmodes.data import ase_ops
-from MolecularDiffusion.runmodes.data import featurization as feat
+from MolecularDiffusion.optional import OptionalDependencyError, optional_import_error, require_modules
 
 logger = logging.getLogger(__name__)
 
 # Verify asset existence at startup
+
+
+def _load_data_module(module_name: str):
+    try:
+        return __import__(
+            f"MolecularDiffusion.runmodes.data.{module_name}",
+            fromlist=[module_name],
+        )
+    except ImportError as exc:
+        raise click.ClickException(str(optional_import_error("data", exc))) from exc
+
+
+def _require_data_modules(modules):
+    try:
+        require_modules("data", modules)
+    except OptionalDependencyError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 class VariadicOption(click.Option):
     """
@@ -73,6 +86,10 @@ def prepare():
 @click.option("--seed", "-se", type=int, help="Random seed")
 def compile_cmd(source, db, natoms, csv, sdf, fraction, seed):
     """Compile molecular data into an ASE database."""
+    _require_data_modules(["torch", "ase"])
+    if sdf:
+        _require_data_modules(["rdkit"])
+    prep = _load_data_module("preparation")
     prep.compile_to_asedb(
         input_source=source,
         db_path=Path(db),
@@ -90,6 +107,7 @@ def compile_cmd(source, db, natoms, csv, sdf, fraction, seed):
 @click.option("--value", "-v", "--val", required=True, cls=VariadicOption, help="Tag value(s) (space-separated, must match tag count)")
 def annotate_cmd(db, tag, value):
     """Annotate an ASE database with a tag."""
+    prep = _load_data_module("preparation")
     prep.annotate_db(Path(db), tag, value, verbose=True)
 
 @prepare.command("generate-blocks")
@@ -102,6 +120,10 @@ def annotate_cmd(db, tag, value):
 @click.option("--method", "-m", "--met", default="hybrid", show_default=True, type=click.Choice(['hybrid', 'openbabel', 'xyz2mol']), help="Smilification method")
 def generate_blocks_cmd(source, sdf, natoms, csv, fraction, indices, method):
     """Generate Mol Blocks, SMILES, and properties (SA, SC)."""
+    _require_data_modules(["torch", "ase", "rdkit"])
+    if method in {"hybrid", "openbabel"}:
+        _require_data_modules(["openbabel"])
+    prep = _load_data_module("preparation")
     # Logic is handled inside preparation.py
     prep.generate_mol_blocks_and_sdf(
         input_source=source,
@@ -127,6 +149,16 @@ def generate_blocks_cmd(source, sdf, natoms, csv, fraction, indices, method):
 @click.option("--lmax", "-lm", default=6, show_default=True, help="SOAP l_max")
 def featurize_cmd(method, input, output, format, readout, smilify_method, radius, nbits, rcut, nmax, lmax):
     """Featurize 3D molecules into vectors."""
+    _require_data_modules(["ase"])
+    if method == "morgan":
+        _require_data_modules(["rdkit"])
+        if smilify_method in {"hybrid", "openbabel"}:
+            _require_data_modules(["openbabel"])
+    if method == "soap":
+        _require_data_modules(["dscribe"])
+    if format == "safetensors":
+        _require_data_modules(["safetensors"])
+    feat = _load_data_module("featurization")
     feat.featurize(
         input_source=input,
         output_dir=output,
@@ -156,6 +188,8 @@ def augment():
 @click.option("--db", "-d", is_flag=True, help="Enable DB mode")
 def charge_cmd(input, output, max_h, fraction, db):
     """Augment data by random charge modification."""
+    _require_data_modules(["torch", "ase", "mendeleev"])
+    aug = _load_data_module("augmentation")
     aug.augment_charge(input, output, max_h_change=max_h, fraction=fraction, is_db_mode=db)
 
 @augment.command("distortion")
@@ -166,6 +200,8 @@ def charge_cmd(input, output, max_h, fraction, db):
 @click.option("--freeze", "-fr", cls=VariadicOption, help="Indices of atoms to freeze (0-indexed)")
 def distortion_cmd(input, output, sigma, fraction, freeze):
     """Augment data by random coordinate distortion."""
+    _require_data_modules(["torch", "ase"])
+    aug = _load_data_module("augmentation")
     import ast
     if freeze and isinstance(freeze, str) and freeze.startswith("("):
         try:
@@ -189,6 +225,8 @@ def distortion_cmd(input, output, sigma, fraction, freeze):
 @click.option("--plot-prefix", "-pp", type=click.Path(), help="Prefix for plots")
 def size_cmd(input, output, s_start, t_start, s_end, t_end, strength, decay, invert, plot_prefix):
     """Augment data to balance molecule sizes."""
+    _require_data_modules(["ase"])
+    aug = _load_data_module("augmentation")
     aug.augment_size(
         Path(input), Path(output),
         s_start, t_start, s_end, t_end,
@@ -212,6 +250,10 @@ def ase_ops_group():
 @click.option("--verify/--no-verify", default=True, help="Verify atom order matches RDKit")
 def merge_cmd(input, output, recursive, verify):
     """Merge multiple ASE databases."""
+    _require_data_modules(["ase"])
+    if verify:
+        _require_data_modules(["rdkit"])
+    ase_ops = _load_data_module("ase_ops")
     ase_ops.merge_dbs(Path(input), Path(output), recursive=recursive, verify=verify)
 
 @ase_ops_group.command("inspect")
@@ -230,6 +272,8 @@ def merge_cmd(input, output, recursive, verify):
 @click.option("--clean-db", type=click.Path(), help="Path to save cleaned database (if --discard-nan or --discard-outliers is used)")
 def inspect_cmd(db, output, keys, sample_size, limit, check_nan, nan_key, discard_nan, detect_outliers, outlier_threshold, discard_outliers, outlier_key, clean_db):
     """Inspect an ASE database and optionally plot statistics."""
+    _require_data_modules(["ase"])
+    ase_ops = _load_data_module("ase_ops")
     db_path = Path(db)
     if (discard_nan or discard_outliers) and not clean_db:
         clean_db = db_path.parent / f"{db_path.stem}_cleaned.db"
@@ -257,6 +301,8 @@ def inspect_cmd(db, output, keys, sample_size, limit, check_nan, nan_key, discar
 @click.option("--n", "-num", default=2, show_default=True, help="Number of splits")
 def split_cmd(db, output, n):
     """Split an ASE database."""
+    _require_data_modules(["ase"])
+    ase_ops = _load_data_module("ase_ops")
     ase_ops.split_db(Path(db), Path(output), n_splits=n)
 
 @ase_ops_group.command("sample")
@@ -277,6 +323,10 @@ def sample_cmd(input, output, fmt, fraction, number, seed, verify):
       xyz – write one XYZ file per molecule into OUTPUT directory\n
       npy – write positions.npy / numbers.npy / natoms.npy into OUTPUT directory
     """
+    _require_data_modules(["ase"])
+    if verify:
+        _require_data_modules(["rdkit"])
+    ase_ops = _load_data_module("ase_ops")
     ase_ops.sample_db(
         Path(input), Path(output),
         output_type=fmt,
@@ -290,4 +340,6 @@ def sample_cmd(input, output, fmt, fraction, number, seed, verify):
 @click.option("--new", "-n", required=True, type=str, help="New attribute name")
 def rename_cmd(db, old, new):
     """Rename a row attribute in an ASE database."""
+    _require_data_modules(["ase"])
+    ase_ops = _load_data_module("ase_ops")
     ase_ops.rename_db_attribute(Path(db), old, new)

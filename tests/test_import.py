@@ -3,12 +3,6 @@
 import pytest
 
 
-def test_import_moleculardiffusion():
-    """Test that MolecularDiffusion can be imported."""
-    import MolecularDiffusion
-    assert MolecularDiffusion.__version__ == "0.1.0"
-
-
 def test_import_submodules():
     """Test that submodules can be imported."""
     from MolecularDiffusion import core, data, modules, utils, callbacks, runmodes

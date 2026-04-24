@@ -9,13 +9,30 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
-from ase.data import covalent_radii
-from openbabel import pybel
-from posebusters import PoseBusters
-from rdkit import Chem
-from torch_geometric.data import Data
-from torch_geometric.utils import to_networkx
 from tqdm import tqdm
+
+try:
+    from ase.data import covalent_radii
+except ImportError:
+    covalent_radii = None
+try:
+    from openbabel import pybel
+except ImportError:
+    pybel = None
+try:
+    from posebusters import PoseBusters
+except ImportError:
+    PoseBusters = None
+try:
+    from rdkit import Chem
+except ImportError:
+    Chem = None
+try:
+    from torch_geometric.data import Data
+    from torch_geometric.utils import to_networkx
+except ImportError:
+    Data = None
+    to_networkx = None
 
 from .geom_constant import (
     allow_n_bonds,
@@ -66,6 +83,14 @@ P_ALPHAS = {
     7: 1.0, # ZnBinder
     8: 1.0  # Dummy
 }
+
+
+def _require_optional(name: str, value) -> None:
+    if value is None:
+        raise ImportError(
+            f"{name} is required for this analysis. Install optional dependencies with: "
+            "pip install 'molcraftdiffusion[analyze]'"
+        )
 
 
 def _vab_2nd_order_np(centers_1, centers_2, alpha) -> float:
@@ -202,6 +227,8 @@ def is_fully_connected(edge_index, num_nodes):
             - bool: True if the graph is fully connected, False otherwise.
             - int: The number of connected components in the graph.
     """
+    _require_optional("torch_geometric", Data)
+    _require_optional("torch_geometric", to_networkx)
     G = to_networkx(Data(edge_index=edge_index, num_nodes=num_nodes), to_undirected=True)
     try:
         is_connected = nx.is_connected(G)
@@ -242,6 +269,7 @@ def check_validity_v0(data,
         Special handling is applied for atoms with certain atomic numbers, such as carbon (atomic number 6), which may require different criteria due to their bonding behavior.
 
     """
+    _require_optional("ase", covalent_radii)
     atomic_numbers = data.x.view(-1).int().tolist()
     edge_index = data.edge_index
     good_atoms = []
@@ -365,6 +393,7 @@ def check_validity_v1(data,
 
     """
     
+    _require_optional("ase", covalent_radii)
     if not(is_cosymlib_available):
         raise ImportError("Cosymlib is not available, do use different metrics")
     atomic_numbers = data.x.view(-1).int().tolist()
@@ -447,6 +476,7 @@ def check_validity_v1(data,
 def check_chem_validity(mol_list, 
                         skip_idx=[],
                         verbose=0):
+    _require_optional("rdkit", Chem)
     """
     Analyze a list of RDKit molecules for chemical validity based on atom valencies
     and identify broken or disconnected fragments.
@@ -601,6 +631,7 @@ def xyz_to_pdb(xyz_file_path, pdb_file_path):
         xyz_file_path (str): Path to input XYZ file.
         pdb_file_path (str): Path to output PDB file.
     """
+    _require_optional("openbabel", pybel)
     try:
         mol = next(pybel.readfile("xyz", xyz_file_path))
         mol.write("pdb", pdb_file_path, overwrite=True)
@@ -622,6 +653,8 @@ def load_molecules_from_xyz(xyz_dir):
             - valid_molecules (list of RDKit Mol): Successfully loaded molecules.
             - pass_xyz_files (list of str): Filenames of the successfully loaded molecules.
     """
+    _require_optional("rdkit", Chem)
+    _require_optional("openbabel", pybel)
     xyz_files = glob.glob(os.path.join(xyz_dir, "*.xyz"))
     valid_molecules = []
     pass_xyz_files = []
@@ -656,6 +689,7 @@ def _run_buster(mols, queue):
         mols (list of RDKit Mol): List of molecules to process.
         queue (multiprocessing.Queue): Queue to put the result (DataFrame or Exception).
     """
+    _require_optional("posebusters", PoseBusters)
     try:
         buster = PoseBusters(config="mol")
         results = buster.bust(mols)
@@ -681,6 +715,7 @@ def run_postbuster(mols, timeout=60, batch_size=1):
         pd.DataFrame or None: DataFrame containing PoseBusters results for all processed molecules.
                               Returns None if no results could be obtained.
     """
+    _require_optional("posebusters", PoseBusters)
     if not mols:
         logger.warning("No valid molecules loaded. Exiting.")
         return None
@@ -869,11 +904,12 @@ def runner(args):
         output_path = args.output
     df.to_csv(output_path, index=False)
 
-def xyz_to_rdkit_mol(xyz_path: str) -> Chem.Mol:
+def xyz_to_rdkit_mol(xyz_path: str):
     """
     Convert an XYZ file to an RDKit molecule with perceived bonds.
     Tries multiple charges to find a valid structure without radicals.
     """
+    _require_optional("rdkit", Chem)
     from rdkit.Chem import rdDetermineBonds
     try:
         with open(xyz_path, "r") as f:
@@ -901,8 +937,9 @@ def xyz_to_rdkit_mol(xyz_path: str) -> Chem.Mol:
         logger.error(f"Error in xyz_to_rdkit_mol for {xyz_path}: {e}")
         return None
 
-def compute_drug_likeness(mol: Chem.Mol) -> dict:
+def compute_drug_likeness(mol) -> dict:
     """Compute RDKit-based drug-likeness metrics including SAScore and QED."""
+    _require_optional("rdkit", Chem)
     from rdkit.Chem import QED, Descriptors, rdMolDescriptors
     if mol is None:
         return {}
