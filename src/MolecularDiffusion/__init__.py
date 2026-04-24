@@ -4,6 +4,16 @@ MolecularDiffusion - A unified generative AI framework for 3D molecular generati
 
 from importlib.metadata import PackageNotFoundError, version
 
+_BANNER = r"""
+███    ███  ██████  ██       ██████ ██████   █████  ███████ ████████ ██████  ██ ███████ ███████ ██    ██ ███████ ██  ██████  ███    ██
+████  ████ ██    ██ ██      ██      ██   ██ ██   ██ ██         ██    ██   ██ ██ ██      ██      ██    ██ ██      ██ ██    ██ ████   ██
+██ ████ ██ ██    ██ ██      ██      ██████  ███████ █████      ██    ██   ██ ██ █████   █████   ██    ██ ███████ ██ ██    ██ ██ ██  ██
+██  ██  ██ ██    ██ ██      ██      ██   ██ ██   ██ ██         ██    ██   ██ ██ ██      ██      ██    ██      ██ ██ ██    ██ ██  ██ ██
+██      ██  ██████  ███████  ██████ ██   ██ ██   ██ ██         ██    ██████  ██ ██      ██       ██████  ███████ ██  ██████  ██   ████
+"""
+
+print(_BANNER)
+
 try:
     __version__ = version("molcraftdiffusion")
 except PackageNotFoundError:
