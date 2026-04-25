@@ -50,16 +50,27 @@ Installation
 
     # 3. Optional feature groups
 
-    # Data preparation/augmentation/featurization utilities:
+    # Data preparation/augmentation/featurization utilities (includes dscribe for SOAP):
     pip install 'molcraftdiffusion[data]'
 
-    # Analysis and post-processing utilities:
+    # Analysis and post-processing utilities (metrics, compare, xyz2mol, xtb-electronic, featurize):
     pip install 'molcraftdiffusion[analyze]'
 
-    # xTB is used by some analyze commands and is best installed from conda-forge:
+    # xTB is used by optimize, compare, and xtb-electronic — best installed from conda-forge:
     conda install -c conda-forge xtb==6.7.1 -y
 
 The base install keeps data and analysis chemistry packages optional. If you call a `MolCraftDiff data ...` or `MolCraftDiff analyze ...` command without the required optional packages, the command exits with an installation hint instead of crashing.
+
+### UMA featurization backend (optional)
+
+The `MolCraftDiff analyze featurize --backend uma` command uses a pretrained UMA model.
+fairchem is **not** a pip dependency — clone the vendored source into the repo root:
+
+    git clone https://github.com/pregHosh/fairchem fairchem
+
+Download the `uma-s-1p2.pt` checkpoint from [Hugging Face](https://huggingface.co/pregH/MolecularDiffusion)
+and place it at `training_outputs/uma-s-1p2.pt` (or pass `--checkpoint /path/to/checkpoint.pt`).
+The SOAP backend (`--backend soap`, the default) has no such requirement.
 
 ### Development / editable install
 
@@ -156,20 +167,28 @@ The `analyze` command provides a suite of tools for processing and evaluating ge
 *   `metrics`: Compute validity and connectivity metrics.
 *   `compare`: Calculate RMSD, energy differences, and geometric properties (bonds/angles) between generated and reference structures.
 *   `xyz2mol`: Convert XYZ files to SMILES and extract fingerprints/scaffolds.
+*   `xtb-electronic`: Compute quantum-chemical descriptors (HOMO, LUMO, charges, Fukui indices, etc.) at GFN-xTB level.
+*   `featurize`: Extract fixed-size molecular feature vectors via SOAP descriptors or pretrained UMA backbone embeddings.
 
 **Examples:**
 
     # Optimize geometries in a directory
-    MolCraftDiff analyze optimize -i generated_molecules/
+    MolCraftDiff analyze optimize generated_molecules/
 
     # Compute validity metrics
-    MolCraftDiff analyze metrics -i generated_molecules/
+    MolCraftDiff analyze metrics generated_molecules/
 
-    # Compare generated structures with ground truth (requires optimized counterparts)
-    MolCraftDiff analyze compare generated_molecules/ --bonds
+    # Compare generated structures with optimized counterparts
+    MolCraftDiff analyze compare generated_molecules/
 
     # Convert XYZ to SMILES
-    MolCraftDiff analyze xyz2mol -x generated_molecules/
+    MolCraftDiff analyze xyz2mol generated_molecules/
+
+    # Featurize with SOAP (default species list, no GPU needed)
+    MolCraftDiff analyze featurize generated_molecules/
+
+    # Featurize with UMA backbone embeddings (requires fairchem clone + checkpoint)
+    MolCraftDiff analyze featurize generated_molecules/ --backend uma --device cuda
 
 
 Visualization
