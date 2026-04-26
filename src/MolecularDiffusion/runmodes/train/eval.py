@@ -63,18 +63,6 @@ TASK_REGISTRY: dict[str, TaskEvalConfig] = {
         needs_generative=True,
         split_reset_hook=None,
     ),
-    "diffusion_adit": TaskEvalConfig(
-        higher_is_better=False,
-        metric_key="valid_posebuster",
-        needs_generative=True,
-        split_reset_hook=None,
-    ),
-    "diffusion_pharmacophore": TaskEvalConfig(
-        higher_is_better=False,
-        metric_key="valid_posebuster",
-        needs_generative=True,
-        split_reset_hook=None,
-    ),
     # --- regression / guidance ------------------------------------------------
     "regression": TaskEvalConfig(
         higher_is_better=False,
@@ -96,6 +84,20 @@ TASK_REGISTRY: dict[str, TaskEvalConfig] = {
         metric_key="match_rate",
         needs_generative=False,
         split_reset_hook="on_validation_epoch_start",
+    ),
+    # --- LDM ------------------------------------------------------------------
+    "diffusion_adit": TaskEvalConfig(
+        higher_is_better=False,
+        metric_key="valid_posebuster",
+        needs_generative=True,
+        split_reset_hook=None,
+    ),
+    # --- SSL3D family (prefix-matched: ssl3d_egcl, ssl3d_equiformer, …) ------
+    "ssl3d": TaskEvalConfig(
+        higher_is_better=False,
+        metric_key="ssl/total_loss",
+        needs_generative=False,
+        split_reset_hook=None,
     ),
 }
 
@@ -455,9 +457,12 @@ def analyze_and_save(
         if getattr(model, "prop_dist_model", None):
             size = nodesxsample[0].item()
             target_value = model.prop_dist_model.sample(size)
-            target_value = model.prop_dist_model.sample(size)
-            if "distortion_d" in getattr(model, "condition", []): # only sample clean molecules during the interference
-                target_value[-2] = 0
+            conditions = getattr(model, "condition", getattr(model, "condition_names", []))
+            for cond_i, cond in enumerate(conditions):
+                if cond == "distortion_d":
+                    target_value[..., cond_i] = 0
+                elif cond == "num_graph":
+                    target_value[..., cond_i] = 1
         try:
             if hasattr(model, "task_type") and model.task_type == "diffusion_tabasco":
                 # TABASCO specific sampling - now returns tuple (one_hot, charges, coords, node_mask)
@@ -502,7 +507,8 @@ def analyze_and_save(
             molecules["node_mask"].append(node_mask.squeeze(0) if node_mask.ndim > 2 else node_mask)
 
             if torch.all(one_hot == 0) or getattr(model, "atom_vocab", None) is None:
-                save_xyz_file_atomic_numbers(path_save, x, charges)
+                charges_2d = charges.squeeze(-1) if charges.ndim == 3 else charges
+                save_xyz_file_atomic_numbers(path_save, x, charges_2d)
             else:
                 # Pass atomic_numbers (charges) and use_unknown_fallback for proper unknown atom handling
                 use_fallback = getattr(model.model, 'use_unknown_fallback', False) if hasattr(model, 'model') else False

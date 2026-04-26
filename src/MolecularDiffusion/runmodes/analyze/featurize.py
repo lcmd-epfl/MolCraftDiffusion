@@ -121,12 +121,65 @@ class UMAFeaturizer(BaseFeaturizer):
 
 
 # ---------------------------------------------------------------------------
+# SSL3D backend
+# ---------------------------------------------------------------------------
+
+class SSL3DFeaturizer(BaseFeaturizer):
+    def __init__(
+        self,
+        checkpoint: str | Path,
+        device: str | None = None,
+        batch_size: int = 16,
+        pooling: str = "mean",
+        edge_radius: float = 5.0,
+        atom_vocab: list[str] | None = None,
+    ) -> None:
+        import torch
+        from .ssl3d_embed import load_ssl3d_task
+
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.batch_size = batch_size
+        self.pooling = pooling
+        self.edge_radius = edge_radius
+
+        print(f"Loading SSL3D checkpoint: {checkpoint}")
+        self.task, vocab_from_ckpt = load_ssl3d_task(checkpoint, device=self.device)
+        self.atom_vocab = atom_vocab if atom_vocab is not None else vocab_from_ckpt
+        print(f"  atom_vocab : {self.atom_vocab}")
+        print(f"  device     : {self.device}")
+
+    def featurize(self, atoms_list: list[Atoms]) -> np.ndarray:
+        import torch
+        from .ssl3d_embed import atoms_to_batch, pool_nodes
+
+        results = []
+        n_total = len(atoms_list)
+        for start in range(0, n_total, self.batch_size):
+            chunk = atoms_list[start : start + self.batch_size]
+            batch_dict = atoms_to_batch(
+                chunk, self.atom_vocab, self.edge_radius, self.device
+            )
+            graph = batch_dict["graph"]
+            n_atoms = graph.x.shape[0]
+            sigma = torch.zeros(n_atoms, 1, device=self.device)
+
+            with torch.no_grad():
+                h, _ = self.task._forward_backbone(batch_dict, sigma)
+
+            mol_embs = pool_nodes(h, graph.batch, self.pooling)
+            results.append(mol_embs.cpu().numpy())
+
+        return np.vstack(results).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
 _BACKENDS: dict[str, type[BaseFeaturizer]] = {
     "soap": SOAPFeaturizer,
     "uma": UMAFeaturizer,
+    "ssl3d": SSL3DFeaturizer,
 }
 
 
@@ -157,6 +210,10 @@ def run_featurize(
     scalar_only: bool = True,
     charge: int = 0,
     spin: int = 1,
+    # SSL3D kwargs
+    ssl3d_checkpoint: str | Path | None = None,
+    ssl3d_edge_radius: float = 5.0,
+    ssl3d_atom_vocab: list[str] | None = None,
 ) -> np.ndarray:
     """Discover XYZ files, featurize, save outputs, return (N, D) array."""
     input_dir = Path(input_dir)
@@ -225,6 +282,23 @@ def run_featurize(
             device=device, batch_size=batch_size,
             pooling=pooling, scalar_only=scalar_only,
             charge=charge, spin=spin,
+        )
+
+    elif backend == "ssl3d":
+        if ssl3d_checkpoint is None:
+            raise ValueError("ssl3d_checkpoint is required for the ssl3d backend.")
+        featurizer = SSL3DFeaturizer(
+            checkpoint=ssl3d_checkpoint,
+            device=device,
+            batch_size=batch_size,
+            pooling=pooling,
+            edge_radius=ssl3d_edge_radius,
+            atom_vocab=ssl3d_atom_vocab,
+        )
+        meta_params = dict(
+            checkpoint=str(ssl3d_checkpoint),
+            device=device, batch_size=batch_size,
+            pooling=pooling, edge_radius=ssl3d_edge_radius,
         )
 
     else:

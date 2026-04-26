@@ -300,7 +300,7 @@ def xyz2mol(xyz_dir, input_csv, label, timeout, bits, verbose):
 @analyze.command("featurize", context_settings=CONTEXT_SETTINGS)
 @click.argument("input_dir", type=click.Path(exists=True))
 @click.option("--backend", "-b", default="soap",
-              type=click.Choice(["soap", "uma"]),
+              type=click.Choice(["soap", "uma", "ssl3d"]),
               help="Featurization backend (default: soap)")
 @click.option("--output", "-o", default=None, type=click.Path(),
               help="Output stem (default: input_dir/features). .npy/.csv/_meta.json appended.")
@@ -338,15 +338,22 @@ def xyz2mol(xyz_dir, input_csv, label, timeout, bits, verbose):
               help="UMA: total molecular charge (default: 0)")
 @click.option("--spin", default=1, type=int, show_default=True,
               help="UMA: spin multiplicity (default: 1)")
+# --- SSL3D options ---
+@click.option("--ssl3d-checkpoint", default=None, type=click.Path(),
+              help="SSL3D: path to trained .ckpt or .pkl checkpoint (required for --backend ssl3d)")
+@click.option("--edge-radius", default=5.0, type=float, show_default=True,
+              help="SSL3D: radius graph cutoff in Å for graph construction")
 def featurize(input_dir, backend, output, recursive,
               r_cut, n_max, l_max, sigma, autodetect_species, species, pooling, soap_jobs,
-              checkpoint, task_name, device, batch_size, all_components, charge, spin):
+              checkpoint, task_name, device, batch_size, all_components, charge, spin,
+              ssl3d_checkpoint, edge_radius):
     """Featurize 3D XYZ molecules into fixed-size feature vectors.
 
     \b
     Backends:
-      soap  SOAP descriptor via dscribe — no GPU required
-      uma   UMA backbone embeddings — requires vendored fairchem/src + checkpoint
+      soap   SOAP descriptor via dscribe — no GPU required
+      uma    UMA backbone embeddings — requires vendored fairchem/src + checkpoint
+      ssl3d  SSL3D backbone embeddings — requires a trained SSL3D .ckpt or .pkl
 
     \b
     Examples:
@@ -355,7 +362,12 @@ def featurize(input_dir, backend, output, recursive,
         MolCraftDiff analyze featurize gen_xyz/ --species C --species H --species N --species O
         MolCraftDiff analyze featurize gen_xyz/ --backend soap --n-max 12 --l-max 9
         MolCraftDiff analyze featurize gen_xyz/ --backend uma --device cuda
+        MolCraftDiff analyze featurize gen_xyz/ --backend ssl3d --ssl3d-checkpoint runs/last.ckpt
+        MolCraftDiff analyze featurize gen_xyz/ --backend ssl3d --ssl3d-checkpoint runs/last.ckpt --device cuda
     """
+    if backend == "ssl3d" and ssl3d_checkpoint is None:
+        raise click.UsageError("--ssl3d-checkpoint is required when --backend ssl3d")
+
     run_featurize = _load_analyze_module("featurize").run_featurize
 
     run_featurize(
@@ -380,6 +392,9 @@ def featurize(input_dir, backend, output, recursive,
         scalar_only=not all_components,
         charge=charge,
         spin=spin,
+        # SSL3D
+        ssl3d_checkpoint=ssl3d_checkpoint,
+        ssl3d_edge_radius=edge_radius,
     )
 
 

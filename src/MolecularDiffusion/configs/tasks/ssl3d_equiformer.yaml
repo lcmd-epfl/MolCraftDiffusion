@@ -1,0 +1,44 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_equiformer.ModelTaskFactory
+task_type: ssl3d_equiformer
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+sphere_channels: 128
+input_sphere_channels: 128
+num_layers: 6
+lmax_list: [6]
+mmax_list: [2]
+attn_hidden_channels: 128
+attn_alpha_channels: 32
+attn_value_channels: 16
+ffn_hidden_channels: 512
+num_heads: 8
+norm_type: "rms_norm_sh"
+edge_channels: 128
+use_atom_edge_embedding: True
+share_atom_edge_embedding: False
+distance_function: "gaussian"
+num_distance_basis: 512
+attn_activation: "scaled_silu"
+ffn_activation: "scaled_silu"
+use_gate_act: False
+use_grid_mlp: False
+use_sep_s2_act: True
+alpha_drop: 0.0
+drop_path_rate: 0.0
+proj_drop: 0.0
+cutoff: 5.0
+weight_init: "normal"
+chkpt_path: null
+
+# SSL3D objectives
+ssl3d_denoise_weight: 1.0
+ssl3d_sigma_min: 0.01
+ssl3d_sigma_max: 1.0
+ssl3d_sigma_schedule: uniform
+
+ssl3d_mtype_weight: 0.5
+ssl3d_mask_rate: 0.15
+ssl3d_atom_vocab_size: 5         # QM9: H C N O F
+
+ssl3d_dist_weight: 0.0
+ssl3d_dist_k_pairs: 16
