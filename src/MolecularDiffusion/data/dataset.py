@@ -36,10 +36,18 @@ class pointcloud_dataset(data.PointCloudDataset):
         pad_data=False,
         dataset_name="suisei",
         allow_unknown=False,
+        chunk_size=None,
+        chunk_dir=None,
         **kwargs,
     ):
         self._processed_file = os.path.join(root, f"processed_data_{dataset_name}.pt")
-        if os.path.exists(self._processed_file):
+        # If chunking is requested, skip the monolithic pickle path entirely.
+        # The DataModule will swap to a LazyChunkedDataset after we finish.
+        if chunk_size is not None and chunk_dir is not None:
+            self._processed_file = None
+            kwargs["chunk_size"] = chunk_size
+            kwargs["chunk_dir"] = chunk_dir
+        if self._processed_file and os.path.exists(self._processed_file):
             logging.info(f"Found processed file at {self._processed_file}, loading it.")
             self.max_atom = max_atom
             self.load_pickle(self._processed_file)
@@ -142,7 +150,8 @@ class pointcloud_dataset(data.PointCloudDataset):
             else:
                 raise ValueError("Either ase_db_path or df_path must be provided.")
 
-            self.save_pickle(self._processed_file)
+            if self._processed_file is not None:
+                self.save_pickle(self._processed_file)
 
 
 class pointcloud_dataset_pyG(data.GraphDataset):
@@ -166,10 +175,19 @@ class pointcloud_dataset_pyG(data.GraphDataset):
         radius=4.0,
         n_neigh=5,
         allow_unknown=False,
+        chunk_size=None,
+        chunk_dir=None,
+        compact=None,
         **kwargs,
     ):
         self._processed_file = os.path.join(root, f"processed_data_{dataset_name}.pt")
-        if os.path.exists(self._processed_file):
+        # If chunking is requested, skip the monolithic pickle path entirely.
+        # The DataModule will swap to a LazyChunkedGraphDataset after we finish.
+        if chunk_size is not None and chunk_dir is not None:
+            self._processed_file = None
+        if compact:
+            kwargs["compact"] = compact
+        if self._processed_file and os.path.exists(self._processed_file):
             self.max_atom = max_atom
             logging.info(f"Found processed file at {self._processed_file}, loading it.")
             self.load_pickle(self._processed_file)
@@ -192,6 +210,8 @@ class pointcloud_dataset_pyG(data.GraphDataset):
                     radius=radius,
                     n_neigh=n_neigh,
                     allow_unknown=allow_unknown,
+                    chunk_size=chunk_size,
+                    chunk_dir=chunk_dir,
                     **kwargs,
                 )
             elif df_path:
@@ -241,9 +261,12 @@ class pointcloud_dataset_pyG(data.GraphDataset):
                     radius=radius,
                     n_neigh=n_neigh,
                     allow_unknown=allow_unknown,
+                    chunk_size=chunk_size,
+                    chunk_dir=chunk_dir,
                     **kwargs,
                 )
             else:
                 raise ValueError("Either ase_db_path or df_path must be provided.")
 
-            self.save_pickle(self._processed_file)
+            if self._processed_file is not None:
+                self.save_pickle(self._processed_file)

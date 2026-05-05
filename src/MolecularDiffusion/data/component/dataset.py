@@ -2,11 +2,11 @@
 import csv
 import logging
 import math
-from typing import Callable, Dict, List, Optional, Union, Any
+from typing import Callable, Dict, Iterator, List, Optional, Union, Any
 import os
 import pickle
+import sys
 from collections import defaultdict
-import itertools
 from glob import glob
 
 import numpy as np
@@ -20,6 +20,10 @@ try:
     from rdkit import Chem
 except ImportError:
     Chem = None
+try:
+    import lmdb
+except ImportError:
+    lmdb = None
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph, radius_graph
 
@@ -29,6 +33,513 @@ from .feature import NodeFeaturizer
 from .pointcloud import PointCloud_Mol
 
 logger = logging.getLogger(__name__)
+
+import itertools
+
+# ---------------------------------------------------------------------------
+# Chunked streaming helpers
+# ---------------------------------------------------------------------------
+
+def _flush_chunk(chunk_dir: str, chunk_idx: int, buf: dict) -> str:
+    """Persist one buffer dict to disk and return the file path."""
+    os.makedirs(chunk_dir, exist_ok=True)
+    path = os.path.join(chunk_dir, f"chunk_{chunk_idx:06d}.pt")
+    torch.save(buf, path)
+    return path
+
+
+def _empty_buf() -> dict:
+    return dict(
+        coords_list=[], node_mask_list=[], edge_mask_list=[],
+        node_feature_list=[], charges_list=[], n_atoms=[],
+        xyzs=[], smiles_list=[], targets=defaultdict(list),
+    )
+
+
+class LazyChunkedDataset(torch_data.Dataset):
+    """
+    Drop-in replacement for PointCloudDataset that never loads the full
+    dataset into RAM.  Chunks are loaded from disk on demand with a small
+    LRU cache.
+
+    Args:
+        chunk_dir: directory containing chunk_*.pt files and meta.pt
+        cache_chunks: how many chunks to keep in memory at once (default 2)
+    """
+
+    def __init__(self, chunk_dir: str, cache_chunks: int = 2):
+        from collections import OrderedDict
+        import bisect
+
+        self.chunk_dir = chunk_dir
+        meta = torch.load(os.path.join(chunk_dir, "meta.pt"), weights_only=False)
+        self.chunk_paths: List[str] = meta["chunk_paths"]
+        self.chunk_sizes: List[int] = meta["chunk_sizes"]
+        self._tasks: List[str] = meta["tasks"]
+        self.atom_vocab: List[str] = meta["atom_vocab"]
+        self.with_hydrogen: bool = meta["with_hydrogen"]
+        self.smiles_list: List[str] = meta["smiles_list"]
+        self.n_atoms: List[int] = meta["n_atoms"]
+
+        # cumulative offsets for O(log n) index lookup
+        self._offsets = [0]
+        for s in self.chunk_sizes:
+            self._offsets.append(self._offsets[-1] + s)
+
+        self._cache: "OrderedDict[int, dict]" = OrderedDict()
+        self._cache_limit = max(1, cache_chunks)
+        self._bisect = bisect
+
+    def _load_chunk(self, chunk_idx: int) -> dict:
+        if chunk_idx in self._cache:
+            self._cache.move_to_end(chunk_idx)
+            return self._cache[chunk_idx]
+        chunk = torch.load(self.chunk_paths[chunk_idx], weights_only=False)
+        if len(self._cache) >= self._cache_limit:
+            self._cache.popitem(last=False)
+        self._cache[chunk_idx] = chunk
+        return chunk
+
+    def __len__(self) -> int:
+        return self._offsets[-1]
+
+    def __getitem__(self, index):
+        if not isinstance(index, int):
+            return [self[i] for i in index]
+        chunk_idx = self._bisect.bisect_right(self._offsets, index) - 1
+        local_idx = index - self._offsets[chunk_idx]
+        c = self._load_chunk(chunk_idx)
+        item = {
+            "coords":       c["coords_list"][local_idx],
+            "node_mask":    c["node_mask_list"][local_idx],
+            "edge_mask":    c["edge_mask_list"][local_idx],
+            "node_feature": c["node_feature_list"][local_idx],
+            "charges":      c["charges_list"][local_idx],
+            "natoms":       c["n_atoms"][local_idx],
+            "xyz":          c["xyzs"][local_idx],
+        }
+        for task in self._tasks:
+            item[task] = c["targets"][task][local_idx]
+        return item
+
+    def get_item(self, index: int):
+        return self[index]
+
+    @property
+    def num_atoms(self) -> torch.Tensor:
+        return torch.tensor(self.n_atoms, dtype=torch.long)
+
+    def atom_types(self) -> List[int]:
+        from ase.data import atomic_numbers as _an
+        types = {_an[s] for s in self.atom_vocab if s in _an} - {0}
+        return sorted(types)
+
+    def get_property(self, task: str) -> torch.Tensor:
+        def _load(path):
+            c = torch.load(path, weights_only=False)
+            return c["targets"].get(task, [])
+
+        n_workers = min(len(self.chunk_paths), (os.cpu_count() or 4), 8)
+        if n_workers > 1 and len(self.chunk_paths) > 2:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                parts = list(pool.map(_load, self.chunk_paths))
+        else:
+            parts = [_load(p) for p in self.chunk_paths]
+        values: List[float] = []
+        for part in parts:
+            values.extend(part)
+        return torch.tensor(values, dtype=torch.float32)
+
+    @property
+    def targets(self) -> dict:
+        # Return key-only dict — callers only need .keys() to validate task names.
+        # Loading all chunks for this is O(n_chunks) disk reads; we avoid it entirely.
+        return dict.fromkeys(self._tasks)
+
+    @property
+    def tasks(self) -> List[str]:
+        return self._tasks
+
+    def __repr__(self) -> str:
+        return (
+            f"LazyChunkedDataset(n={len(self)}, chunks={len(self.chunk_paths)}, "
+            f"tasks={self._tasks})"
+        )
+
+
+def _write_chunk_meta(chunk_dir: str, chunk_paths: List[str],
+                      chunk_sizes: List[int], tasks: List[str],
+                      atom_vocab: List[str], with_hydrogen: bool,
+                      smiles_list: List[str], n_atoms: List[int],
+                      kind: str = "pointcloud"):
+    torch.save(
+        dict(
+            chunk_paths=chunk_paths, chunk_sizes=chunk_sizes,
+            tasks=tasks, atom_vocab=atom_vocab,
+            with_hydrogen=with_hydrogen, smiles_list=smiles_list,
+            n_atoms=n_atoms, kind=kind,
+        ),
+        os.path.join(chunk_dir, "meta.pt"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# pyG flavour of chunked streaming
+# ---------------------------------------------------------------------------
+
+def _empty_pyg_buf() -> dict:
+    return dict(
+        graph_data_list=[], n_atoms=[], smiles_list=[],
+        targets=defaultdict(list),
+    )
+
+
+# ---------------------------------------------------------------------------
+# pyG compact-storage helpers.  Compaction trades a tiny CPU cost per
+# __getitem__ for large memory/disk savings.  All four flags are independent.
+# ---------------------------------------------------------------------------
+
+def _compact_build_pyg(
+    *,
+    node_features: torch.Tensor,
+    coords: torch.Tensor,
+    charges: torch.Tensor,
+    n_nodes: int,
+    smiles: Any,
+    xyz: Any,
+    edge_index: torch.Tensor,
+    edge_type: str,
+    mol_index: int,
+    compact: Dict[str, bool],
+):
+    """Build a (possibly slim) pyG Data for one molecule.
+
+    `compact` keys: drop_edge_index, drop_tags, pack_ohe, int8_z.
+    Returns: (Data, ohe_size) where ohe_size is None when pack_ohe is off.
+    """
+    from torch_geometric.data import Data as _Data
+
+    ohe_size: Optional[int] = None
+    x_store = node_features
+
+    if compact.get("pack_ohe"):
+        # Recover atom indices from OHE.  Only valid when x is purely OHE.
+        ohe_size = int(node_features.shape[1])
+        x_store = node_features.argmax(dim=-1).to(torch.int8)
+
+    z_store = charges.to(torch.int8) if compact.get("int8_z") else charges
+
+    kw: Dict[str, Any] = dict(
+        x=x_store,
+        pos=coords,
+        atomic_numbers=z_store,
+        natoms=n_nodes,
+        smiles=smiles,
+    )
+    if xyz is not None:
+        kw["xyz"] = xyz
+
+    if not compact.get("drop_tags"):
+        kw["tags"] = torch.zeros(n_nodes, dtype=torch.long) + mol_index
+        kw["token_idx"] = torch.arange(n_nodes, dtype=torch.long)
+
+    drop_ei = compact.get("drop_edge_index") and edge_type == "fully_connected"
+    if not drop_ei:
+        kw["edge_index"] = edge_index
+
+    return _Data(**kw), ohe_size
+
+
+def _compact_expand_pyg(
+    data_in,
+    compact: Dict[str, bool],
+    ohe_size: Optional[int],
+    edge_type: str,
+    mol_index: int,
+):
+    """Reconstruct full pyG Data from a slim one.  Returns a NEW Data object;
+    the input is not mutated so it remains safe to read-share across epochs.
+    """
+    from torch_geometric.data import Data as _Data
+
+    n = int(data_in.natoms)
+    kw: Dict[str, Any] = {}
+    for k in data_in.keys():
+        kw[k] = getattr(data_in, k)
+
+    if compact.get("pack_ohe") and ohe_size:
+        atom_idx = data_in.x
+        ohe = torch.zeros(n, ohe_size, dtype=torch.float32)
+        ohe.scatter_(1, atom_idx.long().unsqueeze(1), 1.0)
+        kw["x"] = ohe
+    if compact.get("int8_z"):
+        kw["atomic_numbers"] = data_in.atomic_numbers.long()
+    if compact.get("drop_tags"):
+        kw["tags"] = torch.zeros(n, dtype=torch.long) + mol_index
+        kw["token_idx"] = torch.arange(n, dtype=torch.long)
+    if compact.get("drop_edge_index") and edge_type == "fully_connected":
+        row_ = torch.arange(n).repeat_interleave(n)
+        col_ = torch.arange(n).repeat(n)
+        ei = torch.stack([row_, col_], dim=0)
+        ei = ei[:, row_ != col_]
+        kw["edge_index"] = ei
+
+    return _Data(**kw)
+
+
+def _compact_is_active(compact: Optional[Dict[str, bool]]) -> bool:
+    return bool(compact) and any(bool(v) for v in compact.values())
+
+
+def _augment_chunk_meta_pyg(
+    chunk_dir: str,
+    compact: Dict[str, bool],
+    ohe_size: Optional[int],
+    edge_type: str,
+):
+    """Append compact-reconstruction info to an already-written meta.pt."""
+    meta_path = os.path.join(chunk_dir, "meta.pt")
+    meta = torch.load(meta_path, weights_only=False)
+    meta["compact"] = dict(compact) if compact else {}
+    meta["ohe_size"] = ohe_size
+    meta["edge_type"] = edge_type
+    torch.save(meta, meta_path)
+
+
+class LazyChunkedGraphDataset(torch_data.Dataset):
+    """
+    Drop-in replacement for GraphDataset that streams pyG `Data` objects
+    from disk on demand.
+
+    Each chunk file is a dict with keys:
+      graph_data_list: List[torch_geometric.data.Data]
+      n_atoms:         List[int]
+      smiles_list:     List[str]
+      targets:         Dict[str, List[float]]
+    """
+
+    def __init__(self, chunk_dir: str, cache_chunks: int = 2):
+        from collections import OrderedDict
+        import bisect
+
+        self.chunk_dir = chunk_dir
+        meta = torch.load(os.path.join(chunk_dir, "meta.pt"), weights_only=False)
+        self.chunk_paths: List[str] = meta["chunk_paths"]
+        self.chunk_sizes: List[int] = meta["chunk_sizes"]
+        self._tasks: List[str] = meta["tasks"]
+        self.atom_vocab: List[str] = meta["atom_vocab"]
+        self.with_hydrogen: bool = meta["with_hydrogen"]
+        self.smiles_list: List[str] = meta["smiles_list"]
+        self.n_atoms: List[int] = meta["n_atoms"]
+        self._compact: Dict[str, bool] = meta.get("compact") or {}
+        self._ohe_size: Optional[int] = meta.get("ohe_size")
+        self._edge_type: str = meta.get("edge_type", "fully_connected")
+
+        self._offsets = [0]
+        for s in self.chunk_sizes:
+            self._offsets.append(self._offsets[-1] + s)
+
+        self._cache: "OrderedDict[int, dict]" = OrderedDict()
+        self._cache_limit = max(1, cache_chunks)
+        self._bisect = bisect
+        self.transform = None
+
+    def _load_chunk(self, chunk_idx: int) -> dict:
+        if chunk_idx in self._cache:
+            self._cache.move_to_end(chunk_idx)
+            return self._cache[chunk_idx]
+        chunk = torch.load(self.chunk_paths[chunk_idx], weights_only=False)
+        if len(self._cache) >= self._cache_limit:
+            self._cache.popitem(last=False)
+        self._cache[chunk_idx] = chunk
+        return chunk
+
+    def __len__(self) -> int:
+        return self._offsets[-1]
+
+    def get_item(self, index: int):
+        chunk_idx = self._bisect.bisect_right(self._offsets, index) - 1
+        local_idx = index - self._offsets[chunk_idx]
+        c = self._load_chunk(chunk_idx)
+        item = {task: c["targets"][task][local_idx] for task in self._tasks}
+        graph = c["graph_data_list"][local_idx]
+        if _compact_is_active(self._compact):
+            graph = _compact_expand_pyg(
+                graph, self._compact, self._ohe_size, self._edge_type, index,
+            )
+        item["graph"] = graph
+        if self.transform:
+            item = self.transform(item)
+        return item
+
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            return self.get_item(index)
+        if isinstance(index, slice):
+            start = index.start or 0
+            if start < 0: start += len(self)
+            stop = index.stop or len(self)
+            if stop < 0: stop += len(self)
+            step = index.step or 1
+            index = range(start, stop, step)
+        return [self.get_item(i) for i in index]
+
+    @property
+    def num_atoms(self) -> torch.Tensor:
+        return torch.tensor(self.n_atoms, dtype=torch.long)
+
+    def atom_types(self) -> List[int]:
+        types = {atomic_numbers[s] for s in self.atom_vocab if s in atomic_numbers} - {0}
+        return sorted(types)
+
+    @property
+    def num_atom_type(self) -> int:
+        return len(self.atom_types())
+
+    def get_property(self, task: str) -> Optional[torch.Tensor]:
+        if task not in self._tasks:
+            return None
+
+        def _load(path):
+            c = torch.load(path, weights_only=False)
+            return c["targets"].get(task, [])
+
+        n_workers = min(len(self.chunk_paths), (os.cpu_count() or 4), 8)
+        if n_workers > 1 and len(self.chunk_paths) > 2:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                parts = list(pool.map(_load, self.chunk_paths))
+        else:
+            parts = [_load(p) for p in self.chunk_paths]
+        values: List[float] = []
+        for part in parts:
+            values.extend(part)
+        return torch.tensor(values, dtype=torch.float32)
+
+    @property
+    def targets(self) -> dict:
+        # Return key-only dict — callers only need .keys() to validate task names.
+        # Loading all chunks for this is O(n_chunks) disk reads; we avoid it entirely.
+        return dict.fromkeys(self._tasks)
+
+    @property
+    def tasks(self) -> List[str]:
+        return self._tasks
+
+    def __repr__(self) -> str:
+        return (
+            f"LazyChunkedGraphDataset(n={len(self)}, chunks={len(self.chunk_paths)}, "
+            f"tasks={self._tasks})"
+        )
+
+
+class _ASELMDBRow:
+    def __init__(self, payload: Dict[str, Any]):
+        self._atoms = payload["atoms"]
+        self.data = payload.get("data", {}) or {}
+        self.id = payload.get("id")
+
+    def toatoms(self):
+        return self._atoms
+
+
+def _ensure_numpy_pickle_compat():
+    try:
+        import numpy._core.numeric  # type: ignore[attr-defined]  # noqa: F401
+    except ImportError:
+        import numpy.core.numeric as numpy_core_numeric
+
+        sys.modules.setdefault("numpy._core.numeric", numpy_core_numeric)
+
+
+def _get_aselmdb_length(db_path: str) -> int:
+    if lmdb is None:
+        raise ImportError(
+            "lmdb is required to read .aselmdb files. Install the optional dependency first."
+        )
+
+    env = lmdb.open(
+        db_path,
+        subdir=False,
+        readonly=True,
+        lock=False,
+        readahead=False,
+        meminit=False,
+    )
+    try:
+        with env.begin() as txn:
+            raw_length = txn.get(b"length")
+            if raw_length is None:
+                raise ValueError(f"Missing 'length' key in {db_path}")
+            return int(pickle.loads(raw_length))
+    finally:
+        env.close()
+
+
+def _iter_aselmdb_rows(db_path: str) -> Iterator[_ASELMDBRow]:
+    if lmdb is None:
+        raise ImportError(
+            "lmdb is required to read .aselmdb files. Install the optional dependency first."
+        )
+
+    _ensure_numpy_pickle_compat()
+    env = lmdb.open(
+        db_path,
+        subdir=False,
+        readonly=True,
+        lock=False,
+        readahead=False,
+        meminit=False,
+    )
+    try:
+        with env.begin() as txn:
+            raw_length = txn.get(b"length")
+            if raw_length is None:
+                raise ValueError(f"Missing 'length' key in {db_path}")
+            total_rows = int(pickle.loads(raw_length))
+            for idx in range(total_rows):
+                key = str(idx).encode("ascii")
+                payload = txn.get(key)
+                if payload is None:
+                    raise KeyError(f"Missing key {idx} in {db_path}")
+                yield _ASELMDBRow(pickle.loads(payload))
+    finally:
+        env.close()
+
+
+def _collect_db_sources(db_path: str) -> List[Dict[str, Any]]:
+    if os.path.isdir(db_path):
+        sqlite_files = sorted(glob(os.path.join(db_path, "*.db")))
+        aselmdb_files = sorted(glob(os.path.join(db_path, "*.aselmdb")))
+        db_files = [{"kind": "ase", "path": path} for path in sqlite_files]
+        db_files.extend({"kind": "aselmdb", "path": path} for path in aselmdb_files)
+    elif os.path.isfile(db_path):
+        kind = "aselmdb" if db_path.endswith(".aselmdb") else "ase"
+        db_files = [{"kind": kind, "path": db_path}]
+    else:
+        raise ValueError(
+            f"Invalid db_path: {db_path}. It must be a .db file, a .aselmdb file, or a directory containing them."
+        )
+
+    if not db_files:
+        raise FileNotFoundError(f"No .db or .aselmdb files found in {db_path}")
+
+    for source in db_files:
+        if source["kind"] == "ase":
+            source["length"] = connect(source["path"]).count()
+        else:
+            source["length"] = _get_aselmdb_length(source["path"])
+
+    return db_files
+
+
+def _iter_db_rows(db_sources: List[Dict[str, Any]]) -> Iterator[Any]:
+    for source in db_sources:
+        if source["kind"] == "ase":
+            yield from connect(source["path"]).select()
+        else:
+            yield from _iter_aselmdb_rows(source["path"])
 
 hybiridization_map = {
     "S": 0, 'SP': 1, 'SP2': 2, 'SP3': 3, 'SP3D': 4, 'SP3D2': 5, 'UNSPECIFIED': -1
@@ -58,7 +569,13 @@ BASE_ATOM_VOCAB = [
 
 #TODO this does not appear to handle NaN in the data
 class GraphDataset(torch_data.Dataset):
-    
+
+    # Compaction state.  Set by load_xyz/load_npy/load_db when compact flags
+    # are passed.  Used by get_item to reconstruct full Data on the fly.
+    _compact: Dict[str, bool] = {}
+    _ohe_size: Optional[int] = None
+    _edge_type: str = "fully_connected"
+
     def load_smiles(self):
         pass
     
@@ -102,7 +619,7 @@ class GraphDataset(torch_data.Dataset):
 
         if atom_vocab == []:
             atom_vocab = BASE_ATOM_VOCAB
-            print("atom vocabulary not provided, using defaul in constant.py")
+            logger.info("atom vocabulary not provided, using defaul in constant.py")
         with open(csv_file, "r") as fin:
             reader = csv.reader(fin)
             if verbose:
@@ -145,7 +662,7 @@ class GraphDataset(torch_data.Dataset):
             use_ohe_feature=use_ohe_feature,
             **kwargs,
         )
-    
+
     def load_xyz(
         self,
         xyz_list: List[str],
@@ -163,6 +680,9 @@ class GraphDataset(torch_data.Dataset):
         verbose: int = 0,
         allow_unknown: bool = False,
         use_ohe_feature: bool = True,
+        chunk_size: Optional[int] = None,
+        chunk_dir: Optional[str] = None,
+        compact: Optional[Dict[str, bool]] = None,
         **kwargs: Any,
     ):
         """
@@ -182,6 +702,8 @@ class GraphDataset(torch_data.Dataset):
             radius (float, optional): radius to construct the graph (default: 4.0)
             n_neigh (int, optional): number of neighbors to consider (default: 5)
             verbose (int, optional): output verbose level
+            chunk_size (int, optional): flush to disk every N molecules to limit RAM.
+            chunk_dir (str, optional): directory to write chunk files.
             **kwargs
         """
 
@@ -196,9 +718,9 @@ class GraphDataset(torch_data.Dataset):
             xyz_list = tqdm(xyz_list, "Constructing point cloud molecules from XYZs")
 
         if with_hydrogen:
-            print("Hydrogen atoms are considered")
+            logger.info("Hydrogen atoms are considered")
         else:
-            print("Hydrogen atoms are not considered")
+            logger.info("Hydrogen atoms are not considered")
         self.with_hydrogen = with_hydrogen
         self.transform = transform
         self.kwargs = kwargs
@@ -206,7 +728,25 @@ class GraphDataset(torch_data.Dataset):
         self.atom_vocab = atom_vocab
         self.graph_data_list = []
         self.n_atoms = []
-        
+        self.smiles_list = []
+
+        # compaction state
+        self._compact = dict(compact) if compact else {}
+        self._edge_type = edge_type
+        self._ohe_size = None
+
+        # chunking state
+        _chunking = chunk_size is not None and chunk_dir is not None
+        _buf = _empty_pyg_buf() if _chunking else None
+        _chunk_paths: List[str] = []
+        _chunk_sizes: List[int] = []
+        _all_smiles: List[str] = []
+        _all_n_atoms: List[int] = []
+        _chunk_idx = 0
+
+        skipped_too_large = 0
+        skipped_forbidden = 0
+        skipped_nan = 0
         for i, xyz in enumerate(xyz_list):
             try:
                 if os.path.exists(xyz):
@@ -215,26 +755,21 @@ class GraphDataset(torch_data.Dataset):
                         xyz, with_hydrogen, forbidden_atoms=forbidden_atoms
                     )
                     if mol_xyz is None:
-                        if verbose > 0:
-                            print(f"Skipping {xyz} due to containing forbidden atoms")
+                        skipped_forbidden += 1
                         continue
                     if len(mol_xyz.atoms) > max_atom:
-                        if verbose > 0:
-                            print(
-                                f"Skipping {xyz} due to too many atoms {len(mol_xyz.atoms)}"
-                            )
+                        skipped_too_large += 1
                         continue
                     coords = mol_xyz.get_coord()
 
                     if i < len(smiles_list):
                         smiles = smiles_list[i]
                     else:
-                        if verbose > 0:
-                            print("Cannot find smiles for ", xyz)
+                        logger.info("Cannot find smiles for %s", xyz)
                         smiles = None
 
                 else:
-                    print(f"File {xyz} does not exist")
+                    logger.info(f"File {xyz} does not exist")
                     continue
 
                 # Extract atom symbols and charges
@@ -256,8 +791,7 @@ class GraphDataset(torch_data.Dataset):
                 charges = torch.as_tensor(charges, dtype=torch.long)
 
                 n_nodes = len(mol_xyz.atoms)
-                self.n_atoms.append(n_nodes)
-                
+
                 if edge_type == "distance":
                     edge_index = radius_graph(coords, r=radius)
                 elif edge_type == "neighbor":
@@ -270,26 +804,70 @@ class GraphDataset(torch_data.Dataset):
                     edge_index = edge_index[:, row_ != col]  # Remove self-loops if needed
                 else:
                     raise ValueError("Unknown edge type %s" % edge_type)
-                
-                tags = torch.zeros(n_nodes, dtype=torch.long) + i
-                graph_data = Data(
-                            x=node_features,
-                            pos=coords,
-                            atomic_numbers=charges,
-                            natoms=n_nodes,
-                            token_idx=torch.arange(n_nodes, dtype=torch.long),
-                            smiles=smiles,
-                            xyz=xyz,
-                            edge_index=edge_index,
-                            tags=tags,
-                        )
-                self.graph_data_list.append(graph_data)
-                for field in targets:
-                    self.targets[field].append(float(targets[field][i]))
+
+                graph_data, _ohe_sz = _compact_build_pyg(
+                    node_features=node_features,
+                    coords=coords,
+                    charges=charges,
+                    n_nodes=n_nodes,
+                    smiles=smiles,
+                    xyz=xyz,
+                    edge_index=edge_index,
+                    edge_type=edge_type,
+                    mol_index=i,
+                    compact=self._compact,
+                )
+                if _ohe_sz is not None and self._ohe_size is None:
+                    self._ohe_size = _ohe_sz
+
+                if _chunking:
+                    _buf["graph_data_list"].append(graph_data)
+                    _buf["n_atoms"].append(n_nodes)
+                    _buf["smiles_list"].append(smiles)
+                    for field in targets:
+                        _buf["targets"][field].append(float(targets[field][i]))
+                    _all_smiles.append(smiles)
+                    _all_n_atoms.append(n_nodes)
+
+                    if len(_buf["graph_data_list"]) >= chunk_size:
+                        path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+                        _chunk_paths.append(path)
+                        _chunk_sizes.append(len(_buf["graph_data_list"]))
+                        logger.info(f"Flushed pyG chunk {_chunk_idx} ({_chunk_sizes[-1]} graphs) → {path}")
+                        _chunk_idx += 1
+                        _buf = _empty_pyg_buf()
+                else:
+                    self.graph_data_list.append(graph_data)
+                    self.n_atoms.append(n_nodes)
+                    self.smiles_list.append(smiles)
+                    for field in targets:
+                        self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
-                logging.error(f"Error in loading {xyz}: {e}")
+                logger.error(f"Error in loading {xyz}: {e}")
                 continue
+
+        if _chunking and _buf["graph_data_list"]:
+            path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+            _chunk_paths.append(path)
+            _chunk_sizes.append(len(_buf["graph_data_list"]))
+            logger.info(f"Flushed final pyG chunk {_chunk_idx} ({_chunk_sizes[-1]} graphs) → {path}")
+
+        if _chunking:
+            _write_chunk_meta(
+                chunk_dir, _chunk_paths, _chunk_sizes,
+                list(targets.keys()), atom_vocab, with_hydrogen,
+                _all_smiles, _all_n_atoms,
+                kind="pyg",
+            )
+            _augment_chunk_meta_pyg(chunk_dir, self._compact, self._ohe_size, edge_type)
+            logger.info(
+                f"Chunked pyG processing complete: {sum(_chunk_sizes)} graphs "
+                f"in {len(_chunk_paths)} chunks → {chunk_dir}"
+            )
+
+        if skipped_too_large or skipped_forbidden:
+            logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms")
 
     def load_npy(
         self,
@@ -309,6 +887,9 @@ class GraphDataset(torch_data.Dataset):
         verbose: int = 0,
         allow_unknown: bool = False,
         use_ohe_feature: bool = True,
+        chunk_size: Optional[int] = None,
+        chunk_dir: Optional[str] = None,
+        compact: Optional[Dict[str, bool]] = None,
         **kwargs: Any,
     ):
         """
@@ -329,6 +910,8 @@ class GraphDataset(torch_data.Dataset):
             radius (float, optional): radius to construct the graph
             n_neigh (int, optional): number of neighbors to consider
             verbose (int, optional): output verbose level
+            chunk_size (int, optional): flush to disk every N molecules to limit RAM.
+            chunk_dir (str, optional): directory to write chunk files.
             **kwargs
         """
         num_sample = natoms.size(0)
@@ -342,9 +925,9 @@ class GraphDataset(torch_data.Dataset):
             natoms = tqdm(natoms, "Constructing graphs from npy data")
 
         if with_hydrogen:
-            print("Hydrogen atoms are considered")
+            logger.info("Hydrogen atoms are considered")
         else:
-            print("Hydrogen atoms are not considered")
+            logger.info("Hydrogen atoms are not considered")
         self.with_hydrogen = with_hydrogen
         self.transform = transform
         self.kwargs = kwargs
@@ -352,7 +935,24 @@ class GraphDataset(torch_data.Dataset):
         self.atom_vocab = atom_vocab
         self.graph_data_list = []
         self.n_atoms = []
+        self.smiles_list = []
 
+        # compaction state
+        self._compact = dict(compact) if compact else {}
+        self._edge_type = edge_type
+        self._ohe_size = None
+
+        # chunking state
+        _chunking = chunk_size is not None and chunk_dir is not None
+        _buf = _empty_pyg_buf() if _chunking else None
+        _chunk_paths: List[str] = []
+        _chunk_sizes: List[int] = []
+        _all_smiles: List[str] = []
+        _all_n_atoms: List[int] = []
+        _chunk_idx = 0
+
+        skipped_too_large = 0
+        skipped_forbidden = 0
         start_index = 0
         for i, natom in enumerate(natoms):
             try:
@@ -361,21 +961,19 @@ class GraphDataset(torch_data.Dataset):
                 start_index = end_index
 
                 if natom > max_atom:
-                    if verbose > 0:
-                        print(f"Skipping {i} due to too many atoms {natom} > {max_atom}")
+                    skipped_too_large += 1
                     continue
 
                 # Parse coords tensor: [mol_idx, Z, x, y, z]
                 zs = molecule_data[:, 1].long()
                 mol_coords = molecule_data[:, 2:5].float()
-                
+
                 mol_xyz = PointCloud_Mol.from_arrays(
                     zs, mol_coords, with_hydrogen, forbidden_atoms=forbidden_atoms
                 )
 
                 if mol_xyz is None:
-                    if verbose > 0:
-                        print(f"Skipping {i} due to containing forbidden atoms")
+                    skipped_forbidden += 1
                     continue
 
                 coords_mol = mol_xyz.get_coord()
@@ -383,8 +981,7 @@ class GraphDataset(torch_data.Dataset):
                 if i < len(smiles_list):
                     smiles = smiles_list[i]
                 else:
-                    if verbose > 0:
-                        print("Cannot find smiles for ", i)
+                    logger.info("Cannot find smiles for %s", i)
                     smiles = None
 
                 # Extract atom symbols and charges
@@ -404,8 +1001,7 @@ class GraphDataset(torch_data.Dataset):
                 node_features = featurizer.featurize_all(atom_symbols, charges, coords_mol)
 
                 n_nodes = len(mol_xyz.atoms)
-                self.n_atoms.append(n_nodes)
-                
+
                 # Build edges
                 if edge_type == "distance":
                     edge_index = radius_graph(coords_mol, r=radius)
@@ -419,25 +1015,70 @@ class GraphDataset(torch_data.Dataset):
                     edge_index = edge_index[:, row_ != col_]  # Remove self-loops
                 else:
                     raise ValueError("Unknown edge type %s" % edge_type)
-                
-                tags = torch.zeros(n_nodes, dtype=torch.long) + i
-                graph_data = Data(
-                    x=node_features,
-                    pos=coords_mol,
-                    atomic_numbers=charges,
-                    natoms=n_nodes,
-                    token_idx=torch.arange(n_nodes, dtype=torch.long),
+
+                graph_data, _ohe_sz = _compact_build_pyg(
+                    node_features=node_features,
+                    coords=coords_mol,
+                    charges=charges,
+                    n_nodes=n_nodes,
                     smiles=smiles,
+                    xyz=None,
                     edge_index=edge_index,
-                    tags=tags,
+                    edge_type=edge_type,
+                    mol_index=i,
+                    compact=self._compact,
                 )
-                self.graph_data_list.append(graph_data)
-                for field in targets:
-                    self.targets[field].append(float(targets[field][i]))
+                if _ohe_sz is not None and self._ohe_size is None:
+                    self._ohe_size = _ohe_sz
+
+                if _chunking:
+                    _buf["graph_data_list"].append(graph_data)
+                    _buf["n_atoms"].append(n_nodes)
+                    _buf["smiles_list"].append(smiles)
+                    for field in targets:
+                        _buf["targets"][field].append(float(targets[field][i]))
+                    _all_smiles.append(smiles)
+                    _all_n_atoms.append(n_nodes)
+
+                    if len(_buf["graph_data_list"]) >= chunk_size:
+                        path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+                        _chunk_paths.append(path)
+                        _chunk_sizes.append(len(_buf["graph_data_list"]))
+                        logger.info(f"Flushed pyG chunk {_chunk_idx} ({_chunk_sizes[-1]} graphs) → {path}")
+                        _chunk_idx += 1
+                        _buf = _empty_pyg_buf()
+                else:
+                    self.graph_data_list.append(graph_data)
+                    self.n_atoms.append(n_nodes)
+                    self.smiles_list.append(smiles)
+                    for field in targets:
+                        self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
-                logging.error(f"Error in loading molecule {i}: {e}")
+                logger.error(f"Error in loading molecule {i}: {e}")
                 continue
+
+        if _chunking and _buf["graph_data_list"]:
+            path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+            _chunk_paths.append(path)
+            _chunk_sizes.append(len(_buf["graph_data_list"]))
+            logger.info(f"Flushed final pyG chunk {_chunk_idx} ({_chunk_sizes[-1]} graphs) → {path}")
+
+        if _chunking:
+            _write_chunk_meta(
+                chunk_dir, _chunk_paths, _chunk_sizes,
+                list(targets.keys()), atom_vocab, with_hydrogen,
+                _all_smiles, _all_n_atoms,
+                kind="pyg",
+            )
+            _augment_chunk_meta_pyg(chunk_dir, self._compact, self._ohe_size, edge_type)
+            logger.info(
+                f"Chunked pyG processing complete: {sum(_chunk_sizes)} graphs "
+                f"in {len(_chunk_paths)} chunks → {chunk_dir}"
+            )
+
+        if skipped_too_large or skipped_forbidden:
+            logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms")
 
     def load_db(
         self,
@@ -455,6 +1096,9 @@ class GraphDataset(torch_data.Dataset):
         verbose: int = 0,
         allow_unknown: bool = False,
         use_ohe_feature: bool = True,
+        chunk_size: Optional[int] = None,
+        chunk_dir: Optional[str] = None,
+        compact: Optional[Dict[str, bool]] = None,
         **kwargs: Any,
     ):
         """
@@ -482,7 +1126,7 @@ class GraphDataset(torch_data.Dataset):
 
         if not atom_vocab:
             atom_vocab = BASE_ATOM_VOCAB
-            print("atom vocabulary not provided, using default")
+            logger.info("atom vocabulary not provided, using default")
 
         self.with_hydrogen = with_hydrogen
         self.transform = transform
@@ -491,39 +1135,46 @@ class GraphDataset(torch_data.Dataset):
         self.atom_vocab = atom_vocab
         self.graph_data_list = []
         self.n_atoms = []
-        
-        db_files = []
-        if os.path.isdir(db_path):
-            db_files.extend(glob(os.path.join(db_path, "*.db")))
-        elif os.path.isfile(db_path):
-            db_files.append(db_path)
-        else:
-            raise ValueError(
-                f"Invalid db_path: {db_path}. It must be a .db file or a directory containing .db files."
-            )
+        self.smiles_list = []
 
-        if not db_files:
-            raise FileNotFoundError(f"No .db files found in {db_path}")
+        # compaction state
+        self._compact = dict(compact) if compact else {}
+        self._edge_type = edge_type
+        self._ohe_size = None  # populated from first molecule below
 
-        dbs = [connect(f) for f in db_files]
-        total_len = sum(len(db) for db in dbs)
-        iterator = itertools.chain.from_iterable(db.select() for db in dbs)
+        # chunking state
+        _chunking = chunk_size is not None and chunk_dir is not None
+        _buf = _empty_pyg_buf() if _chunking else None
+        _chunk_paths: List[str] = []
+        _chunk_sizes: List[int] = []
+        _all_smiles: List[str] = []
+        _all_n_atoms: List[int] = []
+        _chunk_idx = 0
+
+        db_sources = _collect_db_sources(db_path)
+        total_len = sum(source["length"] for source in db_sources)
+        iterator = _iter_db_rows(db_sources)
 
         if verbose:
             iterator = tqdm(iterator, "Processing ASE db files", total=total_len)
 
+        skipped_too_large = 0
+        skipped_forbidden = 0
+        skipped_nan = 0
+        skipped_mol_block = 0
+        skipped_rdkit = 0
+        skipped_atom_mismatch = 0
         for i, row in enumerate(iterator):
             try:
                 mol_ase = row.toatoms()
+                row_data = getattr(row, "data", {}) or {}
 
                 if len(mol_ase) > max_atom:
-                    if verbose > 0:
-                        logger.warning(f"Skipping entry {i} with {len(mol_ase)} atoms (> {max_atom})")
+                    skipped_too_large += 1
                     continue
 
                 if any(atom.symbol in forbidden_atoms for atom in mol_ase):
-                    if verbose > 0:
-                        logger.warning(f"Skipping entry {i} due to forbidden atoms")
+                    skipped_forbidden += 1
                     continue
 
                 coords = torch.from_numpy(mol_ase.get_positions()).to(torch.float32)
@@ -531,7 +1182,7 @@ class GraphDataset(torch_data.Dataset):
                 n_nodes = len(mol_ase)
 
                 atomic_symbols = mol_ase.get_chemical_symbols()
-                
+
                 # Create featurizer for OHE
                 featurizer = NodeFeaturizer(
                     atom_vocab=atom_vocab,
@@ -539,7 +1190,7 @@ class GraphDataset(torch_data.Dataset):
                     geom_feature=None,  # geom handled separately for load_db
                     allow_unknown=allow_unknown
                 )
-                
+
                 if use_ohe_feature:
                     node_features = featurizer.compute_ohe(atomic_symbols)
                 else:
@@ -549,26 +1200,24 @@ class GraphDataset(torch_data.Dataset):
                 if node_feature_choice:
                     if isinstance(node_feature_choice, (list, tuple)) or hasattr(node_feature_choice, '__iter__') and not isinstance(node_feature_choice, str):
                         # List: use existing RDKit scalar logic (requires mol_block)
-                        if "mol_block" not in row.data:
-                            if verbose > 0:
-                                logger.warning(f"Skipping entry {i} as it lacks 'mol_block' for rdkit features")
+                        if "mol_block" not in row_data:
+                            skipped_mol_block += 1
                             continue
-                        
-                        mol_block = row.data.get('mol_block')
+
+                        mol_block = row_data.get('mol_block')
                         if isinstance(mol_block, bytes):
                             mol_block = mol_block.decode('utf-8')
 
                         mol_rdkit = Chem.MolFromMolBlock(mol_block, removeHs=False)
                         if not mol_rdkit:
-                            logger.warning(f"RDKit failed to parse mol_block for entry {i}")
+                            skipped_rdkit += 1
                             continue
 
                         ase_atomic_num = mol_ase.get_atomic_numbers()
                         rdkit_atomic_num = np.array([atom.GetAtomicNum() for atom in mol_rdkit.GetAtoms()])
                         if not np.array_equal(ase_atomic_num, rdkit_atomic_num):
-                             if verbose > 0:
-                                logger.warning(f"Atom order mismatch for entry {i}. Skipping.")
-                             continue
+                            skipped_atom_mismatch += 1
+                            continue
 
                         atom_feats = defaultdict(list)
                         for atom in mol_rdkit.GetAtoms():
@@ -602,10 +1251,9 @@ class GraphDataset(torch_data.Dataset):
 
 
                 if torch.isnan(coords).any() or (node_features is not None and torch.isnan(node_features).any()):
-                    if verbose > 0:
-                        print(f"Skipping entry {i} due to NaN values in coordinates or node features")
+                    skipped_nan += 1
                     continue
-                
+
                 smiles = Chem.MolToSmiles(mol_rdkit) if mol_rdkit else None
 
                 if edge_type == "distance":
@@ -621,24 +1269,26 @@ class GraphDataset(torch_data.Dataset):
                 else:
                     raise ValueError(f"Unknown edge type {edge_type}")
 
-                tags = torch.zeros(n_nodes, dtype=torch.long) + i
-                graph_data = Data(
-                    x=node_features,
-                    pos=coords,
-                    atomic_numbers=charges,
-                    natoms=n_nodes,
-                    token_idx=torch.arange(n_nodes, dtype=torch.long),
+                graph_data, _ohe_sz = _compact_build_pyg(
+                    node_features=node_features,
+                    coords=coords,
+                    charges=charges,
+                    n_nodes=n_nodes,
                     smiles=smiles,
                     xyz=f"db_entry_{i}",
                     edge_index=edge_index,
-                    tags=tags,
+                    edge_type=edge_type,
+                    mol_index=i,
+                    compact=self._compact,
                 )
-                
-                self.graph_data_list.append(graph_data)
-                self.n_atoms.append(n_nodes)
+                if _ohe_sz is not None and self._ohe_size is None:
+                    self._ohe_size = _ohe_sz
+
+                # Resolve target values once (used by both paths)
+                resolved_targets: Dict[str, float] = {}
                 if target_fields:
                     for field in target_fields:
-                        value = row.data.get(field, -1)
+                        value = row_data.get(field, -1)
                         if value == "":
                             default_values = {
                                 "total_charge": 0,
@@ -655,13 +1305,62 @@ class GraphDataset(torch_data.Dataset):
                                 value = value.tolist()
                         if value == "":
                             value = math.nan
-                        self.targets[field].append(float(value))
-                
+                        resolved_targets[field] = float(value)
+
+                if _chunking:
+                    _buf["graph_data_list"].append(graph_data)
+                    _buf["n_atoms"].append(n_nodes)
+                    _buf["smiles_list"].append(smiles)
+                    for field, val in resolved_targets.items():
+                        _buf["targets"][field].append(val)
+                    _all_smiles.append(smiles)
+                    _all_n_atoms.append(n_nodes)
+
+                    if len(_buf["graph_data_list"]) >= chunk_size:
+                        path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+                        _chunk_paths.append(path)
+                        _chunk_sizes.append(len(_buf["graph_data_list"]))
+                        logger.info(f"Flushed pyG chunk {_chunk_idx} ({_chunk_sizes[-1]} graphs) → {path}")
+                        _chunk_idx += 1
+                        _buf = _empty_pyg_buf()
+                else:
+                    self.graph_data_list.append(graph_data)
+                    self.n_atoms.append(n_nodes)
+                    self.smiles_list.append(smiles)
+                    for field, val in resolved_targets.items():
+                        self.targets[field].append(val)
+
             except Exception as e:
-                logging.error(f"Error in loading db entry {i}: {e}")
+                logger.error(f"Error in loading db entry {i}: {e}")
                 continue
-            
-         
+
+        if _chunking and _buf["graph_data_list"]:
+            path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+            _chunk_paths.append(path)
+            _chunk_sizes.append(len(_buf["graph_data_list"]))
+            logger.info(f"Flushed final pyG chunk {_chunk_idx} ({_chunk_sizes[-1]} graphs) → {path}")
+
+        if _chunking:
+            _write_chunk_meta(
+                chunk_dir, _chunk_paths, _chunk_sizes,
+                list(target_fields) if target_fields else [],
+                atom_vocab, with_hydrogen,
+                _all_smiles, _all_n_atoms,
+                kind="pyg",
+            )
+            _augment_chunk_meta_pyg(chunk_dir, self._compact, self._ohe_size, edge_type)
+            logger.info(
+                f"Chunked pyG processing complete: {sum(_chunk_sizes)} graphs "
+                f"in {len(_chunk_paths)} chunks → {chunk_dir}"
+            )
+
+        if skipped_too_large or skipped_forbidden or skipped_nan or skipped_mol_block or skipped_rdkit or skipped_atom_mismatch:
+            logger.warning(
+                f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, "
+                f"{skipped_nan} NaN values, {skipped_mol_block} missing mol_block, "
+                f"{skipped_rdkit} RDKit parse failures, {skipped_atom_mismatch} atom order mismatches"
+            )
+
     def load_pickle(self, pkl_file, verbose=0):
         """
         Load the dataset from a pickle file.
@@ -684,13 +1383,23 @@ class GraphDataset(torch_data.Dataset):
             indexes = range(num_sample)
             if verbose:
                 indexes = tqdm(indexes, "Loading %s" % pkl_file)
+            
+            skipped_too_large = 0
             for i in indexes:
                 graph_data, values = pickle.load(fin) 
+                
+                if hasattr(self, 'max_atom') and self.max_atom > 0 and graph_data.natoms > self.max_atom:
+                    skipped_too_large += 1
+                    continue
+                    
                 self.graph_data_list.append(graph_data)
                 self.n_atoms.append(graph_data.natoms)
                 for task, value in zip(tasks, values):
                     self.targets[task].append(float(value))
             self.atom_vocab, self.with_hydrogen = pickle.load(fin)
+            
+            if skipped_too_large:
+                logger.warning(f"Discarded {skipped_too_large} entries because they exceed max_atom limit")
 
     def save_pickle(self, pkl_file, verbose=0):
         """
@@ -744,7 +1453,12 @@ class GraphDataset(torch_data.Dataset):
         # item = {"Point Cloud": self.data[index]}
 
         item = {k: v[index] for k, v in self.targets.items()}
-        item.update({"graph": self.graph_data_list[index]})
+        graph = self.graph_data_list[index]
+        if _compact_is_active(self._compact):
+            graph = _compact_expand_pyg(
+                graph, self._compact, self._ohe_size, self._edge_type, index,
+            )
+        item["graph"] = graph
         if self.transform:
             item = self.transform(item)
         return item
@@ -819,6 +1533,9 @@ class PointCloudDataset(torch_data.Dataset):
         verbose: int = 0,
         allow_unknown: bool = False,
         use_ohe_feature: bool = True,
+        chunk_size: Optional[int] = None,
+        chunk_dir: Optional[str] = None,
+        compact: Optional[Dict[str, bool]] = None,
         **kwargs: Any,
     ):
         """
@@ -836,6 +1553,8 @@ class PointCloudDataset(torch_data.Dataset):
             pad_data (bool, optional): whether to pad data to max_atom
             forbidden_atoms (list of str, optional): forbidden atoms
             verbose (int, optional): output verbose level
+            chunk_size (int, optional): flush to disk every N molecules to limit RAM.
+            chunk_dir (str, optional): directory to write chunk files.
             **kwargs
         """
 
@@ -850,9 +1569,9 @@ class PointCloudDataset(torch_data.Dataset):
             xyz_list = tqdm(xyz_list, "Constructing point cloud molecules from XYZs")
 
         if with_hydrogen:
-            print("Hydrogen atoms are considered")
+            logger.info("Hydrogen atoms are considered")
         else:
-            print("Hydrogen atoms are not considered")
+            logger.info("Hydrogen atoms are not considered")
         self.with_hydrogen = with_hydrogen
         self.transform = transform
         self.kwargs = kwargs
@@ -865,65 +1584,58 @@ class PointCloudDataset(torch_data.Dataset):
         self.charges_list = []
         self.targets = defaultdict(list)
         self.n_atoms = []
-
         self.atom_vocab = atom_vocab
 
+        # chunking state
+        _chunking = chunk_size is not None and chunk_dir is not None
+        _buf = _empty_buf() if _chunking else None
+        _chunk_paths: List[str] = []
+        _chunk_sizes: List[int] = []
+        _all_smiles: List[str] = []
+        _all_n_atoms: List[int] = []
+        _chunk_idx = 0
 
+        skipped_too_large = 0
+        skipped_forbidden = 0
+        skipped_nan = 0
         for i, xyz in enumerate(xyz_list):
             try:
                 if os.path.exists(xyz):
-
                     mol_xyz = PointCloud_Mol.from_xyz(
                         xyz, with_hydrogen, forbidden_atoms=forbidden_atoms
                     )
                     if mol_xyz is None:
-                        if verbose > 0:
-                            print(f"Skipping {xyz} due to containing forbidden atoms")
+                        skipped_forbidden += 1
                         continue
                     if len(mol_xyz.atoms) > max_atom:
-                        if verbose > 0:
-                            print(
-                                f"Skipping {xyz} due to too many atoms {len(mol_xyz.atoms)}"
-                            )
+                        skipped_too_large += 1
                         continue
                     coords = mol_xyz.get_coord()
-
-                    if i < len(smiles_list):
-                        smiles = smiles_list[i]
-                    else:
-                        if verbose > 0:
-                            print("Cannot find smiles for ", xyz)
-                        smiles = None
-
+                    smiles = smiles_list[i] if i < len(smiles_list) else None
                 else:
-                    print(f"File {xyz} does not exist")
+                    logger.info(f"File {xyz} does not exist")
                     continue
 
-                # Extract atom symbols and charges
                 atom_symbols = [atom.element for atom in mol_xyz.atoms]
                 charges = [atomic_numbers[atom.element]
                            for atom in mol_xyz.atoms
                            if atom.element in atomic_numbers]
                 charges = torch.as_tensor(charges, dtype=torch.long)
-                
-                # Use NodeFeaturizer for all featurization (OHE always true for PointCloud)
+
                 featurizer = NodeFeaturizer(
                     atom_vocab=atom_vocab,
-                    use_ohe=True,  # Always true for PointCloud
+                    use_ohe=True,
                     geom_feature=node_feature_choice,
                     allow_unknown=allow_unknown
                 )
                 node_features = featurizer.featurize_all(atom_symbols, charges, coords)
 
-
-                # adjust shape to max_atom
                 n_nodes = len(mol_xyz.atoms)
                 node_mask = torch.ones(n_nodes, dtype=torch.int8)
 
                 if pad_data:
                     coords_full = torch.zeros(max_atom, 3, dtype=torch.float32)
                     charges_mask = torch.zeros(max_atom, dtype=torch.long)
-
                     node_mask = torch.zeros(max_atom, dtype=torch.int8)
                     coords_full[:n_nodes] = coords
                     node_mask[:n_nodes] = 1
@@ -933,7 +1645,6 @@ class PointCloudDataset(torch_data.Dataset):
                     coords = coords_full
                     node_features = node_feat_full
                     charges = charges_mask
-                    # NOTE basically fully-conneted graph
                     edge_mask = node_mask.unsqueeze(0) * node_mask.unsqueeze(1)
                     diag_mask = ~torch.eye(max_atom, dtype=torch.bool)
                 else:
@@ -942,24 +1653,65 @@ class PointCloudDataset(torch_data.Dataset):
                 edge_mask *= diag_mask
 
                 if torch.isnan(coords).any() or (node_features is not None and torch.isnan(node_features).any()):
-                    if verbose > 0:
-                        print(f"Skipping {xyz} due to NaN values in coordinates or node features")
+                    skipped_nan += 1
                     continue
-                
-                self.coords_list.append(coords)
-                self.n_atoms.append(n_nodes)
-                self.node_mask_list.append(node_mask)
-                self.edge_mask_list.append(edge_mask)
-                self.node_feature_list.append(node_features)
-                self.charges_list.append(charges)
-                self.smiles_list.append(smiles)
-                self.xyzs.append(xyz)
-                for field in targets:
-                    self.targets[field].append(float(targets[field][i]))
+
+                if _chunking:
+                    _buf["coords_list"].append(coords)
+                    _buf["node_mask_list"].append(node_mask)
+                    _buf["edge_mask_list"].append(edge_mask)
+                    _buf["node_feature_list"].append(node_features)
+                    _buf["charges_list"].append(charges)
+                    _buf["xyzs"].append(xyz)
+                    _buf["n_atoms"].append(n_nodes)
+                    _buf["smiles_list"].append(smiles)
+                    for field in targets:
+                        _buf["targets"][field].append(float(targets[field][i]))
+                    _all_smiles.append(smiles)
+                    _all_n_atoms.append(n_nodes)
+
+                    if len(_buf["xyzs"]) >= chunk_size:
+                        path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+                        _chunk_paths.append(path)
+                        _chunk_sizes.append(len(_buf["xyzs"]))
+                        logger.info(f"Flushed chunk {_chunk_idx} ({len(_buf['xyzs'])} molecules) → {path}")
+                        _chunk_idx += 1
+                        _buf = _empty_buf()
+                else:
+                    self.coords_list.append(coords)
+                    self.n_atoms.append(n_nodes)
+                    self.node_mask_list.append(node_mask)
+                    self.edge_mask_list.append(edge_mask)
+                    self.node_feature_list.append(node_features)
+                    self.charges_list.append(charges)
+                    self.smiles_list.append(smiles)
+                    self.xyzs.append(xyz)
+                    for field in targets:
+                        self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
-                logging.error(f"Error in loading {xyz}: {e}")
+                logger.error(f"Error in loading {xyz}: {e}")
                 continue
+
+        if _chunking and _buf["xyzs"]:
+            path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+            _chunk_paths.append(path)
+            _chunk_sizes.append(len(_buf["xyzs"]))
+            logger.info(f"Flushed final chunk {_chunk_idx} ({len(_buf['xyzs'])} molecules) → {path}")
+
+        if _chunking:
+            _write_chunk_meta(
+                chunk_dir, _chunk_paths, _chunk_sizes,
+                list(targets.keys()), atom_vocab, with_hydrogen,
+                _all_smiles, _all_n_atoms,
+            )
+            logger.info(
+                f"Chunked processing complete: {sum(_chunk_sizes)} molecules "
+                f"in {len(_chunk_paths)} chunks → {chunk_dir}"
+            )
+
+        if skipped_too_large or skipped_forbidden or skipped_nan:
+            logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, {skipped_nan} NaN values")
 
     def load_npy(
         self,
@@ -977,6 +1729,8 @@ class PointCloudDataset(torch_data.Dataset):
         verbose: int = 0,
         allow_unknown: bool = False,
         use_ohe_feature: bool = True,
+        chunk_size: Optional[int] = None,
+        chunk_dir: Optional[str] = None,
         **kwargs: Any,
     ):
         """
@@ -995,6 +1749,8 @@ class PointCloudDataset(torch_data.Dataset):
             forbidden_atoms (list of str, optional): forbidden atoms
             pad_data (bool, optional): whether to pad data to max_atom
             verbose (int, optional): output verbose level
+            chunk_size (int, optional): flush to disk every N molecules to limit RAM.
+            chunk_dir (str, optional): directory to write chunk files.
             **kwargs
         """
         num_sample = natoms.size(0)
@@ -1008,9 +1764,9 @@ class PointCloudDataset(torch_data.Dataset):
             natoms = tqdm(natoms, "Constructing point cloud molecules from XYZs")
 
         if with_hydrogen:
-            print("Hydrogen atoms are considered")
+            logger.info("Hydrogen atoms are considered")
         else:
-            print("Hydrogen atoms are not considered")
+            logger.info("Hydrogen atoms are not considered")
         self.with_hydrogen = with_hydrogen
         self.transform = transform
         self.kwargs = kwargs
@@ -1023,71 +1779,66 @@ class PointCloudDataset(torch_data.Dataset):
         self.charges_list = []
         self.targets = defaultdict(list)
         self.n_atoms = []
-
         self.atom_vocab = atom_vocab
 
+        # chunking state
+        _chunking = chunk_size is not None and chunk_dir is not None
+        _buf = _empty_buf() if _chunking else None
+        _chunk_paths: List[str] = []
+        _chunk_sizes: List[int] = []
+        _all_smiles: List[str] = []
+        _all_n_atoms: List[int] = []
+        _chunk_idx = 0
+
+        skipped_too_large = 0
+        skipped_forbidden = 0
+        skipped_nan = 0
         start_index = 0
-        mol = None
-        for i, natom in enumerate(natoms):
-            # try:
+        for mol_i, natom in enumerate(natoms):
             end_index = start_index + natom.item()
             molecule_data = coords[start_index:end_index, :]
             start_index = end_index
 
             if natom > max_atom:
-                if verbose > 0:
-                    print(f"Skipping {i} due to too many atoms {natom} > {max_atom}")
-                    continue
+                skipped_too_large += 1
+                continue
+
             zs = torch.zeros(natom, dtype=torch.long)
             coord = torch.zeros((natom, 3), dtype=torch.float32)
-            for i, row in enumerate(molecule_data):
-                atomic_number = int(row[1])
-                zs[i] = atomic_number
-                coord[i] = row[2:]
+            for j, row in enumerate(molecule_data):
+                zs[j] = int(row[1])
+                coord[j] = row[2:]
+
             mol_xyz = PointCloud_Mol.from_arrays(
                 zs, coord, with_hydrogen, forbidden_atoms=forbidden_atoms
             )
-
             if mol_xyz is None:
-                if verbose > 0:
-                    print(f"Skipping {i} due to containing forbidden atoms")
+                skipped_forbidden += 1
                 continue
 
             coords_mol = mol_xyz.get_coord()
+            smiles = smiles_list[mol_i] if mol_i < len(smiles_list) else None
 
-            if i < len(smiles_list):
-                smiles = smiles_list[i]
-            else:
-                if verbose > 0:
-                    print("Cannot find smiles for ", i)
-                smiles = None
-            self.smiles_list.append(smiles)
-
-            # Extract atom symbols and charges
             atom_symbols = [atom.element for atom in mol_xyz.atoms]
             charges = [atomic_numbers[atom.element]
                        for atom in mol_xyz.atoms
                        if atom.element in atomic_numbers]
             charges = torch.as_tensor(charges, dtype=torch.long)
-            
-            # Use NodeFeaturizer for all featurization (OHE always true for PointCloud)
+
             featurizer = NodeFeaturizer(
                 atom_vocab=atom_vocab,
-                use_ohe=True,  # Always true for PointCloud
+                use_ohe=True,
                 geom_feature=node_feature_choice,
                 allow_unknown=allow_unknown
             )
             node_features = featurizer.featurize_all(atom_symbols, charges, coords_mol)
 
-
-            # adjust shape to max_atom
             n_nodes = len(mol_xyz.atoms)
             node_mask = torch.ones(n_nodes, dtype=torch.int8)
 
             if pad_data:
                 coords_full = torch.zeros(max_atom, 3, dtype=torch.float32)
                 charges_mask = torch.zeros(max_atom, dtype=torch.long)
-
                 node_mask = torch.zeros(max_atom, dtype=torch.int8)
                 coords_full[:n_nodes] = coords_mol
                 node_mask[:n_nodes] = 1
@@ -1097,7 +1848,6 @@ class PointCloudDataset(torch_data.Dataset):
                 coords_mol = coords_full
                 node_features = node_feat_full
                 charges = charges_mask
-                # NOTE basically fully-conneted graph
                 edge_mask = node_mask.unsqueeze(0) * node_mask.unsqueeze(1)
                 diag_mask = ~torch.eye(max_atom, dtype=torch.bool)
             else:
@@ -1105,20 +1855,62 @@ class PointCloudDataset(torch_data.Dataset):
                 diag_mask = ~torch.eye(n_nodes, dtype=torch.bool)
             edge_mask *= diag_mask
 
-            if torch.isnan(coords).any() or (node_features is not None and torch.isnan(node_features).any()):
-                if verbose > 0:
-                    print(f"Skipping {i} due to NaN values in coordinates or node features")
+            if torch.isnan(coords_mol).any() or (node_features is not None and torch.isnan(node_features).any()):
+                skipped_nan += 1
                 continue
 
-            self.coords_list.append(coords_mol)
-            self.n_atoms.append(n_nodes)
-            self.node_mask_list.append(node_mask)
-            self.edge_mask_list.append(edge_mask)
-            self.node_feature_list.append(node_features)
-            self.charges_list.append(charges)
-            self.xyzs.append(i)
-            for field in targets:
-                self.targets[field].append(float(targets[field][i]))
+            if _chunking:
+                _buf["coords_list"].append(coords_mol)
+                _buf["node_mask_list"].append(node_mask)
+                _buf["edge_mask_list"].append(edge_mask)
+                _buf["node_feature_list"].append(node_features)
+                _buf["charges_list"].append(charges)
+                _buf["xyzs"].append(mol_i)
+                _buf["n_atoms"].append(n_nodes)
+                _buf["smiles_list"].append(smiles)
+                for field in targets:
+                    _buf["targets"][field].append(float(targets[field][mol_i]))
+                _all_smiles.append(smiles)
+                _all_n_atoms.append(n_nodes)
+
+                if len(_buf["xyzs"]) >= chunk_size:
+                    path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+                    _chunk_paths.append(path)
+                    _chunk_sizes.append(len(_buf["xyzs"]))
+                    logger.info(f"Flushed chunk {_chunk_idx} ({len(_buf['xyzs'])} molecules) → {path}")
+                    _chunk_idx += 1
+                    _buf = _empty_buf()
+            else:
+                self.coords_list.append(coords_mol)
+                self.n_atoms.append(n_nodes)
+                self.node_mask_list.append(node_mask)
+                self.edge_mask_list.append(edge_mask)
+                self.node_feature_list.append(node_features)
+                self.charges_list.append(charges)
+                self.smiles_list.append(smiles)
+                self.xyzs.append(mol_i)
+                for field in targets:
+                    self.targets[field].append(float(targets[field][mol_i]))
+
+        if _chunking and _buf["xyzs"]:
+            path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+            _chunk_paths.append(path)
+            _chunk_sizes.append(len(_buf["xyzs"]))
+            logger.info(f"Flushed final chunk {_chunk_idx} ({len(_buf['xyzs'])} molecules) → {path}")
+
+        if _chunking:
+            _write_chunk_meta(
+                chunk_dir, _chunk_paths, _chunk_sizes,
+                list(targets.keys()), atom_vocab, with_hydrogen,
+                _all_smiles, _all_n_atoms,
+            )
+            logger.info(
+                f"Chunked processing complete: {sum(_chunk_sizes)} molecules "
+                f"in {len(_chunk_paths)} chunks → {chunk_dir}"
+            )
+
+        if skipped_too_large or skipped_forbidden or skipped_nan:
+            logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, {skipped_nan} NaN values")
 
     def load_csv(
         self,
@@ -1163,7 +1955,7 @@ class PointCloudDataset(torch_data.Dataset):
 
         if atom_vocab == []:
             atom_vocab = BASE_ATOM_VOCAB
-            print("atom vocabulary not provided, using defaul in constant.py")
+            logger.info("atom vocabulary not provided, using defaul in constant.py")
         with open(csv_file, "r") as fin:
             reader = csv.reader(fin)
             if verbose:
@@ -1222,6 +2014,8 @@ class PointCloudDataset(torch_data.Dataset):
         null_value=math.nan,
         allow_unknown: bool = False,
         use_ohe_feature: bool = True,
+        chunk_size: Optional[int] = None,
+        chunk_dir: Optional[str] = None,
         **kwargs: Any,
     ):
         """
@@ -1239,6 +2033,8 @@ class PointCloudDataset(torch_data.Dataset):
             pad_data (bool, optional): whether to pad data to max_atom)
             verbose (int, optional): output verbose level
             null_value (float, optional): null value for missing context data
+            chunk_size (int, optional): flush to disk every N molecules to limit RAM.
+            chunk_dir (str, optional): directory to write chunk files.
             **kwargs
         """
         if Chem is None and node_feature_choice is not None:
@@ -1246,7 +2042,7 @@ class PointCloudDataset(torch_data.Dataset):
 
         if atom_vocab == []:
             atom_vocab = BASE_ATOM_VOCAB
-            print("atom vocabulary not provided, using default")
+            logger.info("atom vocabulary not provided, using default")
 
         self.with_hydrogen = with_hydrogen
         self.transform = transform
@@ -1263,44 +2059,47 @@ class PointCloudDataset(torch_data.Dataset):
         self.atom_vocab = atom_vocab
         self.null_value = null_value
 
+        # chunking state
+        _chunking = chunk_size is not None and chunk_dir is not None
+        _buf = _empty_buf() if _chunking else None
+        _chunk_paths: List[str] = []
+        _chunk_sizes: List[int] = []
+        _all_smiles: List[str] = []
+        _all_n_atoms: List[int] = []
+        _chunk_idx = 0
 
-        db_files = []
-        if os.path.isdir(db_path):
-            db_files.extend(glob(os.path.join(db_path, "*.db")))
-        elif os.path.isfile(db_path):
-            db_files.append(db_path)
-        else:
-            raise ValueError(
-                f"Invalid db_path: {db_path}. It must be a .db file or a directory containing .db files."
-            )
-
-        if not db_files:
-            raise FileNotFoundError(f"No .db files found in {db_path}")
+        db_sources = _collect_db_sources(db_path)
 
         if verbose:
-            logger.info(f"Found {len(db_files)} .db files to load:")
-            for f_path in db_files:
-                logger.info(f"  - {f_path}")
+            logger.info(f"Found {len(db_sources)} database sources to load:")
+            for source in db_sources:
+                logger.info(
+                    f"  - {source['path']} ({source['kind']}, {source['length']} rows)"
+                )
 
-        dbs = [connect(f) for f in db_files]
-        total_len = sum(len(db) for db in dbs)
-        iterator = itertools.chain.from_iterable(db.select() for db in dbs)
+        total_len = sum(source["length"] for source in db_sources)
+        iterator = _iter_db_rows(db_sources)
 
         if verbose:
             iterator = tqdm(iterator, "Processing ASE db files", total=total_len)
 
+        skipped_too_large = 0
+        skipped_forbidden = 0
+        skipped_nan = 0
+        skipped_mol_block = 0
+        skipped_rdkit = 0
+        skipped_atom_mismatch = 0
         for i, row in enumerate(iterator):
             try:
                 mol_ase = row.toatoms()
+                row_data = getattr(row, "data", {}) or {}
 
                 if len(mol_ase) > max_atom:
-                    if verbose > 0:
-                        logger.warning(f"Skipping entry {i} with {len(mol_ase)} atoms (> {max_atom})")
+                    skipped_too_large += 1
                     continue
 
                 if any(atom.symbol in forbidden_atoms for atom in mol_ase):
-                    if verbose > 0:
-                        logger.warning(f"Skipping entry {i} due to forbidden atoms")
+                    skipped_forbidden += 1
                     continue
 
                 coords = torch.from_numpy(mol_ase.get_positions()).to(torch.float32)
@@ -1308,47 +2107,41 @@ class PointCloudDataset(torch_data.Dataset):
                 n_nodes = len(mol_ase)
 
                 atomic_symbols = mol_ase.get_chemical_symbols()
-                
-                # Create featurizer for OHE (always true for PointCloud)
+
                 featurizer = NodeFeaturizer(
                     atom_vocab=atom_vocab,
-                    use_ohe=True,  # Always true for PointCloud
-                    geom_feature=None,  # geom handled separately for load_db
+                    use_ohe=True,
+                    geom_feature=None,
                     allow_unknown=allow_unknown
                 )
                 node_features = featurizer.compute_ohe(atomic_symbols)
 
                 mol_rdkit = None
-                
-                # Dispatch based on type: list for RDKit scalars, str for geom features
+
                 if node_feature_choice:
                     if isinstance(node_feature_choice, (list, tuple)) or hasattr(node_feature_choice, '__iter__') and not isinstance(node_feature_choice, str):
-                        # List: use existing RDKit scalar logic (requires mol_block)
-                        if "mol_block" not in row.data:
-                            if verbose > 0:
-                                logger.warning(f"Skipping entry {i} as it lacks 'mol_block' for rdkit features")
+                        if "mol_block" not in row_data:
+                            skipped_mol_block += 1
                             continue
-                        
-                        mol_block = row.data.get('mol_block')
+
+                        mol_block = row_data.get('mol_block')
                         if isinstance(mol_block, bytes):
                             mol_block = mol_block.decode('utf-8')
-                        
+
                         if mol_block is None:
-                            if verbose > 0:
-                                logger.warning(f"Skipping entry {i} as mol_block is None")
+                            skipped_mol_block += 1
                             continue
 
                         mol_rdkit = Chem.MolFromMolBlock(mol_block, removeHs=False)
                         if not mol_rdkit:
-                            logger.warning(f"RDKit failed to parse mol_block for entry {i}")
+                            skipped_rdkit += 1
                             continue
 
                         ase_atomic_num = mol_ase.get_atomic_numbers()
                         rdkit_atomic_num = np.array([atom.GetAtomicNum() for atom in mol_rdkit.GetAtoms()])
                         if not np.array_equal(ase_atomic_num, rdkit_atomic_num):
-                             if verbose > 0:
-                                logger.warning(f"Atom order mismatch for entry {i}. Skipping.")
-                             continue
+                            skipped_atom_mismatch += 1
+                            continue
 
                         atom_feats = defaultdict(list)
                         for atom in mol_rdkit.GetAtoms():
@@ -1357,12 +2150,11 @@ class PointCloudDataset(torch_data.Dataset):
                             atom_feats['hybridization'].append(hybiridization_map.get(str(atom.GetHybridization()), -1))
                             atom_feats['is_aromatic'].append(atom.GetIsAromatic())
                             atom_feats['valence'].append(atom.GetTotalValence())
-                        
+
                         node_features_extra = torch.tensor([
                             atom_feats[key] for key in node_feature_choice
                         ], dtype=torch.float32).T
                     elif isinstance(node_feature_choice, str):
-                        # String: use NodeFeaturizer for geom features
                         geom_featurizer = NodeFeaturizer(
                             atom_vocab=atom_vocab,
                             use_ohe=False,
@@ -1374,7 +2166,7 @@ class PointCloudDataset(torch_data.Dataset):
                         raise ValueError(
                             f"node_feature_choice must be str or list, got {type(node_feature_choice)}"
                         )
-                    
+
                     if node_features is not None:
                         node_features = torch.cat((node_features, node_features_extra), dim=1)
                     else:
@@ -1403,46 +2195,106 @@ class PointCloudDataset(torch_data.Dataset):
                     edge_mask *= diag_mask
 
                 if torch.isnan(coords).any() or (node_features is not None and torch.isnan(node_features).any()):
-                    if verbose > 0:
-                        print(f"Skipping entry {i} due to NaN values in coordinates or node features")
+                    skipped_nan += 1
                     continue
 
-                self.coords_list.append(coords)
-                self.node_mask_list.append(node_mask)
-                self.edge_mask_list.append(edge_mask)
-                self.node_feature_list.append(node_features)
-                self.charges_list.append(charges)
-                self.xyzs.append(f"db_entry_{i}")
-                self.n_atoms.append(n_nodes)
-                if target_fields:
-                    for field in target_fields:
-                        value = row.data.get(field, "")
-                        if value == "":
-                            default_values = {
-                                "total_charge": 0,
-                                "num_graph": 1,
-                                "distortion_d": 0,
-                                "sascore": -1,
-                                "SCScore": -1,
-                            }
-                            value = default_values.get(field, value)
-                        try:
-                            value = utils.literal_eval(str(value))
-                        except (ValueError, SyntaxError):
-                            if isinstance(value, (np.ndarray, torch.Tensor)):
-                                value = value.tolist()
-                        if value == "":
-                            value = math.nan
-                        self.targets[field].append(float(value))
-                
-                if mol_rdkit is not None:
-                    smiles = Chem.MolToSmiles(mol_rdkit) if mol_rdkit else None
-                    self.smiles_list.append(smiles)
+                smiles = Chem.MolToSmiles(mol_rdkit) if mol_rdkit else None
 
+                if _chunking:
+                    _buf["coords_list"].append(coords)
+                    _buf["node_mask_list"].append(node_mask)
+                    _buf["edge_mask_list"].append(edge_mask)
+                    _buf["node_feature_list"].append(node_features)
+                    _buf["charges_list"].append(charges)
+                    _buf["xyzs"].append(f"db_entry_{i}")
+                    _buf["n_atoms"].append(n_nodes)
+                    _buf["smiles_list"].append(smiles)
+                    if target_fields:
+                        for field in target_fields:
+                            value = row_data.get(field, "")
+                            if value == "":
+                                default_values = {
+                                    "total_charge": 0, "num_graph": 1,
+                                    "distortion_d": 0, "sascore": -1, "SCScore": -1,
+                                }
+                                value = default_values.get(field, value)
+                            try:
+                                value = utils.literal_eval(str(value))
+                            except (ValueError, SyntaxError):
+                                if isinstance(value, (np.ndarray, torch.Tensor)):
+                                    value = value.tolist()
+                            if value == "":
+                                value = math.nan
+                            _buf["targets"][field].append(float(value))
+                    _all_smiles.append(smiles)
+                    _all_n_atoms.append(n_nodes)
+
+                    if len(_buf["xyzs"]) >= chunk_size:
+                        path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+                        _chunk_paths.append(path)
+                        _chunk_sizes.append(len(_buf["xyzs"]))
+                        logger.info(f"Flushed chunk {_chunk_idx} ({len(_buf['xyzs'])} molecules) → {path}")
+                        _chunk_idx += 1
+                        _buf = _empty_buf()
+                else:
+                    self.coords_list.append(coords)
+                    self.node_mask_list.append(node_mask)
+                    self.edge_mask_list.append(edge_mask)
+                    self.node_feature_list.append(node_features)
+                    self.charges_list.append(charges)
+                    self.xyzs.append(f"db_entry_{i}")
+                    self.n_atoms.append(n_nodes)
+                    if target_fields:
+                        for field in target_fields:
+                            value = row_data.get(field, "")
+                            if value == "":
+                                default_values = {
+                                    "total_charge": 0,
+                                    "num_graph": 1,
+                                    "distortion_d": 0,
+                                    "sascore": -1,
+                                    "SCScore": -1,
+                                }
+                                value = default_values.get(field, value)
+                            try:
+                                value = utils.literal_eval(str(value))
+                            except (ValueError, SyntaxError):
+                                if isinstance(value, (np.ndarray, torch.Tensor)):
+                                    value = value.tolist()
+                            if value == "":
+                                value = math.nan
+                            self.targets[field].append(float(value))
+                    if mol_rdkit is not None:
+                        self.smiles_list.append(smiles)
 
             except Exception as e:
-                logging.error(f"Error in loading db entry {i}: {e}")
+                logger.error(f"Error in loading db entry {i}: {e}")
                 continue
+
+        if _chunking and _buf["xyzs"]:
+            path = _flush_chunk(chunk_dir, _chunk_idx, _buf)
+            _chunk_paths.append(path)
+            _chunk_sizes.append(len(_buf["xyzs"]))
+            logger.info(f"Flushed final chunk {_chunk_idx} ({len(_buf['xyzs'])} molecules) → {path}")
+
+        if _chunking:
+            tasks = list(target_fields) if target_fields else []
+            _write_chunk_meta(
+                chunk_dir, _chunk_paths, _chunk_sizes,
+                tasks, atom_vocab, with_hydrogen,
+                _all_smiles, _all_n_atoms,
+            )
+            logger.info(
+                f"Chunked processing complete: {sum(_chunk_sizes)} molecules "
+                f"in {len(_chunk_paths)} chunks → {chunk_dir}"
+            )
+
+        if skipped_too_large or skipped_forbidden or skipped_nan or skipped_mol_block or skipped_rdkit or skipped_atom_mismatch:
+            logger.warning(
+                f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, "
+                f"{skipped_nan} NaN values, {skipped_mol_block} missing mol_block, "
+                f"{skipped_rdkit} RDKit parse failures, {skipped_atom_mismatch} atom order mismatches"
+            )
 
     def _standarize_index(self, index, count):
         if isinstance(index, slice):
@@ -1510,6 +2362,7 @@ class PointCloudDataset(torch_data.Dataset):
             if verbose:
                 indexes = tqdm(indexes, "Loading %s" % pkl_file)
             # To discard nmax
+            skipped_too_large = 0
             for i in indexes:
                 (
                     natom,
@@ -1523,7 +2376,7 @@ class PointCloudDataset(torch_data.Dataset):
                 ) = pickle.load(fin)
 
                 if natom > self.max_atom:
-                    print(f"Skipping {xyz} due to too many atoms")
+                    skipped_too_large += 1
                     continue
                 else:
                     if cheap_data:
@@ -1543,7 +2396,8 @@ class PointCloudDataset(torch_data.Dataset):
                     for task, value in zip(tasks, values):
                         self.targets[task].append(float(value))
             self.smiles_list, self.atom_vocab, self.with_hydrogen = pickle.load(fin)
-
+            if skipped_too_large:
+                logger.warning(f"Discarded entries: {skipped_too_large} too large")
 
     def save_pickle(self, pkl_file, verbose=0, cheap_data=False):
         """
@@ -1554,6 +2408,7 @@ class PointCloudDataset(torch_data.Dataset):
             verbose (int, optional): output verbose level
         """
         os.makedirs(os.path.dirname(os.path.abspath(pkl_file)), exist_ok=True)
+
         if cheap_data:
             float_dtype = torch.float16
             long_dtype = torch.int16

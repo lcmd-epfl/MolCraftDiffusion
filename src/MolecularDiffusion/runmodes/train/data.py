@@ -5,6 +5,21 @@ from MolecularDiffusion.data.component.dataset import PointCloudDataset
 from MolecularDiffusion.data.dataloader import pointcloud_collate, graph_collate, pointcloud_collate_v0
 from MolecularDiffusion.utils import get_vram_size
 
+
+class DatasetConfigDict:
+    """Picklable callable wrapper for dataset metadata."""
+
+    def __init__(self, with_hydrogen, node_feature, max_atom):
+        self.config_dict = {
+            "with_hydrogen": with_hydrogen,
+            "atom_feature": node_feature,
+            "max_atom": max_atom,
+        }
+
+    def __call__(self):
+        return self.config_dict
+
+
 class DataModule:
     """
     DataModule to load, optionally save/load pickle, and split datasets for diffusion or predictive tasks.
@@ -133,18 +148,7 @@ class DataModule:
             dataset.max_atom = self.max_atom
             dataset.atom_vocab = self.atom_vocab
 
-            class Config:
-                def __init__(self, with_hydrogen, node_feature, max_atom):
-                    self.config_dict = {
-                        "with_hydrogen": with_hydrogen,
-                        "atom_feature": node_feature_choice,
-                        "max_atom": max_atom,
-                    }
-
-                def __call__(self):
-                    return self.config_dict
-
-            dataset.config_dict = Config(
+            dataset.config_dict = DatasetConfigDict(
                 self.with_hydrogen, self.node_feature_choice, self.max_atom
             )
         else:

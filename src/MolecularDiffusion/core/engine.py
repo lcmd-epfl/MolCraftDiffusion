@@ -2,6 +2,7 @@ import copy
 import logging
 import os
 import sys
+import time
 from itertools import islice
 from tqdm import tqdm
 
@@ -155,7 +156,12 @@ class Engine(core.Configurable):
                 module.logger.warning("Preprocess training set")
             # handle dynamic parameters in optimizer
             # old_params = list(task.parameters())
+            _t_pre = time.perf_counter()
             result = task.preprocess(train_set)
+            if self.rank == 0:
+                module.logger.warning(
+                    f"task.preprocess() completed in {time.perf_counter() - _t_pre:.2f}s"
+                )
             if result is not None:
                 train_set, valid_set, test_set = result
             # new_params = list(task.parameters())
@@ -870,6 +876,7 @@ class Engine(core.Configurable):
                     
             torch.save(state, checkpoint)
 
+    @classmethod
     def load_config_dict(cls, config):
         """
         Construct an instance from the configuration dict.
@@ -889,7 +896,7 @@ class Engine(core.Configurable):
                 new_config[k] = v
 
         return cls(**new_config)
-    
+
     @property
     def epoch(self):
         """Current epoch."""
