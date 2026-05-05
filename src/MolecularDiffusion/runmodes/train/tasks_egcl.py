@@ -3,10 +3,36 @@ from MolecularDiffusion.callbacks.train_helper import SP_regularizer
 from MolecularDiffusion.modules.tasks import ProperyPrediction, GuidanceModelPrediction,  GeomMolecularGenerative
 from MolecularDiffusion.modules.models import EGNN, EGNN_dynamics, NoiseModel, EnVariationalDiffusion
 from MolecularDiffusion.utils import adjust_weights, adjust_bias
+from MolecularDiffusion.modules.tasks import SSL3D, CoordDenoiseObjective, MaskedAtomTypeObjective, PairwiseDistObjective
+from MolecularDiffusion.modules.layers.common import SinusoidsEmbeddingNew
 import torch
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+
+def _build_ssl3d_objectives(kwargs: dict) -> list:
+    """Build the list of SSL3DObjective instances from factory kwargs."""
+    objectives = []
+    objectives.append(CoordDenoiseObjective(
+        weight=kwargs.get("ssl3d_denoise_weight", 1.0),
+        sigma_min=kwargs.get("ssl3d_sigma_min", 0.01),
+        sigma_max=kwargs.get("ssl3d_sigma_max", 1.0),
+        sigma_schedule=kwargs.get("ssl3d_sigma_schedule", "uniform"),
+    ))
+    objectives.append(MaskedAtomTypeObjective(
+        weight=kwargs.get("ssl3d_mtype_weight", 0.5),
+        mask_rate=kwargs.get("ssl3d_mask_rate", 0.15),
+        atom_vocab_size=kwargs.get("ssl3d_atom_vocab_size", 5),
+    ))
+    dist_weight = kwargs.get("ssl3d_dist_weight", 0.0)
+    if dist_weight > 0.0:
+        objectives.append(PairwiseDistObjective(
+            weight=dist_weight,
+            k_pairs=kwargs.get("ssl3d_dist_k_pairs", 16),
+        ))
+    return objectives
 
 
 class ModelTaskFactory:
@@ -281,6 +307,27 @@ class ModelTaskFactory:
                 prediction_activation=self.kwargs.get("prediction_activation", "relu"),
             )
 
+        elif self.task_type == "ssl3d":
+            t_dim = SinusoidsEmbeddingNew().dim
+            model = EGNN(
+                in_node_nf=self.in_node_nf + t_dim,
+                hidden_nf=self.hidden_size,
+                act_fn=self.act_fn,
+                n_layers=self.num_layers,
+                attention=self.attention,
+                tanh=self.tanh,
+                norm_constant=self.norm_constant,
+                inv_sublayers=self.num_sublayers,
+                sin_embedding=self.sin_embedding,
+                normalization_factor=self.normalization_factor,
+                aggregation_method=self.aggregation_method,
+                dropout=self.dropout,
+                normalization=False,
+                include_cosine=self.include_cosine,
+            )
+            objectives = _build_ssl3d_objectives(self.kwargs)
+            self.task = SSL3D(model, objectives, include_charge=True)
+
         elif self.task_type == "guidance":
             model = EGNN(
                 in_node_nf=self.dynamics_in_node_nf,
@@ -321,11 +368,12 @@ class ModelTaskFactory:
             )
             
 
+
             self.task = GuidanceModelPrediction(model, noise_model, **task_kwargs)
 
-        else:
-            raise ValueError(f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'regression', or 'guidance'.")
-
+        else:   
+            raise ValueError(f"Unknown task_type '{self.task_type}'. Choose 'diffusion', 'regression', 'guidance', or 'ssl3d'.")
+        
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad) # type: ignore
         if is_main_process:
             logger.info(f"Number of parameters: {n_params}")

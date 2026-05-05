@@ -152,103 +152,52 @@ class DataModule:
                 self.with_hydrogen, self.node_feature_choice, self.max_atom
             )
         else:
-            # instantiate dataset for task
+            # Dataset construction is independent of task_type — driven only by
+            # data_type (pyg vs pointcloud). Task-specific logic lives in the
+            # task module, not here. Adding a new task never requires touching
+            # this file.
             verbose_level = int(is_main_process)
-            if any(self.task_type.startswith(p) for p in ("diffusion", "vae", "ldm")):
-                if self.data_type == "pyg":
-                    dataset = pointcloud_dataset_pyG(
-                        root=self.root,
-                        df_path=self.filename,
-                        xyz_dir=self.xyz_dir,
-                        coord_file=self.coord_file,
-                        natoms_file=self.natoms_file,
-                        ase_db_path=self.ase_db_path,
-                        max_atom=self.max_atom,
-                        node_feature_choice=self.node_feature_choice,
-
-                        atom_vocab=self.atom_vocab,
-                        with_hydrogen=self.with_hydrogen,
-                        forbidden_atoms=self.forbidden_atom,
-                        pad_data=not self.data_efficient_collator,
-                        dataset_name=self.dataset_name,
-                        target_fields=self.target_fields,
-                        allow_unknown=self.allow_unknown,
-                        verbose=verbose_level,
-                        edge_type=self.edge_type,
-                        radius=self.radius,
-                        n_neigh=self.n_neigh,
-                        use_ohe_feature=self.use_ohe_feature,
-                    )
-                else:
-                    dataset = pointcloud_dataset(
-                        root=self.root,
-                        df_path=self.filename,
-                        xyz_dir=self.xyz_dir,
-                        coord_file=self.coord_file,
-                        natoms_file=self.natoms_file,
-                        ase_db_path=self.ase_db_path,
-                        max_atom=self.max_atom,
-                        node_feature_choice=self.node_feature_choice,
-
-                        atom_vocab=self.atom_vocab,
-                        with_hydrogen=self.with_hydrogen,
-                        forbidden_atoms=self.forbidden_atom,
-                        pad_data=not self.data_efficient_collator,
-                        dataset_name=self.dataset_name,
-                        target_fields=self.target_fields,
-                        allow_unknown=self.allow_unknown,
-                        verbose=verbose_level,
-                    )
-            elif self.task_type in ("regression", "guidance"):
-                # Respect data_type for guidance tasks
-                if self.data_type == "pyg":
-                    dataset = pointcloud_dataset_pyG(
-                        root=self.root,
-                        df_path=self.filename,
-                        xyz_dir=self.xyz_dir,
-                        coord_file=self.coord_file,
-                        natoms_file=self.natoms_file,
-                        ase_db_path=self.ase_db_path,
-                        max_atom=self.max_atom,
-                        node_feature_choice=self.node_feature_choice,
-
-                        atom_vocab=self.atom_vocab,
-                        with_hydrogen=self.with_hydrogen,
-                        forbidden_atoms=self.forbidden_atom,
-                        pad_data=not self.data_efficient_collator,
-                        dataset_name=self.dataset_name,
-                        target_fields=self.target_fields,
-                        allow_unknown=self.allow_unknown,
-                        verbose=verbose_level,
-                        edge_type=self.edge_type,
-                        radius=self.radius,
-                        n_neigh=self.n_neigh,
-                        use_ohe_feature=self.use_ohe_feature,
-                    )
-                else:
-                    # Use pointcloud_dataset for dense tensor training
-                    dataset = pointcloud_dataset(
-                        root=self.root,
-                        df_path=self.filename,
-                        xyz_dir=self.xyz_dir,
-                        coord_file=self.coord_file,
-                        natoms_file=self.natoms_file,
-                        ase_db_path=self.ase_db_path,
-                        max_atom=self.max_atom,
-                        node_feature_choice=self.node_feature_choice,
-
-                        atom_vocab=self.atom_vocab,
-                        with_hydrogen=self.with_hydrogen,
-                        forbidden_atoms=self.forbidden_atom,
-                        pad_data=not self.data_efficient_collator,
-                        dataset_name=self.dataset_name,
-                        target_fields=self.target_fields,
-                        allow_unknown=self.allow_unknown,
-                        verbose=verbose_level,
-                    )
+            if self.data_type == "pyg":
+                dataset = pointcloud_dataset_pyG(
+                    root=self.root,
+                    df_path=self.filename,
+                    xyz_dir=self.xyz_dir,
+                    coord_file=self.coord_file,
+                    natoms_file=self.natoms_file,
+                    ase_db_path=self.ase_db_path,
+                    max_atom=self.max_atom,
+                    node_feature_choice=self.node_feature_choice,
+                    atom_vocab=self.atom_vocab,
+                    with_hydrogen=self.with_hydrogen,
+                    forbidden_atoms=self.forbidden_atom,
+                    pad_data=not self.data_efficient_collator,
+                    dataset_name=self.dataset_name,
+                    target_fields=self.target_fields,
+                    allow_unknown=self.allow_unknown,
+                    verbose=verbose_level,
+                    edge_type=self.edge_type,
+                    radius=self.radius,
+                    n_neigh=self.n_neigh,
+                    use_ohe_feature=self.use_ohe_feature,
+                )
             else:
-                raise ValueError(
-                    f"Unknown task_type '{self.task_type}'. Supported prefixes: 'diffusion', 'vae', 'ldm', or types 'regression', 'guidance'."
+                dataset = pointcloud_dataset(
+                    root=self.root,
+                    df_path=self.filename,
+                    xyz_dir=self.xyz_dir,
+                    coord_file=self.coord_file,
+                    natoms_file=self.natoms_file,
+                    ase_db_path=self.ase_db_path,
+                    max_atom=self.max_atom,
+                    node_feature_choice=self.node_feature_choice,
+                    atom_vocab=self.atom_vocab,
+                    with_hydrogen=self.with_hydrogen,
+                    forbidden_atoms=self.forbidden_atom,
+                    pad_data=not self.data_efficient_collator,
+                    dataset_name=self.dataset_name,
+                    target_fields=self.target_fields,
+                    allow_unknown=self.allow_unknown,
+                    verbose=verbose_level,
                 )
 
         # split

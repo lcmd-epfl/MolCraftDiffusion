@@ -1,0 +1,35 @@
+_target_: MolecularDiffusion.runmodes.train.ModelTaskFactory_ESEN
+task_type: ssl3d
+atom_vocab: ${data.atom_vocab}
+hidden_size: 256
+hidden_channels: 256
+num_layers: 4
+lmax: 2
+mmax: 2
+grid_resolution: null
+cutoff: 5.0
+edge_channels: 128
+distance_function: "gaussian"
+num_distance_basis: 512
+norm_type: "rms_norm_sh"
+act_type: "s2"
+mlp_type: "grid"
+use_envelope: False
+activation_checkpointing: False
+global_attributes: False
+sphere_embedding_type: "mixed"
+aggregation_method: mean
+chkpt_path: null
+
+# SSL3D objectives
+ssl3d_denoise_weight: 1.0
+ssl3d_sigma_min: 0.01
+ssl3d_sigma_max: 1.0
+ssl3d_sigma_schedule: uniform
+
+ssl3d_mtype_weight: 0.5
+ssl3d_mask_rate: 0.15
+ssl3d_atom_vocab_size: 5         # QM9: H C N O F
+
+ssl3d_dist_weight: 0.0
+ssl3d_dist_k_pairs: 16

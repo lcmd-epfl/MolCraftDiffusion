@@ -1,0 +1,38 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_egt.ModelTaskFactory
+task_type: ssl3d
+model_class: GraphTransformer
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+hidden_dims:
+  dx: 256
+  de: 64
+  dy: 4
+  n_head: 4
+  dim_ffX: 256
+  dim_ffE: 64
+  dim_ffy: 1
+hidden_mlp_dims:
+  X: 256
+  E: 64
+  y: 256
+  pos: 512
+act_fn_in:
+  _target_: torch.nn.SiLU
+act_fn_out:
+  _target_: torch.nn.SiLU
+num_layers: 4
+dropout: 0.0
+chkpt_path: null
+
+# SSL3D objectives
+ssl3d_denoise_weight: 1.0
+ssl3d_sigma_min: 0.01
+ssl3d_sigma_max: 1.0
+ssl3d_sigma_schedule: uniform
+
+ssl3d_mtype_weight: 0.5
+ssl3d_mask_rate: 0.15
+ssl3d_atom_vocab_size: 5         # QM9: H C N O F
+
+ssl3d_dist_weight: 0.0
+ssl3d_dist_k_pairs: 16

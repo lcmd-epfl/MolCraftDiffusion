@@ -45,9 +45,9 @@ def analyze():
 # ============================================================================
 
 @analyze.command("optimize", context_settings=CONTEXT_SETTINGS)
-@click.argument("input_dir", type=click.Path(exists=True))
-@click.option("--output-dir", "-o", "--o", default=None, type=click.Path(),
-              help="Output directory for optimized files (default: input_dir/optimized_xyz)")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.option("--output-path", "-o", "--o", default=None, type=click.Path(),
+              help="Output directory (for XYZ) or file (for ASE DB)")
 @click.option("--charge", "-c", "--c", default=0, type=int,
               help="Molecular charge for xTB (default: 0)")
 @click.option("--level", "-l", "--l", default="gfn1", type=click.Choice(["gfn1", "gfn2", "gfn-ff", "mmff94"]),
@@ -60,8 +60,13 @@ def analyze():
               help="CSV file to filter which files to optimize")
 @click.option("--filter-column", default=None, type=str,
               help="Column name in CSV to filter by (values must be 1)")
-def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_path, filter_column):
-    """Optimize XYZ geometries using xTB.
+@click.option("--inherit-attributes", "--inherit", is_flag=True, default=True,
+              help="Inherit all attributes from the original ASE DB row (default: True)")
+def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_path, filter_column, inherit_attributes):
+    """Optimize molecular geometries (XYZ or ASE DB).
+    
+    If input is a directory, it processes all XYZ files.
+    If input is a .db file, it processes all rows in the ASE database.
     
     \b
     Examples:
@@ -70,14 +75,14 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
     """
     get_xtb_optimized_xyz = _load_analyze_module("xtb_optimization").get_xtb_optimized_xyz
     
-    output_dir = output_dir or os.path.join(input_dir, "optimized_xyz")
+    output_dir = output_dir or os.path.join(input_path, "optimized_xyz")
     
-    click.echo(f"Optimizing XYZ files from: {input_dir}")
+    click.echo(f"Optimizing XYZ files from: {input_path}")
     click.echo(f"Output directory: {output_dir}")
     click.echo(f"xTB level: {level}, charge: {charge}")
     
     optimized_files = get_xtb_optimized_xyz(
-        input_directory=input_dir,
+        input_directory=input_path,
         output_directory=output_dir,
         charge=charge,
         level=level,
@@ -99,7 +104,7 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
 @click.option("--output", "-o", "--o", "--output-csv", default=None, type=click.Path(),
               help="Output CSV file for results")
 @click.option("--metrics", "-m", "--m", "metrics_type", default="all",
-              type=click.Choice(["all", "core", "posebuster", "geom_revised"]),
+              type=click.Choice(["all", "core", "posebuster", "geom_revised", "shepherd"]),
               help="Which metrics to compute (default: all)")
 @click.option("--recheck-topo", is_flag=True, default=False,
               help="Recheck topology using RDKit")
@@ -116,7 +121,11 @@ def optimize(input_dir, output_dir, charge, level, timeout, scale_factor, csv_pa
               help="Number of subsets for std calculation (default: 5)")
 @click.option("--timeout", "-t", "--t", default=10, type=int,
               help="Timeout per xyz2mol conversion in seconds (default: 10)")
-def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, n_subsets, timeout):
+@click.option("--reference-mol", "-r", default=None, type=click.Path(),
+              help="Reference .pkl or .sdf for conditional similarity metrics (shepherd mode)")
+@click.option("--mol-idx", default=0, type=int,
+              help="Molecule index in reference .pkl (default: 0)")
+def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, n_subsets, timeout, reference_mol, mol_idx):
     """Compute validity and connectivity metrics for XYZ files.
     
     \b
@@ -131,6 +140,8 @@ def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion
         MolCraftDiff analyze metrics gen_xyz/
         MolCraftDiff analyze metrics gen_xyz/ --metrics posebuster
         MolCraftDiff analyze metrics gen_xyz/ --metrics geom_revised --mol-converter openbabel
+        MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd
+        MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd -r data/shepherd_data/gdb/molblock_charges_9_test100.pkl --mol-idx 0
     """
     import argparse
     runner = _load_analyze_module("compute_metrics").runner
@@ -280,6 +291,111 @@ def xyz2mol(xyz_dir, input_csv, label, timeout, bits, verbose):
     click.echo(f"Failed FP extraction: {n_fail}")
     click.echo(f"Unique substructures: {len(substruct_counts)}")
     click.echo(f"Outputs saved to: {two_d_reprs_dir}")
+
+
+# ============================================================================
+# FEATURIZE: Fixed-size molecular feature vectors
+# ============================================================================
+
+@analyze.command("featurize", context_settings=CONTEXT_SETTINGS)
+@click.argument("input_dir", type=click.Path(exists=True))
+@click.option("--backend", "-b", default="soap",
+              type=click.Choice(["soap", "uma", "ssl3d"]),
+              help="Featurization backend (default: soap)")
+@click.option("--output", "-o", default=None, type=click.Path(),
+              help="Output stem (default: input_dir/features). .npy/.csv/_meta.json appended.")
+@click.option("--recursive", "-r", is_flag=True, default=False,
+              help="Search subdirectories for structure files")
+# --- SOAP options ---
+@click.option("--r-cut", default=6.0, type=float, show_default=True,
+              help="SOAP cutoff radius in Å")
+@click.option("--n-max", default=8, type=int, show_default=True,
+              help="SOAP radial basis functions")
+@click.option("--l-max", default=6, type=int, show_default=True,
+              help="SOAP angular basis functions")
+@click.option("--sigma", default=0.1, type=float, show_default=True,
+              help="SOAP Gaussian smearing width")
+@click.option("--autodetect", "autodetect_species", is_flag=True, default=False,
+              help="SOAP: auto-detect element species from files (overrides --species)")
+@click.option("--species", multiple=True, type=str,
+              help="SOAP: element symbols to use (default: H B C N O F Al Si P S Cl As Se Br I Hg Bi)")
+@click.option("--pooling", default="mean", type=click.Choice(["mean", "sum"]), show_default=True,
+              help="Atom pooling mode")
+@click.option("--soap-jobs", default=1, type=int, show_default=True,
+              help="Parallel workers for SOAP")
+# --- UMA options ---
+@click.option("--checkpoint", default="training_outputs/uma-s-1p2.pt", type=click.Path(),
+              show_default=True, help="Path to UMA checkpoint (.pt)")
+@click.option("--task-name", default="omol", type=str, show_default=True,
+              help="UMA task name")
+@click.option("--device", default=None, type=click.Choice(["cuda", "cpu"]),
+              help="Device for UMA inference (default: auto)")
+@click.option("--batch-size", default=8, type=int, show_default=True,
+              help="Molecules per UMA batch")
+@click.option("--all-components", is_flag=True, default=False,
+              help="UMA: use all spherical components instead of L=0 scalars only")
+@click.option("--charge", default=0, type=int, show_default=True,
+              help="UMA: total molecular charge (default: 0)")
+@click.option("--spin", default=1, type=int, show_default=True,
+              help="UMA: spin multiplicity (default: 1)")
+# --- SSL3D options ---
+@click.option("--ssl3d-checkpoint", default=None, type=click.Path(),
+              help="SSL3D: path to trained .ckpt or .pkl checkpoint (required for --backend ssl3d)")
+@click.option("--edge-radius", default=5.0, type=float, show_default=True,
+              help="SSL3D: radius graph cutoff in Å for graph construction")
+def featurize(input_dir, backend, output, recursive,
+              r_cut, n_max, l_max, sigma, autodetect_species, species, pooling, soap_jobs,
+              checkpoint, task_name, device, batch_size, all_components, charge, spin,
+              ssl3d_checkpoint, edge_radius):
+    """Featurize 3D XYZ molecules into fixed-size feature vectors.
+
+    \b
+    Backends:
+      soap   SOAP descriptor via dscribe — no GPU required
+      uma    UMA backbone embeddings — requires vendored fairchem/src + checkpoint
+      ssl3d  SSL3D backbone embeddings — requires a trained SSL3D .ckpt or .pkl
+
+    \b
+    Examples:
+        MolCraftDiff analyze featurize gen_xyz/
+        MolCraftDiff analyze featurize gen_xyz/ --autodetect
+        MolCraftDiff analyze featurize gen_xyz/ --species C --species H --species N --species O
+        MolCraftDiff analyze featurize gen_xyz/ --backend soap --n-max 12 --l-max 9
+        MolCraftDiff analyze featurize gen_xyz/ --backend uma --device cuda
+        MolCraftDiff analyze featurize gen_xyz/ --backend ssl3d --ssl3d-checkpoint runs/last.ckpt
+        MolCraftDiff analyze featurize gen_xyz/ --backend ssl3d --ssl3d-checkpoint runs/last.ckpt --device cuda
+    """
+    if backend == "ssl3d" and ssl3d_checkpoint is None:
+        raise click.UsageError("--ssl3d-checkpoint is required when --backend ssl3d")
+
+    run_featurize = _load_analyze_module("featurize").run_featurize
+
+    run_featurize(
+        input_dir=input_dir,
+        backend=backend,
+        output_path=output,
+        recursive=recursive,
+        # SOAP
+        autodetect_species=autodetect_species,
+        species=list(species) if species else None,
+        r_cut=r_cut,
+        n_max=n_max,
+        l_max=l_max,
+        sigma=sigma,
+        pooling=pooling,
+        n_jobs=soap_jobs,
+        # UMA
+        checkpoint=checkpoint,
+        task_name=task_name,
+        device=device,
+        batch_size=batch_size,
+        scalar_only=not all_components,
+        charge=charge,
+        spin=spin,
+        # SSL3D
+        ssl3d_checkpoint=ssl3d_checkpoint,
+        ssl3d_edge_radius=edge_radius,
+    )
 
 
 # ============================================================================
