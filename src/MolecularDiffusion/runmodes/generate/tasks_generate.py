@@ -1,11 +1,15 @@
 
 
 from MolecularDiffusion.modules.tasks.task import Task
-from MolecularDiffusion.utils.geom_utils import save_xyz_file
+from MolecularDiffusion.modules.tasks.pharmacophore import PharmacophoreGenerative  # noqa: F401 — registers class in Registry
+from MolecularDiffusion.utils.geom_utils import save_xyz_file, save_xyz_file_atomic_numbers
 
 import logging
+import glob
 import os
+import re
 import shutil
+import tempfile
 from typing import List
 from tqdm import tqdm
 import pandas as pd
@@ -14,11 +18,126 @@ from torch_geometric.data import Batch, Data
 from torch_geometric.nn import radius_graph
 from MolecularDiffusion.data.component.pointcloud import PointCloud_Mol
 from MolecularDiffusion.data.component.feature import onehot
-from MolecularDiffusion.utils.geom_utils import save_xyz_file, save_xyz_file_atomic_numbers
-
 from ase.data import atomic_numbers
 
 logger = logging.getLogger(__name__)
+
+_XYZRENDER_API = None
+_XYZRENDER_UNAVAILABLE = False
+_XYZRENDER_UNAVAILABLE_WARNED = False
+
+
+def _get_xyzrender_api():
+    global _XYZRENDER_API, _XYZRENDER_UNAVAILABLE, _XYZRENDER_UNAVAILABLE_WARNED
+
+    if _XYZRENDER_UNAVAILABLE:
+        return None
+
+    if _XYZRENDER_API is None:
+        try:
+            from xyzrender import load, render, render_gif
+            _XYZRENDER_API = (load, render, render_gif)
+        except ImportError:
+            _XYZRENDER_UNAVAILABLE = True
+            if not _XYZRENDER_UNAVAILABLE_WARNED:
+                logger.warning(
+                    "save_xyzrender_figures=True, but the 'xyzrender' Python package "
+                    "is not installed. Skipping XYZ figure rendering."
+                )
+                _XYZRENDER_UNAVAILABLE_WARNED = True
+            return None
+
+    return _XYZRENDER_API
+
+
+def _set_xyzrender_warning_level():
+    xyzrender_logger = logging.getLogger("xyzrender")
+    previous_level = xyzrender_logger.level
+    xyzrender_logger.setLevel(logging.WARNING)
+    return xyzrender_logger, previous_level
+
+
+def _restore_logger_level(logger_obj, previous_level: int) -> None:
+    logger_obj.setLevel(previous_level)
+
+
+def _sanitize_xyz_text_for_render(xyz_text: str) -> str:
+    """Replace unsupported XYZ element symbols with carbon for rendering only."""
+    lines = xyz_text.splitlines()
+    if len(lines) <= 2:
+        return xyz_text
+
+    sanitized = lines[:2]
+    for line in lines[2:]:
+        parts = line.split()
+        if len(parts) >= 4:
+            symbol = parts[0]
+            if symbol not in atomic_numbers or atomic_numbers[symbol] <= 0:
+                parts[0] = "C"
+                line = " ".join(parts)
+        sanitized.append(line)
+    return "\n".join(sanitized) + "\n"
+
+
+def _renderable_xyz_path(xyz_path: str) -> str:
+    with open(xyz_path, "r", encoding="utf-8") as f:
+        xyz_text = f.read()
+    sanitized_text = _sanitize_xyz_text_for_render(xyz_text)
+    if sanitized_text == xyz_text:
+        return xyz_path
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".xyz",
+        prefix="xyzrender_",
+        delete=False,
+        encoding="utf-8",
+    )
+    with tmp:
+        tmp.write(sanitized_text)
+    return tmp.name
+
+
+def _render_xyz_figure(xyz_path: str) -> None:
+    """Render one XYZ file to SVG with the optional xyzrender Python API."""
+    api = _get_xyzrender_api()
+    if api is None:
+        return
+
+    load, render, _ = api
+    svg_path = os.path.splitext(xyz_path)[0] + ".svg"
+    xyzrender_logger, previous_level = _set_xyzrender_warning_level()
+    render_input_path = None
+    try:
+        render_input_path = _renderable_xyz_path(xyz_path)
+        mol = load(render_input_path)
+        render(mol, output=svg_path)
+    except Exception as exc:
+        logger.warning(f"Failed to render {xyz_path} with xyzrender: {exc}")
+    finally:
+        _restore_logger_level(xyzrender_logger, previous_level)
+        if render_input_path is not None and render_input_path != xyz_path:
+            try:
+                os.unlink(render_input_path)
+            except OSError:
+                pass
+
+
+def _render_xyz_trajectory_gif(trajectory_xyz_path: str, gif_path: str) -> None:
+    """Render a multi-frame XYZ trajectory to GIF with xyzrender."""
+    api = _get_xyzrender_api()
+    if api is None:
+        return
+
+    _, _, render_gif = api
+    xyzrender_logger, previous_level = _set_xyzrender_warning_level()
+    try:
+        render_gif(trajectory_xyz_path, gif_trj=True, output=gif_path)
+    except Exception as exc:
+        logger.warning(f"Failed to render denoising GIF {gif_path} with xyzrender: {exc}")
+    finally:
+        _restore_logger_level(xyzrender_logger, previous_level)
+
 
 class GenerativeFactory:
     def __init__(self,
@@ -34,8 +153,10 @@ class GenerativeFactory:
                  seed: int = 86,
                  n_frames: int = 0,
                  output_path: str = "generated_mol",
+                 save_xyzrender_figures: bool = False,
                  condition_configs={},
                  max_mol_size: int = 0,
+                 **kwargs,
     ):
 
         self.task = task
@@ -104,10 +225,13 @@ class GenerativeFactory:
             self.visualize_trajectory = False
             
         self.output_path = output_path
+        self.save_xyzrender_figures = save_xyzrender_figures
         
         self.sampling_mode = sampling_mode # ddim not available for CFG and GG
 
         self.condition_configs = condition_configs
+        if "use_noised_conditioning" in kwargs:
+            self.condition_configs["use_noised_conditioning"] = kwargs["use_noised_conditioning"]
 
         if self.task.node_dist_model is None:
             logger.warning("Number of atoms distribution is not available, specify the size of molecules to generate")
@@ -115,6 +239,63 @@ class GenerativeFactory:
             if len(self.mol_size) == 2:
                 if self.mol_size[0] == 0 and self.mol_size[1] == 0:
                     self.mol_size = [random.randint(14, 100)]
+
+    def _move_xyz(self, src_path: str, mol_idx: int, trajectory_dir: str = None) -> str:
+        dest_path = os.path.join(self.output_path, f"molecule_{str(mol_idx).zfill(4)}.xyz")
+        shutil.move(src_path, dest_path)
+        if self.save_xyzrender_figures:
+            _render_xyz_figure(dest_path)
+            if trajectory_dir is not None:
+                self._render_denoising_gif(trajectory_dir, dest_path)
+        return dest_path
+
+    def _render_denoising_gif(self, trajectory_dir: str, final_xyz_path: str) -> None:
+        frame_paths = sorted(
+            (
+                path
+                for path in glob.glob(os.path.join(trajectory_dir, "molecule_*.xyz"))
+                if os.path.abspath(path) != os.path.abspath(final_xyz_path)
+            ),
+            key=self._frame_sort_key,
+            reverse=True,
+        )
+        frame_paths.append(final_xyz_path)
+        if len(frame_paths) < 2:
+            logger.warning(f"Not enough denoising frames in {trajectory_dir} to render a GIF.")
+            return
+
+        atom_counts = []
+        for frame_path in frame_paths:
+            try:
+                with open(frame_path, "r", encoding="utf-8") as f:
+                    atom_counts.append(int(f.readline().strip()))
+            except (OSError, ValueError) as exc:
+                logger.warning(f"Skipping denoising GIF for {trajectory_dir}: invalid XYZ frame {frame_path}: {exc}")
+                return
+
+        if len(set(atom_counts)) != 1:
+            logger.warning(
+                f"Skipping denoising GIF for {trajectory_dir}: xyzrender requires all frames "
+                f"to have the same atom count, got {sorted(set(atom_counts))}."
+            )
+            return
+
+        trajectory_xyz_path = os.path.join(trajectory_dir, "denoising_trajectory.xyz")
+        with open(trajectory_xyz_path, "w", encoding="utf-8") as out:
+            for frame_path in frame_paths:
+                with open(frame_path, "r", encoding="utf-8") as f:
+                    out.write(_sanitize_xyz_text_for_render(f.read()).rstrip())
+                    out.write("\n")
+
+        _render_xyz_trajectory_gif(
+            trajectory_xyz_path,
+            os.path.join(trajectory_dir, "denoising.gif"),
+        )
+
+    @staticmethod
+    def _frame_sort_key(path: str) -> int:
+        match = re.search(r"molecule_(\d+)\.xyz$", os.path.basename(path))
+        return int(match.group(1)) if match else -1
         
     def run(self):
         
@@ -205,23 +386,16 @@ class GenerativeFactory:
                                 use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
                                 node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
                             )   
-                        # Copy the last frame of the trajectory to the main output folder
-                        last_frame_idx = self.s_saves[-1].item()
-                        path_xyz = os.path.join(output_path_frame, f"molecule_{last_frame_idx:04d}.xyz")
-                        if os.path.exists(path_xyz):
-                            shutil.copy(
-                                path_xyz,
-                                os.path.join(self.output_path, f"molecule_{mol_idx:04d}.xyz"),
-                            )
+                        path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
+                        idx = i * self.batch_size + j
+                        self._move_xyz(path_xyz, idx, trajectory_dir=output_path_frame)
                 else:
-                    batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
                     if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                         save_xyz_file_atomic_numbers(
                             self.output_path,
                             x,
                             charges.squeeze(-1),
                             node_mask=node_mask,
-                            idxs=batch_idxs,
                         )
                     else:
                         save_xyz_file(
@@ -232,8 +406,13 @@ class GenerativeFactory:
                             atomic_numbers=charges.squeeze(-1) if hasattr(self.task.model, 'use_unknown_fallback') else None,
                             use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
                             node_mask=node_mask,
-                            idxs=batch_idxs,
                         )
+
+                    for j in range(current_batch_size):
+                        
+                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                        idx = i * self.batch_size + j
+                        self._move_xyz(path_xyz, idx)
             except Exception as e:
                 fail_count += 1
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
@@ -332,25 +511,18 @@ class GenerativeFactory:
                                 use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
                                 node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
                             )     
-                        # Copy the last frame of the trajectory to the main output folder
-                        last_frame_idx = self.s_saves[-1].item()
-                        path_xyz = os.path.join(output_path_frame, f"molecule_{last_frame_idx:04d}.xyz")
-                        if os.path.exists(path_xyz):
-                            shutil.copy(
-                                path_xyz,
-                                os.path.join(self.output_path, f"molecule_{mol_idx:04d}.xyz"),
-                            )
+                        path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
+                        idx = i * self.batch_size + j
+                        self._move_xyz(path_xyz, idx, trajectory_dir=output_path_frame)
                     x = x[:, -1]
                     one_hot = one_hot[:, -1]   
-                else:
-                    batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
+                else:     
                     if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                         save_xyz_file_atomic_numbers(
                             self.output_path,
                             x,
                             charges.squeeze(-1) if charges is not None else None,
                             node_mask=node_mask,
-                            idxs=batch_idxs,
                         )
                     else:
                         save_xyz_file(
@@ -361,8 +533,13 @@ class GenerativeFactory:
                             atomic_numbers=charges.squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
                             use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
                             node_mask=node_mask,
-                            idxs=batch_idxs,
                         )
+
+                    for j in range(current_batch_size):
+                        
+                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                        idx = i * self.batch_size + j
+                        self._move_xyz(path_xyz, idx)
                 
                 #TODO to adapt this to work with batch of mols
                 if property_eval:
@@ -478,14 +655,12 @@ class GenerativeFactory:
                         n_backwards=self.condition_configs.get("n_backwards",1)
                     )   
                     
-                batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
                 if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                     save_xyz_file_atomic_numbers(
                         self.output_path,
                         x,
                         charges.squeeze(-1) if charges is not None else None,
                         node_mask=node_mask,
-                        idxs=batch_idxs,
                     )
                 else:
                     save_xyz_file(
@@ -496,8 +671,13 @@ class GenerativeFactory:
                         atomic_numbers=charges.squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
                         use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
                         node_mask=node_mask,
-                        idxs=batch_idxs,
                     )
+
+                # Rename files for batch: molecule_000.xyz, molecule_001.xyz, ... -> molecule_XXXX.xyz
+                for j in range(current_batch_size):
+                    path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                    idx = i * self.batch_size + j
+                    self._move_xyz(path_xyz, idx)
                 
                 # Property evaluation (TODO: adapt for batch)
                 if property_eval:
@@ -595,6 +775,7 @@ class GenerativeFactory:
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
                         inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", {}),
+                        use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                         n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
@@ -607,6 +788,7 @@ class GenerativeFactory:
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
                         outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
+                        use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                         n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
@@ -618,6 +800,7 @@ class GenerativeFactory:
                         condition_tensor=xh_ref,
                         condition_mode=condition_mode,
                         outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
+                        use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                         n_frames=self.n_frames,
                         n_retrys=self.condition_configs.get("n_retrys"),
                         t_retry=self.condition_configs.get("t_retry"),
@@ -644,21 +827,16 @@ class GenerativeFactory:
                         )     
                     path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
                     idx = i  
-                    shutil.move(
-                        path_xyz,
-                        os.path.join(self.output_path, f"molecule_{str(idx).zfill(4)}.xyz"),
-                    )
+                    self._move_xyz(path_xyz, idx, trajectory_dir=output_path_frame)
                     x = x[:, -1]
                     one_hot = one_hot[:, -1]   
                 else:     
-                    batch_idxs = range(i + 1, i + 2)
                     if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                         save_xyz_file_atomic_numbers(
                             self.output_path,
                             x,
                             charges.squeeze(-1) if charges is not None else None,
                             node_mask=node_mask,
-                            idxs=batch_idxs,
                         )
                     else:
                         save_xyz_file(
@@ -666,8 +844,9 @@ class GenerativeFactory:
                             one_hot,
                             x,
                             atom_decoder=self.task.atom_vocab,
-                            idxs=batch_idxs,
                         )
+                    path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
+                    self._move_xyz(path_xyz, i)
                              
             except Exception as e:
                 fail_count += 1
@@ -773,8 +952,9 @@ class GenerativeFactory:
                     n_backwards=self.condition_configs.get("n_backwards",1),
                     condition_tensor=xh_tensor,
                     condition_mode=condition_mode,
-                    inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", None),
-                    outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", None),
+                    inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", {}),
+                    outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
+                    use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                     n_frames=self.n_frames,
                 )   
                 
@@ -801,26 +981,19 @@ class GenerativeFactory:
                                 use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
                                 node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
                             )     
-                        # Copy the last frame of the trajectory to the main output folder
-                        last_frame_idx = self.s_saves[-1].item()
-                        path_xyz = os.path.join(output_path_frame, f"molecule_{last_frame_idx:04d}.xyz")
-                        if os.path.exists(path_xyz):
-                            shutil.copy(
-                                path_xyz,
-                                os.path.join(self.output_path, f"molecule_{mol_idx:04d}.xyz"),
-                            )
+                        path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
+                        idx = i * self.batch_size + j
+                        self._move_xyz(path_xyz, idx, trajectory_dir=output_path_frame)
             
                     x = x[:, -1]
                     one_hot = one_hot[:, -1]   
-                else:
-                    batch_idxs = range(i * self.batch_size, i * self.batch_size + current_batch_size)
+                else:     
                     if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                         save_xyz_file_atomic_numbers(
                             self.output_path,
                             x,
                             charges.squeeze(-1) if charges is not None else None,
                             node_mask=node_mask,
-                            idxs=batch_idxs,
                         )
                     else:
                         save_xyz_file(
@@ -831,8 +1004,13 @@ class GenerativeFactory:
                             atomic_numbers=charges.squeeze(-1) if charges is not None and hasattr(self.task.model, 'use_unknown_fallback') else None,
                             use_unknown_fallback=getattr(self.task.model, 'use_unknown_fallback', False),
                             node_mask=node_mask,
-                            idxs=batch_idxs,
                         )
+
+                    for j in range(current_batch_size):
+                        
+                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                        idx = i * self.batch_size + j
+                        self._move_xyz(path_xyz, idx)
             
                 if property_eval:
                     xh = torch.cat([
@@ -917,7 +1095,18 @@ class GenerativeFactory:
         """
         file_path = self.condition_configs.get("reference_structure_path", None)
         if not file_path or not os.path.exists(file_path):
-            raise FileNotFoundError(f"Reference structure file not found at path: {file_path}")
+            if (
+                hasattr(self.task, "reference_scaffold")
+                and self.task.reference_scaffold is not None
+            ):
+                logger.info(
+                    "No reference_structure_path provided; using mean scaffold "
+                    "embedded in checkpoint."
+                )
+                return self.task.reference_scaffold.to(device)
+            raise FileNotFoundError(
+                f"Reference structure file not found at path: {file_path}"
+            )
 
         # Load molecule with hydrogen atoms
         mol = PointCloud_Mol.from_xyz(
@@ -1027,8 +1216,6 @@ class GenerativeFactory:
 
         return feats_t
 
-
-
 class PharmacophoreConditionGenerator:
     """
     Entry point for all ShEPhERD pharmacophore generation modes.
@@ -1064,6 +1251,7 @@ class PharmacophoreConditionGenerator:
         prior_noise_scale: float = 1.0,
         denoising_noise_scale: float = 1.0,
         output_path: str = "generated_pharmacophore",
+        save_xyzrender_figures: bool = False,
         seed: int = 42,
         verbose: bool = True,
         # --- reference molecule (all conditional modes) ---
@@ -1086,6 +1274,7 @@ class PharmacophoreConditionGenerator:
         compute_x4: bool = True,
         # --- from_intermediate_time ---
         start_time: float = 0.5,
+        use_noised_conditioning: bool = False,
         condition_configs: dict = {},
     ):
         self.task = task
@@ -1116,6 +1305,7 @@ class PharmacophoreConditionGenerator:
         self.prior_noise_scale = prior_noise_scale
         self.denoising_noise_scale = denoising_noise_scale
         self.output_path = output_path
+        self.save_xyzrender_figures = save_xyzrender_figures
         self.seed = seed
         self.verbose = verbose
         self.reference_mol = reference_mol
@@ -1135,6 +1325,7 @@ class PharmacophoreConditionGenerator:
         self.compute_x3 = compute_x3
         self.compute_x4 = compute_x4
         self.condition_configs = condition_configs
+        self.use_noised_conditioning = self.condition_configs.get("use_noised_conditioning", use_noised_conditioning)
 
         # Load and cache conditioning data from reference molecule
         self._ref = None
@@ -1142,6 +1333,14 @@ class PharmacophoreConditionGenerator:
             if reference_mol is None:
                 raise ValueError(f"reference_mol is required for task_type='{task_type}'")
             self._ref = self._load_reference(reference_mol, mol_idx)
+
+    def _render_batch_xyz_figures(self, idx_offset: int, batch_size: int) -> None:
+        if not self.save_xyzrender_figures:
+            return
+        for idx in range(idx_offset, idx_offset + batch_size):
+            xyz_path = os.path.join(self.output_path, f"mol_{idx:04d}.xyz")
+            if os.path.exists(xyz_path):
+                _render_xyz_figure(xyz_path)
 
     def _load_reference(self, path: str, mol_idx: int) -> dict:
         """
@@ -1273,6 +1472,7 @@ class PharmacophoreConditionGenerator:
             try:
                 structures = self._generate_batch(bs)
                 save_shepherd_outputs(self.output_path, structures, idx_offset=idx_offset, save_modalities=self.save_modalities)
+                self._render_batch_xyz_figures(idx_offset, len(structures))
                 idx_offset += len(structures)
             except Exception as e:
                 logger.warning(f"[Batch {i}] Generation failed: {e}")
