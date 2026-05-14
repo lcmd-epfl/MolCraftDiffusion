@@ -51,7 +51,21 @@ SCORES_THRESHOLD = 3.0
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def _get_split_stats(data_list, n_splits, scale=100.0):
+    if len(data_list) == 0:
+        return 0.0, 0.0
+    if n_splits <= 1:
+        return float(np.mean(data_list) * scale), 0.0
+    splits = np.array_split(np.asarray(data_list), n_splits)
+    split_means = [float(np.mean(s) * scale) for s in splits if len(s) > 0]
+    if not split_means:
+        return 0.0, 0.0
+    return float(np.mean(split_means)), float(np.std(split_means))
+
 def runner(args):
+    split = getattr(args, "split", 1)
+    if split < 1:
+        raise ValueError(f"--split must be >= 1, got {split}")
     if _IMPORT_ERROR is not None:
         logging.warning(str(_IMPORT_ERROR))
         raise SystemExit(1) from _IMPORT_ERROR
@@ -185,6 +199,15 @@ def runner(args):
         logging.info(f"{df['valid'].mean() * 100:.2f}% of 3D molecules are valid")
         logging.info(f"{df['valid_connected'].mean() * 100:.2f}% of 3D molecules are valid and fully-connected")
         logging.info(f"{sum(fully_connected) / len(fully_connected) * 100:.2f}% of 3D molecules are fully connected")
+        if split > 1:
+            atom_mean, atom_std = _get_split_stats(df["percent_atom_valid"].values, split, scale=100.0)
+            valid_mean, valid_std = _get_split_stats(df["valid"].values, split, scale=100.0)
+            conn_mean, conn_std = _get_split_stats(df["valid_connected"].values, split, scale=100.0)
+            full_mean, full_std = _get_split_stats(fully_connected, split, scale=100.0)
+            logging.info(f"Split atoms stable mean ± std: {atom_mean:.2f} ± {atom_std:.2f}%")
+            logging.info(f"Split valid mean ± std: {valid_mean:.2f} ± {valid_std:.2f}%")
+            logging.info(f"Split valid&connected mean ± std: {conn_mean:.2f} ± {conn_std:.2f}%")
+            logging.info(f"Split fully connected mean ± std: {full_mean:.2f} ± {full_std:.2f}%")
         
         logging.info(f"Molecular size mean: {df['num_atoms'].mean():.2f}")
         logging.info(f"Molecular size max: {df['num_atoms'].max()}")
@@ -285,6 +308,19 @@ def runner(args):
             logging.info(f"Valid Posebuster: {postbuster_results['valid_posebuster'].mean() * 100:.2f}%")
             logging.info(f"Valid Posebuster Connected: {postbuster_results['valid_posebuster_connected'].mean() * 100:.2f}%")
             logging.info(f"Neutral Molecule: {sum(neutral_mols) / len(neutral_mols) * 100:.2f}%")
+            if split > 1:
+                sanit_mean, sanit_std = _get_split_stats(postbuster_results["sanitization"].values, split, scale=100.0)
+                inchi_mean, inchi_std = _get_split_stats(postbuster_results["inchi_convertible"].values, split, scale=100.0)
+                conn_mean, conn_std = _get_split_stats(postbuster_results["all_atoms_connected"].values, split, scale=100.0)
+                valid_pb_mean, valid_pb_std = _get_split_stats(postbuster_results["valid_posebuster"].values, split, scale=100.0)
+                valid_pb_conn_mean, valid_pb_conn_std = _get_split_stats(postbuster_results["valid_posebuster_connected"].values, split, scale=100.0)
+                neutral_mean, neutral_std = _get_split_stats(neutral_mols, split, scale=100.0)
+                logging.info(f"Split Sanitization mean ± std: {sanit_mean:.2f} ± {sanit_std:.2f}%")
+                logging.info(f"Split InChI Convertible mean ± std: {inchi_mean:.2f} ± {inchi_std:.2f}%")
+                logging.info(f"Split All Atoms Connected mean ± std: {conn_mean:.2f} ± {conn_std:.2f}%")
+                logging.info(f"Split Valid Posebuster mean ± std: {valid_pb_mean:.2f} ± {valid_pb_std:.2f}%")
+                logging.info(f"Split Valid Posebuster Connected mean ± std: {valid_pb_conn_mean:.2f} ± {valid_pb_conn_std:.2f}%")
+                logging.info(f"Split Neutral Molecule mean ± std: {neutral_mean:.2f} ± {neutral_std:.2f}%")
 
     # =========================================================================
     # GEOM_REVISED: Aromatic-aware molecule stability
@@ -325,15 +361,15 @@ def runner(args):
                 total_weight += np.sum(weight_list)
             return np.sum(total_weighted_diffs) / total_weight if total_weight > 0 else 0
 
-        def get_split_stats_bond(pairs, analysis_type, n_subsets):
+        def get_split_stats_bond(pairs, analysis_type, n_splits):
             if len(pairs) == 0: return 0.0, 0.0
-            if n_subsets <= 1:
+            if n_splits <= 1:
                 results = run_bond_analysis(pairs, analysis_type=analysis_type)
                 return summarize_bond_results(results), 0.0
-            fold_size = len(pairs) // n_subsets
+            fold_size = len(pairs) // n_splits
             scores = []
-            for i in range(n_subsets):
-                if i < n_subsets - 1:
+            for i in range(n_splits):
+                if i < n_splits - 1:
                     fold_pairs = pairs[i * fold_size: (i + 1) * fold_size]
                 else:
                     fold_pairs = pairs[i * fold_size:]
@@ -507,41 +543,49 @@ def runner(args):
             logging.info("=" * 60)
             logging.info(f"XYZ2Mol Conversion: {n_passed}/{n_total} ({conversion_rate:.2f}%)")
             
-            # Helper to compute split statistics
-            def get_split_stats(data_list, n_splits):
-                if len(data_list) == 0: return 0.0, 0.0
-                if n_splits <= 1: return np.mean(data_list) * 100, 0.0
-                splits = np.array_split(data_list, n_splits)
-                split_means = [np.mean(s) * 100 for s in splits if len(s) > 0]
-                return np.mean(split_means), np.std(split_means)
-
-            valid_mean, valid_std = get_split_stats(valid_list, args.n_subsets)
-            conn_mean, conn_std = get_split_stats(valid_connected_list, args.n_subsets)
-
-            logging.info(f"Valid: {sum(valid_list)}/{n_passed} ({valid_mean:.2f} ± {valid_std:.2f}%)")
-            logging.info(f"Valid & Connected: {sum(valid_connected_list)}/{n_passed} ({conn_mean:.2f} ± {conn_std:.2f}%)")
+            valid_global = (sum(valid_list) / n_passed * 100) if n_passed > 0 else 0.0
+            conn_global = (sum(valid_connected_list) / n_passed * 100) if n_passed > 0 else 0.0
+            logging.info(f"Valid: {sum(valid_list)}/{n_passed} ({valid_global:.2f}%)")
+            logging.info(f"Valid & Connected: {sum(valid_connected_list)}/{n_passed} ({conn_global:.2f}%)")
+            if split > 1:
+                valid_mean, valid_std = _get_split_stats(valid_list, split, scale=100.0)
+                conn_mean, conn_std = _get_split_stats(valid_connected_list, split, scale=100.0)
+                logging.info(f"Split Valid mean ± std: {valid_mean:.2f} ± {valid_std:.2f}%")
+                logging.info(f"Split Valid & Connected mean ± std: {conn_mean:.2f} ± {conn_std:.2f}%")
             
             for mode_name in ["aromatic_true", "aromatic_false"]:
                 if f"stable_mol_{mode_name}" in df_revised.columns:
                     n_stable = int(df_revised[f'stable_mol_{mode_name}'].sum())
                     
-                    mol_stab_mean, mol_stab_std = get_split_stats(df_revised[f'stable_mol_{mode_name}'].values, args.n_subsets)
-                    atom_stab_mean, atom_stab_std = get_split_stats(df_revised[f'atom_stability_{mode_name}'].values, args.n_subsets)
+                    mol_stab_global = float(df_revised[f'stable_mol_{mode_name}'].mean() * 100)
+                    atom_stab_global = float(df_revised[f'atom_stability_{mode_name}'].mean() * 100)
                     
                     logging.info(f"--- Mode: {mode_name} ---")
-                    logging.info(f"  Molecule Stability: {n_stable}/{n_passed} ({mol_stab_mean:.2f} ± {mol_stab_std:.2f}%)")
-                    logging.info(f"  Atom Stability: {atom_stab_mean:.2f} ± {atom_stab_std:.2f}%")
+                    logging.info(f"  Molecule Stability: {n_stable}/{n_passed} ({mol_stab_global:.2f}%)")
+                    logging.info(f"  Atom Stability: {atom_stab_global:.2f}%")
+                    if split > 1:
+                        mol_stab_mean, mol_stab_std = _get_split_stats(df_revised[f'stable_mol_{mode_name}'].values, split, scale=100.0)
+                        atom_stab_mean, atom_stab_std = _get_split_stats(df_revised[f'atom_stability_{mode_name}'].values, split, scale=100.0)
+                        logging.info(f"  Split Molecule Stability mean ± std: {mol_stab_mean:.2f} ± {mol_stab_std:.2f}%")
+                        logging.info(f"  Split Atom Stability mean ± std: {atom_stab_mean:.2f} ± {atom_stab_std:.2f}%")
 
             if len(mol_pairs) > 0:
-                bond_len_mean, bond_len_std = get_split_stats_bond(mol_pairs, "bond_length", args.n_subsets)
-                bond_ang_mean, bond_ang_std = get_split_stats_bond(mol_pairs, "bond_angle", args.n_subsets)
-                tor_mean, tor_std = get_split_stats_bond(mol_pairs, "torsion_angle", args.n_subsets)
+                bond_global, _ = get_split_stats_bond(mol_pairs, "bond_length", 1)
+                ang_global, _ = get_split_stats_bond(mol_pairs, "bond_angle", 1)
+                tor_global, _ = get_split_stats_bond(mol_pairs, "torsion_angle", 1)
                 
                 logging.info(f"--- Geometry Discrepancies (Bond Mode) ---")
                 logging.info(f"  Pairs loaded: {len(mol_pairs)}")
-                logging.info(f"  Bond Length: {bond_len_mean:.4f} ± {bond_len_std:.4f} Å")
-                logging.info(f"  Bond Angle: {bond_ang_mean:.4f} ± {bond_ang_std:.4f}°")
-                logging.info(f"  Torsion Angle: {tor_mean:.4f} ± {tor_std:.4f}°")
+                logging.info(f"  Bond Length: {bond_global:.4f} Å")
+                logging.info(f"  Bond Angle: {ang_global:.4f}°")
+                logging.info(f"  Torsion Angle: {tor_global:.4f}°")
+                if split > 1:
+                    bond_len_mean, bond_len_std = get_split_stats_bond(mol_pairs, "bond_length", split)
+                    bond_ang_mean, bond_ang_std = get_split_stats_bond(mol_pairs, "bond_angle", split)
+                    tor_mean, tor_std = get_split_stats_bond(mol_pairs, "torsion_angle", split)
+                    logging.info(f"  Split Bond Length mean ± std: {bond_len_mean:.4f} ± {bond_len_std:.4f} Å")
+                    logging.info(f"  Split Bond Angle mean ± std: {bond_ang_mean:.4f} ± {bond_ang_std:.4f}°")
+                    logging.info(f"  Split Torsion Angle mean ± std: {tor_mean:.4f} ± {tor_std:.4f}°")
 
     # =========================================================================
     # SHEPHERD: Drug-likeness and conditional similarity
@@ -776,6 +820,19 @@ def runner(args):
             logging.info(f"Average ESP Similarity: {df_shepherd['esp_sim'].mean():.4f}")
         if "pharm_sim" in df_shepherd.columns:
             logging.info(f"Average Pharm Similarity: {df_shepherd['pharm_sim'].mean():.4f}")
+        if split > 1 and len(df_shepherd) > 0:
+            valid_rdkit_mean, valid_rdkit_std = _get_split_stats(df_shepherd["valid_rdkit"].values, split, scale=100.0)
+            sa_mean, sa_std = _get_split_stats(df_shepherd["SA_score"].values, split, scale=1.0)
+            qed_mean, qed_std = _get_split_stats(df_shepherd["QED"].values, split, scale=1.0)
+            shape_mean, shape_std = _get_split_stats(df_shepherd["shape_sim"].values, split, scale=1.0)
+            esp_mean, esp_std = _get_split_stats(df_shepherd["esp_sim"].values, split, scale=1.0)
+            pharm_mean, pharm_std = _get_split_stats(df_shepherd["pharm_sim"].values, split, scale=1.0)
+            logging.info(f"Split valid RDKit mean ± std: {valid_rdkit_mean:.2f} ± {valid_rdkit_std:.2f}%")
+            logging.info(f"Split SA_score mean ± std: {sa_mean:.4f} ± {sa_std:.4f}")
+            logging.info(f"Split QED mean ± std: {qed_mean:.4f} ± {qed_std:.4f}")
+            logging.info(f"Split Shape Similarity mean ± std: {shape_mean:.4f} ± {shape_std:.4f}")
+            logging.info(f"Split ESP Similarity mean ± std: {esp_mean:.4f} ± {esp_std:.4f}")
+            logging.info(f"Split Pharm Similarity mean ± std: {pharm_mean:.4f} ± {pharm_std:.4f}")
 
 
 
@@ -794,7 +851,7 @@ if __name__ == "__main__":
     parser.add_argument("--mol_converter", type=str, default="xyz2mol",
                         choices=["xyz2mol", "openbabel"],
                         help="Molecule converter for XYZ to mol: 'xyz2mol' (default) or 'openbabel'")
-    parser.add_argument("--n_subsets", type=int, default=5, help="number of subsets for std calculation")
+    parser.add_argument("--split", type=int, default=1, help="number of deterministic splits for summary mean/std")
     parser.add_argument("--timeout", type=int, default=10, help="timeout for xyz2mol conversion (default: 10s)")
     args = parser.parse_args()
     runner(args)

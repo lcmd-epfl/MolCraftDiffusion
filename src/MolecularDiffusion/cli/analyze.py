@@ -75,7 +75,7 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
     """
     get_xtb_optimized_xyz = _load_analyze_module("xtb_optimization").get_xtb_optimized_xyz
     
-    output_dir = output_dir or os.path.join(input_path, "optimized_xyz")
+    output_dir = output_path or os.path.join(input_path, "optimized_xyz")
     
     click.echo(f"Optimizing XYZ files from: {input_path}")
     click.echo(f"Output directory: {output_dir}")
@@ -117,15 +117,15 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="XYZ to mol converter (default: xyz2mol)")
 @click.option("--skip-atoms", multiple=True, type=int,
               help="Atom indices to skip in validation")
-@click.option("--n-subsets", "-n", "--n", default=5, type=int,
-              help="Number of subsets for std calculation (default: 5)")
+@click.option("--split", "-s", default=1, type=click.IntRange(min=1),
+              help="Number of deterministic splits for summary mean±std logging (default: 1, legacy behavior)")
 @click.option("--timeout", "-t", "--t", default=10, type=int,
               help="Timeout per xyz2mol conversion in seconds (default: 10)")
 @click.option("--reference-mol", "-r", default=None, type=click.Path(),
               help="Reference .pkl or .sdf for conditional similarity metrics (shepherd mode)")
 @click.option("--mol-idx", default=0, type=int,
               help="Molecule index in reference .pkl (default: 0)")
-def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, n_subsets, timeout, reference_mol, mol_idx):
+def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx):
     """Compute validity and connectivity metrics for XYZ files.
     
     \b
@@ -141,6 +141,7 @@ def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion
         MolCraftDiff analyze metrics gen_xyz/ --metrics posebuster
         MolCraftDiff analyze metrics gen_xyz/ --metrics geom_revised --mol-converter openbabel
         MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd
+        MolCraftDiff analyze metrics gen_xyz/ --split 4
         MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd -r data/shepherd_data/gdb/molblock_charges_9_test100.pkl --mol-idx 0
     """
     import argparse
@@ -155,8 +156,10 @@ def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion
         portion=portion,
         mol_converter=mol_converter,
         skip_atoms=list(skip_atoms) if skip_atoms else None,
-        n_subsets=n_subsets,
+        split=split,
         timeout=timeout,
+        reference_mol=reference_mol,
+        mol_idx=mol_idx,
     )
     
     click.echo(f"Computing {metrics_type} metrics for: {input_dir}")

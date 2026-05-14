@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath("../src"))
 project = "MolCraftDiffusion"
 copyright = "2025, pregHosh"
 author = "pregHosh"
-release = "1.0"
+release = "1.2.0"
 
 # -- General configuration -----------------------------------------------------
 extensions = [

@@ -65,7 +65,6 @@ analyze = [
     "open3d",
     "openbabel-wheel",
     "posecheck",
-    "cosymlib",
 ]
 # GPU install (CUDA-capable torch wheels, auto-detected by pip on Linux/Windows):
 #   pip install molcraftdiffusion[gpu]

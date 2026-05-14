@@ -89,13 +89,15 @@ def compute_xtb_electronic(
     # Read XYZ file
     elements, coordinates = read_xyz(xyz_path)
     
-    # Morfeus XTB uses the `method` keyword (e.g. 1, 2, or "ptb").
-    xtb_method = str(method) if method == "ptb" else method
+    # Morfeus XTB selects GFN-xTB through `version`, not `method`.
+    xtb_version = str(method)
+    if xtb_version == "ptb":
+        raise ValueError("The morfeus XTB backend supports only GFN1 and GFN2 for electronic properties.")
 
     xtb = XTB(
         elements=elements,
         coordinates=coordinates,
-        method=xtb_method,
+        version=xtb_version,
         charge=charge,
         n_unpaired=n_unpaired,
         solvent=solvent,
