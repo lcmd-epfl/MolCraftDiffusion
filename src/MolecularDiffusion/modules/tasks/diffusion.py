@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 from collections import defaultdict
 from typing import Dict, List
 
@@ -77,15 +78,99 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self.condition = condition
         self.sp_regularizer = sp_regularizer
         self.reference_indices = reference_indices
+        self._reference_scaffold = None
         self.normalize_condition = normalize_condition
         
         self.n_dim_data = self.model.in_node_nf 
         self.n_atom_types = self.model.in_node_nf - len(self.model.extra_norm_values)
         if self.model.include_charges:
             self.n_atom_types -= 1
-        
-        
-        
+
+    @property
+    def reference_scaffold(self):
+        if (
+            self._reference_scaffold is None
+            and self.node_dist_model is not None
+            and hasattr(self.node_dist_model, "reference_scaffold")
+        ):
+            self._reference_scaffold = self.node_dist_model.reference_scaffold
+        return self._reference_scaffold
+
+    @reference_scaffold.setter
+    def reference_scaffold(self, value):
+        self._reference_scaffold = value
+        if self.node_dist_model is not None:
+            self.node_dist_model.reference_scaffold = value
+
+    def _compute_mean_scaffold(self, train_set):
+        """Find a representative scaffold from training molecules."""
+        ref_idx = self.reference_indices
+        if not ref_idx:
+            return None
+
+        max_idx = max(ref_idx)
+        nc, nf, nch = self.model.norm_values
+
+        all_pos = []
+        all_x = []
+        all_ch = []
+
+        _t = time.perf_counter()
+        for sample in train_set:
+            if "graph" in sample:
+                g = sample["graph"]
+                pos = g.pos
+                x = g.x
+                charges = g.atomic_numbers
+            else:
+                pos = sample["coords"]
+                x = sample["node_feature"]
+                charges = sample.get("charges", None)
+                if pos.dim() == 3:
+                    pos = pos.squeeze(0)
+                if x.dim() == 3:
+                    x = x.squeeze(0)
+                if charges is not None and charges.dim() == 2:
+                    charges = charges.squeeze(0)
+
+            if pos.shape[0] <= max_idx:
+                continue
+
+            all_pos.append(pos[ref_idx].float().cpu())
+            all_x.append(x[ref_idx].float().cpu())
+            all_ch.append(
+                charges[ref_idx].float().cpu()
+                if charges is not None
+                else torch.zeros(len(ref_idx))
+            )
+
+        if not all_pos:
+            logger.warning(
+                "preprocess: no valid molecules found for scaffold computation"
+            )
+            return None
+
+        pos_stack = torch.stack(all_pos)
+        mean_pos = pos_stack.mean(0)
+        sq_dists = (pos_stack - mean_pos.unsqueeze(0)).pow(2).sum(-1).mean(-1)
+        medoid_idx = int(sq_dists.argmin())
+
+        med_pos = all_pos[medoid_idx]
+        x_ref = all_x[medoid_idx]
+        ch_ref = all_ch[medoid_idx]
+
+        med_pos_n = med_pos / nc
+        x_ref_n = x_ref / nf
+        ch_ref_n = (ch_ref / nch).unsqueeze(-1)
+        xh_ref = torch.cat([med_pos_n, x_ref_n, ch_ref_n], dim=-1)
+
+        logger.info(
+            f"preprocess: scaffold (idx={medoid_idx}) from "
+            f"{len(all_pos)}/{len(train_set)} molecules "
+            f"in {time.perf_counter() - _t:.2f}s, shape {list(xh_ref.shape)}"
+        )
+        return xh_ref.unsqueeze(0).detach().cpu()
+
     def preprocess(
         self,
         train_set=None,
@@ -136,6 +221,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
             if self.node_dist_model is None:
                 print("---------------Creating node distribution model-----------------")
                 self.node_dist_model = DistributionNodes(self.n_node_dist)
+            if self.reference_scaffold is not None:
+                self.node_dist_model.reference_scaffold = self.reference_scaffold
 
             if (self.prop_dist_model is None) and len(self.condition) > 0:
                 print("---------------Creating property distribution model---------------")
@@ -170,6 +257,9 @@ class GeomMolecularGenerative(Task, core.Configurable):
                     if mol is not None:
                         canonical_smiles.append(Chem.MolToSmiles(mol))
                 self.dataset_smiles_list = list(set(canonical_smiles))
+
+            if self.reference_indices is not None:
+                self.reference_scaffold = self._compute_mean_scaffold(train_set)
         else:
             self.atomic_numbers = []
             self.atom_decoder = []
@@ -177,6 +267,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             self.dataset_smiles_list = []
             self.max_n_nodes = 0
             self.n_node_dist = {}
+            self.reference_scaffold = None
 
 
     def forward(self, batch):
@@ -2140,4 +2231,3 @@ class GuidanceModelPrediction(Task, core.Configurable):
             
         else:
             raise ValueError(f"Unknown loss weighting scheme: {self.loss_weighting}")
-

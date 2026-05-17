@@ -3014,6 +3014,25 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         Draw samples from the generative model.
         """
+        if condition_tensor is not None:
+            condition_tensor = condition_tensor.to(device=node_mask.device)
+            if condition_tensor.size(0) == 1 and n_samples > 1:
+                condition_tensor = condition_tensor.expand(
+                    n_samples, -1, -1
+                ).contiguous()
+            elif condition_tensor.size(0) != n_samples:
+                raise ValueError(
+                    "condition_tensor batch dimension must be 1 or match "
+                    f"n_samples ({condition_tensor.size(0)} != {n_samples})"
+                )
+            if condition_tensor.size(1) > node_mask.size(1):
+                raise ValueError(
+                    "condition_tensor has more reference nodes than the "
+                    f"sampling node count ({condition_tensor.size(1)} > "
+                    f"{node_mask.size(1)})"
+                )
+            # Keep the caller's tensor immutable across repeated sampling calls.
+            condition_tensor = condition_tensor.clone()
         
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
