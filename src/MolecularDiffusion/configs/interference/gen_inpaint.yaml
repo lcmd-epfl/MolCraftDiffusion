@@ -54,13 +54,8 @@ condition_configs:
     - 42
     denoising_strength: 0.75
     t_start: 0.8
-    t_critical_1: 0.8
-    t_critical_2: 1
-    d_threshold_f: 1.5
-    w_b: 10
-    all_frozen: True
-    use_covalent_radii: True
-    scale_factor: 1.2
+    constraint_strength: 0.8  # Apply overlap-push constraints for s < this value (0–1).
+    scale_factor: 1.2          # Multiplier on covalent radii for bond-distance tolerance.
     noise_initial_mask: False
   n_frames: 0
   n_retrys: 0

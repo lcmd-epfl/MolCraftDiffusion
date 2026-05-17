@@ -18,7 +18,7 @@ from torch_geometric.data import Batch, Data
 from torch_geometric.nn import radius_graph
 from MolecularDiffusion.data.component.pointcloud import PointCloud_Mol
 from MolecularDiffusion.data.component.feature import onehot
-from ase.data import atomic_numbers
+from ase.data import atomic_masses, atomic_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -306,9 +306,6 @@ class GenerativeFactory:
         elif self.task_type in ("gradient_guidance", "cfggg"):
             self.property_guidance()
         elif self.task_type in ("inpaint", "outpaint", "outpaintft"):
-            if self.batch_size > 1:
-                self.batch_size = 1
-                logger.warning("Structure-guided generation can be carried out in batch size of 1")
             self.structural_guidance()
         elif self.task_type in {"inpaint_cfg", "inpaint_gg", "inpaint_cfggg", "outpaint_cfg", "outpaint_gg", "outpaint_cfggg"}:
             self.hybrid_guidance()
@@ -705,7 +702,7 @@ class GenerativeFactory:
     
 
     def structural_guidance(self):
-        
+
         # get condition structure
         xh_ref = self.preprocess_ref_structure(self.task.device)
 
@@ -713,10 +710,17 @@ class GenerativeFactory:
         if n_retrys > 0 and self.n_frames:
             logger.info("No frames saved, set n_retrys = 0")
             n_retrys = 0
-        
+
+        # retry path requires one sample at a time
+        if n_retrys > 0 and self.batch_size > 1:
+            self.batch_size = 1
+            logger.warning(
+                "n_retrys > 0: batch_size forced to 1 for structure-guided generation."
+            )
+
         # process condition values
         if len(self.target_values) > 0 and self.task.prop_dist_model is not None:
-            
+
             context = []
             for i, key in enumerate(self.task.prop_dist_model.distributions):
 
@@ -726,53 +730,70 @@ class GenerativeFactory:
                         self.task.prop_dist_model.normalizer[key]["mad"],
                     )
                     val = (self.target_values[i] - mean) / (mad)
-                elif self.task.normalize_condition == "maxmin":   
+                elif self.task.normalize_condition == "maxmin":
                     mean, min, max = (
                         self.task.prop_dist_model.normalizer[key]["mean"],
                         self.task.prop_dist_model.normalizer[key]["min"],
                         self.task.prop_dist_model.normalizer[key]["max"],
                     )
-                    val = 2 * (self.target_values[i] - min) / (max - min) - 1           
+                    val = 2 * (self.target_values[i] - min) / (max - min) - 1
                 else:
                     val = self.target_values[i]
                 context_row = torch.tensor(
-                        [val]
+                    [val]
                 ).unsqueeze(1)
                 context.append(context_row)
             context = torch.cat(context, dim=1).float().to(self.task.device)
 
         else:
             context = None
-        
-    
+
         fail_count = 0
-        progress_bar = tqdm(range(self.num_generate), desc="Sampling molecules", leave=True)
-        
-        condition_mode = self.task_type + "_" + self.condition_configs.get("condition_component",  "xh")
-        
+        num_round = self.num_generate // self.batch_size
+        if self.num_generate % self.batch_size != 0:
+            num_round += 1
+        current_batch_size = self.batch_size
+
+        progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
+
+        condition_mode = self.task_type + "_" + self.condition_configs.get("condition_component", "xh")
+
         for i in progress_bar:
+            if i == num_round - 1 and self.num_generate % self.batch_size != 0:
+                current_batch_size = self.num_generate % self.batch_size
+            else:
+                current_batch_size = self.batch_size
+
             try:
                 if len(self.mol_size) == 1:
                     nodesxsample = torch.tensor(self.mol_size, dtype=torch.long)
+                    nodesxsample = nodesxsample.repeat(current_batch_size)
                 elif len(self.mol_size) == 2:
                     if self.mol_size[0] == 0 and self.mol_size[1] == 0:
-                        nodesxsample = self.task.node_dist_model.sample(self.batch_size)
+                        nodesxsample = self.task.node_dist_model.sample(current_batch_size)
                         if self.max_mol_size > 0:
                             nodesxsample = torch.clamp(nodesxsample, max=self.max_mol_size)
                     else:
                         mean = (self.mol_size[0] + self.mol_size[1]) / 2
                         std = (self.mol_size[1] - self.mol_size[0]) / 4
                         nodesxsample = torch.normal(mean=mean, std=std, size=(1,)).long()
-                        nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])                
+                        nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
+                        nodesxsample = nodesxsample.repeat(current_batch_size)
+
+                ref_natoms = xh_ref.shape[1]
+                if torch.any(nodesxsample < ref_natoms):
+                    nodesxsample = torch.clamp(nodesxsample, min=ref_natoms)
+                    logger.warning(
+                        "Specified molecular size is smaller than the reference structure "
+                        "for at least one sample; clamped to the reference structure size."
+                    )
+
+                xh_tensor = xh_ref.repeat(current_batch_size, 1, 1)
 
                 if self.task_type == "inpaint":
-                    if nodesxsample.item() < xh_ref.shape[1]:
-                        nodesxsample = torch.tensor([xh_ref.shape[1]])
-                        logging.warning("Specified molecular size is too small, set it as the same size as the reference structure")
-                        
                     one_hot, charges, x, node_mask = self.task.sample(
                         nodesxsample,
-                        condition_tensor=xh_ref,
+                        condition_tensor=xh_tensor,
                         condition_mode=condition_mode,
                         inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", {}),
                         use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
@@ -781,11 +802,11 @@ class GenerativeFactory:
                         t_retry=self.condition_configs.get("t_retry"),
                         context=context,
                     )
-                
+
                 elif self.task_type == "outpaint":
                     one_hot, charges, x, node_mask = self.task.sample(
                         nodesxsample,
-                        condition_tensor=xh_ref,
+                        condition_tensor=xh_tensor,
                         condition_mode=condition_mode,
                         outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
                         use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
@@ -797,7 +818,7 @@ class GenerativeFactory:
                 elif self.task_type == "outpaintft":
                     one_hot, charges, x, node_mask = self.task.sample(
                         nodesxsample,
-                        condition_tensor=xh_ref,
+                        condition_tensor=xh_tensor,
                         condition_mode=condition_mode,
                         outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
                         use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
@@ -807,30 +828,29 @@ class GenerativeFactory:
                         context=context,
                     )
 
-                if self.visualize_trajectory:   
-                    output_path_frame = os.path.join(self.output_path, f"mol_{i}")
-                    if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
-                        save_xyz_file_atomic_numbers(
-                            output_path_frame,
-                            x[:, 0],
-                            charges[:, 0].squeeze(-1) if charges is not None else None,
-                            idxs=self.s_saves.tolist(),
-                            node_mask=node_mask[0].unsqueeze(0).expand(one_hot[:, 0].size(0), -1, -1) if node_mask is not None else None,
-                        )
-                    else:
-                        save_xyz_file(
-                            output_path_frame,
-                            one_hot[:, 0],
-                            x[:, 0],
-                            atom_decoder=self.task.atom_vocab,
-                            idxs=self.s_saves.tolist()
-                        )     
-                    path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
-                    idx = i  
-                    self._move_xyz(path_xyz, idx, trajectory_dir=output_path_frame)
-                    x = x[:, -1]
-                    one_hot = one_hot[:, -1]   
-                else:     
+                if self.visualize_trajectory:
+                    for j in range(current_batch_size):
+                        mol_idx = i * self.batch_size + j
+                        output_path_frame = os.path.join(self.output_path, f"mol_{mol_idx}")
+                        if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
+                            save_xyz_file_atomic_numbers(
+                                output_path_frame,
+                                x[:, j],
+                                charges[:, j].squeeze(-1) if charges is not None else None,
+                                idxs=self.s_saves.tolist(),
+                                node_mask=node_mask[j].unsqueeze(0).expand(one_hot[:, j].size(0), -1, -1) if node_mask is not None else None,
+                            )
+                        else:
+                            save_xyz_file(
+                                output_path_frame,
+                                one_hot[:, j],
+                                x[:, j],
+                                atom_decoder=self.task.atom_vocab,
+                                idxs=self.s_saves.tolist()
+                            )
+                        path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
+                        self._move_xyz(path_xyz, mol_idx, trajectory_dir=output_path_frame)
+                else:
                     if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                         save_xyz_file_atomic_numbers(
                             self.output_path,
@@ -845,9 +865,11 @@ class GenerativeFactory:
                             x,
                             atom_decoder=self.task.atom_vocab,
                         )
-                    path_xyz = os.path.join(self.output_path, f"molecule_000.xyz")
-                    self._move_xyz(path_xyz, i)
-                             
+                    for j in range(current_batch_size):
+                        path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
+                        idx = i * self.batch_size + j
+                        self._move_xyz(path_xyz, idx)
+
             except Exception as e:
                 fail_count += 1
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
@@ -857,7 +879,7 @@ class GenerativeFactory:
                 "failed": fail_count,
                 "success": (i + 1 - fail_count),
                 "success_rate": f"{100 * (i + 1 - fail_count) / (i + 1):.1f}%",
-            })   
+            })
 
     def hybrid_guidance(self):
         
@@ -1075,10 +1097,97 @@ class GenerativeFactory:
         return preds
     
 
+    def _reference_from_feature_stats(self, device):
+        stats = getattr(self.task, "reference_feature_stats", None)
+        if stats is not None:
+            node_feature = stats["node_feature"].to(device)
+            atomic_numbers = stats["atomic_numbers"].to(device)
+            coords = torch.zeros(
+                node_feature.size(0),
+                node_feature.size(1),
+                3,
+                dtype=node_feature.dtype,
+                device=device,
+            )
+            return torch.cat([coords, node_feature, atomic_numbers], dim=-1)
+
+        scaffold = getattr(self.task, "reference_scaffold", None)
+        if scaffold is not None:
+            scaffold = scaffold.to(device)
+            coords = torch.zeros_like(scaffold[:, :, :3])
+            return torch.cat([coords, scaffold[:, :, 3:]], dim=-1)
+
+        return None
+
+    def _center_saved_scaffold_by_com(self, scaffold: torch.Tensor) -> torch.Tensor:
+        """Center embedded scaffold coordinates by center of mass (COM)."""
+        if scaffold.ndim != 3 or scaffold.size(-1) < 4:
+            logger.warning(
+                "Cannot center saved scaffold: expected shape (B, N, C>=4), got %s",
+                tuple(scaffold.shape),
+            )
+            return scaffold
+
+        norm_values = getattr(self.task.model, "norm_values", None)
+        if norm_values is None or len(norm_values) < 3:
+            logger.warning(
+                "Cannot center saved scaffold: model.norm_values is missing or invalid."
+            )
+            return scaffold
+
+        norm_coords = torch.as_tensor(
+            norm_values[0], dtype=scaffold.dtype, device=scaffold.device
+        )
+        norm_charges = torch.as_tensor(
+            norm_values[2], dtype=scaffold.dtype, device=scaffold.device
+        )
+
+        if torch.any(norm_coords == 0) or torch.any(norm_charges == 0):
+            logger.warning(
+                "Cannot center saved scaffold: normalization values contain zeros."
+            )
+            return scaffold
+
+        centered = scaffold.clone()
+        coords_norm = centered[:, :, :3]
+        coords_phys = coords_norm * norm_coords
+
+        # Atomic number is stored in the final (normalized) charge channel.
+        atomic_number = torch.round(centered[:, :, -1] * norm_charges).long()
+
+        masses_table = torch.as_tensor(
+            atomic_masses, dtype=coords_phys.dtype, device=coords_phys.device
+        )
+        masses = torch.zeros_like(coords_phys[:, :, 0])
+        valid_z = (atomic_number >= 0) & (atomic_number < masses_table.numel())
+        masses[valid_z] = masses_table[atomic_number[valid_z]]
+        masses = torch.where(torch.isfinite(masses) & (masses > 0), masses, 0.0)
+
+        total_mass = masses.sum(dim=1, keepdim=True)
+        weighted_sum = (coords_phys * masses.unsqueeze(-1)).sum(dim=1)
+        denom = total_mass.clamp_min(torch.finfo(coords_phys.dtype).eps)
+        com = weighted_sum / denom
+
+        invalid_mass_batches = (total_mass.squeeze(-1) <= 0)
+        if torch.any(invalid_mass_batches):
+            logger.warning(
+                "Falling back to arithmetic-mean centering for %d scaffold batch(es) "
+                "with invalid total mass.",
+                int(invalid_mass_batches.sum().item()),
+            )
+            node_mask = torch.ones_like(coords_phys[:, :, :1])
+            mean_centered = remove_mean_with_mask(coords_phys, node_mask)
+            fallback_com = coords_phys - mean_centered
+            fallback_com = fallback_com[:, :1, :].squeeze(1)
+            com[invalid_mass_batches] = fallback_com[invalid_mass_batches]
+
+        centered[:, :, :3] = (coords_phys - com.unsqueeze(1)) / norm_coords
+        return centered
+
     def preprocess_ref_structure(self, device):
         """
         Load and preprocess a reference molecular structure from an XYZ file.
-        
+
         This function reads an XYZ file, encodes atomic features, normalizes
         coordinates and features, and returns a tensor combining positions
         and processed features.  When the model uses extra node features
@@ -1088,22 +1197,36 @@ class GenerativeFactory:
         Returns:
             torch.Tensor: Tensor of shape (1, n_atoms, 3 + n_features + ndim_extra + 1)
                         containing [normalized_coords | normalized_onehot | normalized_extra | normalized_charges].
-        
+
         Raises:
             FileNotFoundError: If the reference structure file is not found.
             ValueError: If the processed reference structure is empty.
         """
         file_path = self.condition_configs.get("reference_structure_path", None)
         if not file_path or not os.path.exists(file_path):
+            reference_freeze_mode = getattr(
+                self.task, "reference_freeze_mode", "all"
+            )
+            if reference_freeze_mode == "features_only":
+                feature_reference = self._reference_from_feature_stats(device)
+                if feature_reference is not None:
+                    logger.info(
+                        "No reference_structure_path provided; using frozen "
+                        "reference feature statistics embedded in checkpoint."
+                    )
+                    return feature_reference
             if (
                 hasattr(self.task, "reference_scaffold")
                 and self.task.reference_scaffold is not None
             ):
                 logger.info(
-                    "No reference_structure_path provided; using mean scaffold "
-                    "embedded in checkpoint."
+                    "No reference_structure_path provided; using representative "
+                    "medoid scaffold embedded in checkpoint."
                 )
-                return self.task.reference_scaffold.to(device)
+                scaffold = self.task.reference_scaffold.to(device)
+                if self.condition_configs.get("center_saved_scaffold", False):
+                    scaffold = self._center_saved_scaffold_by_com(scaffold)
+                return scaffold
             raise FileNotFoundError(
                 f"Reference structure file not found at path: {file_path}"
             )

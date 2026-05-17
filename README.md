@@ -100,7 +100,7 @@ Make sure you have installed the package in editable mode as described above, an
 *   `train`: Run a training job.
 *   `generate`: Run a molecule generation job.
 *   `predict`: Run prediction with a trained model.
-*   `eval_predict`: Evaluate predictions.
+*   `eval-predict`: Evaluate predictions.
 *   `analyze`: Perform analysis and post-processing on generated molecules.
 *   `data`: Data processing utilities (preparation, augmentation, and dataset operations).
 
@@ -108,7 +108,7 @@ Make sure you have installed the package in editable mode as described above, an
 
     MolCraftDiff [COMMAND] [CONFIG_NAME/ARGUMENTS]
 
-*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval_predict`, `analyze`, or `data`.
+*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval-predict`, `analyze`, or `data`.
 *   `[CONFIG_NAME]`: The name of the configuration file from the `configs/` directory (e.g., `train`, `example_diffusion_config`).
 *   `[ARGUMENTS]`: Additional command-line arguments to override configuration settings.
 

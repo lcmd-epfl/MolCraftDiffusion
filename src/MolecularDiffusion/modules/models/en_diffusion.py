@@ -137,6 +137,43 @@ class EnVariationalDiffusion(torch.nn.Module):
                 f"1 / norm_value = {1. / max_norm_value}"
             )
 
+    def _get_noised_condition_tensor(self, t, clean_tensor=None):
+        """Generate noised version of condition tensor at timestep t."""
+        if clean_tensor is None:
+            clean_tensor = getattr(self, "clean_condition_tensor", None)
+            if clean_tensor is None:
+                clean_tensor = self.condition_tensor
+
+        if clean_tensor is None:
+            return None
+
+        gamma_t = self.gamma(t)
+        sigma_t = self.sigma(gamma_t, target_tensor=clean_tensor)
+        alpha_t = torch.sqrt(1 - sigma_t**2)
+
+        pos_mask = torch.ones((clean_tensor.size(0), clean_tensor.size(1), 1), device=clean_tensor.device)
+        eps_x = sample_center_gravity_zero_gaussian_with_mask(
+            size=(clean_tensor.size(0), clean_tensor.size(1), self.n_dims),
+            device=clean_tensor.device,
+            node_mask=pos_mask,
+        )
+        eps_h = torch.randn(
+            (clean_tensor.size(0), clean_tensor.size(1), clean_tensor.size(2) - self.n_dims),
+            device=clean_tensor.device,
+        )
+        epsilon = torch.cat([eps_x, eps_h], dim=2)
+
+        noised = alpha_t * clean_tensor + sigma_t * epsilon
+        noised[:, :, :self.n_dims] = remove_mean_with_mask(noised[:, :, :self.n_dims], pos_mask)
+        return noised
+
+    def _select_conditioning_tensor(self, t, clean_tensor=None):
+        """Return clean or noised conditioning tensor depending on mode."""
+        if not getattr(self, "use_noised_conditioning", False):
+            return clean_tensor if clean_tensor is not None else self.condition_tensor
+        else:
+            return self._get_noised_condition_tensor(t, clean_tensor)
+
     def phi(self, x, t, node_mask, edge_mask, context):
         net_out = self.dynamics._forward(t, x, node_mask, edge_mask, context)
         return net_out
@@ -2449,12 +2486,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         context,
         mask_node_index,
         connector_dicts,
-        t_critical_1=0.8,
-        t_critical_2=0.3,
-        d_threshold_f=1.8,
-        w_b=2, 
-        all_frozen=False,
-        use_covalent_radii=True,
+        constraint_strength=0.8,
         scale_factor=1.1,
         fix_noise=False,
     ):
@@ -2473,24 +2505,29 @@ class EnVariationalDiffusion(torch.nn.Module):
             context (torch.Tensor): The conditional information for guidance.
             mask_node_index (torch.Tensor): Indices of the nodes to be inpainted.
             connector_dicts (dict): A dictionary defining the connector atoms and their degrees.
-            t_critical_1 (float, optional): Critical timestep for applying the first set of geometric constraints. Defaults to 0.8.
-            t_critical_2 (float, optional): Critical timestep for applying the second set of geometric constraints. Defaults to 0.3.
-            d_threshold_f (float, optional): Distance threshold for finding close points. Defaults to 1.8.
-            w_b (int, optional): Weight for the bond term in the geometric constraints. Defaults to 2.
-            all_frozen (bool, optional): If True, all atoms in the reference fragment are frozen. Defaults to False.
-            use_covalent_radii (bool, optional): If True, uses covalent radii for distance checks. Defaults to True.
-            scale_factor (float, optional): Scale factor for covalent radii. Defaults to 1.1.
+            constraint_strength (float, optional): Controls when geometric constraints are
+                applied. Constraints activate for diffusion steps s < constraint_strength.
+                Higher values apply constraints over a wider window. Defaults to 0.8.
+            scale_factor (float, optional): Scale factor applied to covalent radii when
+                computing bond-distance tolerances. Increase to allow more spacing between
+                generated and scaffold atoms. Defaults to 1.1.
             fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
 
         Returns:
             torch.Tensor: The inpainted sample zs.
         """
-        
-    
+        t_critical_1 = constraint_strength
+        # Bonding constraints (enforce_min_nodes + ensure_intact) are intentionally
+        # disabled for inpainting: connector topology is derived from the existing
+        # molecule graph so proximity-pull logic is redundant and can disrupt structure.
+        t_critical_2 = constraint_strength + 1.0
+        d_threshold_f = 1.8
+        w_b = 2
+        all_frozen = False
+
         connector_indices = torch.tensor(list(connector_dicts.keys()), device=zt.device, dtype=torch.long)
         connector_degrees = torch.tensor([value[0] for value in connector_dicts.values()], device=zt.device, dtype=torch.long)
 
-        
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
@@ -2505,7 +2542,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         eps_t = self.phi(zt, t, node_mask, edge_mask, context)
         if torch.all(eps_t == 0):
             raise ValueError("NaN in eps_t, stop sampling.")
-        
+
         # Compute mu for p(zs | zt).
         # assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
         # assert_mean_zero_with_mask(eps_t[:, :, : self.n_dims], node_mask)
@@ -2516,81 +2553,71 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
-        
 
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
+        condition_to_use = self._select_conditioning_tensor(t)
+
         if len(mask_node_index) > 0 and len(connector_dicts) > 0:
             zs = torch.cat(
-                [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
+                [condition_to_use, zs[:, mask_node_index, :]], dim=1
             )
-            zs_pos = zs[:, :, : self.n_dims]
-            zs_pos = zs_pos.squeeze(0)   
-    
-            zs_new_pos = zs_pos[mask_node_index]
-            condition_pos = self.condition_tensor[:, :, : self.n_dims].squeeze(0)
 
-            if use_covalent_radii:
-                condition_charge = self.condition_tensor[:, :, -1].squeeze(0)*self.norm_values[2]
-                condition_charge = torch.round(condition_charge).long()
-                condition_charge[condition_charge >= 118] = 118
-                condition_charge[condition_charge <= 1] = 1
-                
-                zs_charge = zs[:, :, -1].squeeze(0)*self.norm_values[2]
-                zs_charge = torch.round(zs_charge).long()
-                zs_charge[zs_charge >= 118] = 118
-                zs_charge[zs_charge <= 1] = 1
-                
-                d_threshold_c = self.COV_R[condition_charge][connector_indices]*2*scale_factor
-            else:
-                condition_charge = None
-                d_threshold_c = [1.5]*len(connector_degrees)
-                zs_charge = None
-                
-            if s[0].item() < t_critical_1:
+            apply_geom = s[0].item() < t_critical_1
+            apply_enforce = apply_geom and s[0].item() > t_critical_2
 
-                _, zl_corr = find_close_points_torch_and_push_op2(
-                            condition_pos,
-                            zs_new_pos, 
-                            connector_indices=connector_indices,    
-                            d_threshold_f=d_threshold_f,
-                            # d_fixed_move=0.1,
-                            w_b=w_b,
-                            all_frozen=all_frozen,
-                            z_ref=condition_charge,
-                            z_tgt=zs_charge,
-                            scale_factor=scale_factor,
-                            )   
-                
-                zs[:, mask_node_index, :self.n_dims] = zl_corr.unsqueeze(0) 
+            for b in range(zs.size(0)):
+                condition_pos_b = condition_to_use[b, :, : self.n_dims]
 
-                zs_pos = zs[:, :, : self.n_dims]
-                zs_pos = zs_pos.squeeze(0)   
-                zs_new_pos = zs_pos[mask_node_index] 
-                
-                if s[0].item() > t_critical_2:      
-                    zl_corr2 = enforce_min_nodes_per_connector(
-                        condition_pos,
-                        zs_new_pos,
+                condition_charge_b = condition_to_use[b, :, -1] * self.norm_values[2]
+                condition_charge_b = torch.round(condition_charge_b).long().clamp(1, 118)
+
+                zs_charge_b = zs[b, :, -1] * self.norm_values[2]
+                zs_charge_b = torch.round(zs_charge_b).long().clamp(1, 118)
+
+                d_threshold_c_b = self.COV_R[condition_charge_b][connector_indices] * 2 * scale_factor
+
+                if apply_geom:
+                    zs_new_pos_b = zs[b, mask_node_index, : self.n_dims]
+                    _, zl_b = find_close_points_torch_and_push_op2(
+                        condition_pos_b,
+                        zs_new_pos_b,
                         connector_indices=connector_indices,
-                        N=connector_degrees,
-                        d_threshold_c=d_threshold_c,
-                        )
-                    zs[:, mask_node_index, :self.n_dims] = zl_corr2.unsqueeze(0) 
-            
-                    zs_pos = zs[:, :, : self.n_dims]
-                    zs_pos = zs_pos.squeeze(0)   
-                    zs_new_pos = zs_pos[mask_node_index]
-                    _, z1_corr2 = ensure_intact(
-                        condition_pos,
-                        zs_new_pos,
-                        connector_indices=connector_indices,    
-                        d_threshold=1.7,   
-                        # d_fixed_move=0.1
+                        d_threshold_f=d_threshold_f,
+                        w_b=w_b,
+                        all_frozen=all_frozen,
+                        z_ref=condition_charge_b,
+                        z_tgt=zs_charge_b,
+                        scale_factor=scale_factor,
                     )
-                    zs[:, mask_node_index, :self.n_dims] = z1_corr2.unsqueeze(0) 
-        
+                    zs[b, mask_node_index, : self.n_dims] = zl_b
+
+                    if apply_enforce:
+                        zs_new_pos_b = zs[b, mask_node_index, : self.n_dims]
+                        zl2_b = enforce_min_nodes_per_connector(
+                            condition_pos_b,
+                            zs_new_pos_b,
+                            connector_indices=connector_indices,
+                            N=connector_degrees,
+                            d_threshold_c=d_threshold_c_b,
+                        )
+                        zs[b, mask_node_index, : self.n_dims] = zl2_b
+
+                        zs_new_pos_b = zs[b, mask_node_index, : self.n_dims]
+                        d_intact_b = (
+                            float(d_threshold_c_b.min().item())
+                            if torch.is_tensor(d_threshold_c_b)
+                            else min(d_threshold_c_b)
+                        )
+                        _, z1_b = ensure_intact(
+                            condition_pos_b,
+                            zs_new_pos_b,
+                            connector_indices=connector_indices,
+                            d_threshold=d_intact_b,
+                        )
+                        zs[b, mask_node_index, : self.n_dims] = z1_b
+
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
@@ -2598,10 +2625,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             ],
             dim=2,
         )
-        
+
         if len(mask_node_index) > 0:
-            self.condition_tensor = zs[:, ~mask_node_index, :]   
-    
+            self.condition_tensor = zs[:, ~mask_node_index, :]
 
         return zs
     
@@ -2615,12 +2641,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         context,
         mask_bools,
         connector_dicts,
-        t_critical_1=0.8,
-        t_critical_2=0.4,
-        d_threshold_f=1.8,
-        w_b=2, 
-        all_frozen=False,
-        use_covalent_radii=True,
+        constraint_strength=0.8,
         scale_factor=1.1,
         fix_noise=False,
     ):
@@ -2638,23 +2659,28 @@ class EnVariationalDiffusion(torch.nn.Module):
             context (torch.Tensor): The conditional information for guidance.
             mask_bools (torch.Tensor): A boolean mask indicating which atoms are part of the generated structure.
             connector_dicts (dict): A dictionary defining the connector atoms and their degrees.
-            t_critical_1 (float, optional): Critical timestep for applying the first set of geometric constraints. Defaults to 0.8.
-            t_critical_2 (float, optional): Critical timestep for applying the second set of geometric constraints. Defaults to 0.4.
-            d_threshold_f (float, optional): Distance threshold for finding close points. Defaults to 1.8.
-            w_b (int, optional): Weight for the bond term in the geometric constraints. Defaults to 2.
-            all_frozen (bool, optional): If True, all atoms in the reference fragment are frozen. Defaults to False.
-            use_covalent_radii (bool, optional): If True, uses covalent radii for distance checks. Defaults to True.
-            scale_factor (float, optional): Scale factor for covalent radii. Defaults to 1.1.
+            constraint_strength (float, optional): Controls when geometric constraints are
+                applied. Constraints activate for diffusion steps s < constraint_strength.
+                Bonding constraints (enforce + ensure_intact) are additionally restricted to
+                the upper half of the window (s > constraint_strength / 2). Defaults to 0.8.
+            scale_factor (float, optional): Scale factor applied to covalent radii when
+                computing bond-distance tolerances. Increase to allow more spacing between
+                generated and scaffold atoms. Defaults to 1.1.
             fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
 
         Returns:
             torch.Tensor: The outpainted sample zs.
         """
-        # natom_ref = condition_tensor.size(1)
+        t_critical_1 = constraint_strength
+        t_critical_2 = constraint_strength / 2.0
+        d_threshold_f = 1.8
+        w_b = 2
+        all_frozen = False
+
         connector_indices = torch.tensor(list(connector_dicts.keys()), device=zt.device, dtype=torch.long)
         connector_degrees = torch.tensor([value[0] for value in connector_dicts.values()], device=zt.device, dtype=torch.long)
         natom_ref = (~mask_bools).sum()
-        
+
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
@@ -2669,7 +2695,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         eps_s = self.phi(zt, t, node_mask, edge_mask, context)
         if torch.all(eps_s == 0):
             raise ValueError("NaN in eps_t, stop sampling.")
-        
+
         # Compute mu for p(zs | zt).
         assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
         assert_mean_zero_with_mask(eps_s[:, :, : self.n_dims], node_mask)
@@ -2677,87 +2703,74 @@ class EnVariationalDiffusion(torch.nn.Module):
             zt / alpha_t_given_s
             - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_s
         )
-     
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
 
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+
+        condition_to_use = self._select_conditioning_tensor(t)
+
         zs = torch.cat(
-            [self.condition_tensor,
-             zs[:, mask_bools, : ]], dim=1
+            [condition_to_use,
+             zs[:, mask_bools, :]], dim=1
         )
 
-        zs_pos = zs[:, :, : self.n_dims]
-        zs_pos = zs_pos.squeeze(0)   
-  
+        apply_geom = s[0].item() < t_critical_1
+        apply_enforce = apply_geom and s[0].item() > t_critical_2
 
-        if s[0].item() < t_critical_1:
-            zs_new_pos = zs_pos[natom_ref:]
-            condition_pos = self.condition_tensor[:, :, : self.n_dims].squeeze(0)
-            
-        
-            if use_covalent_radii:
-                condition_charge = self.condition_tensor[:, :, -1].squeeze(0)*self.norm_values[2]
-                condition_charge = torch.round(condition_charge).long()
-                condition_charge[condition_charge >= 118] = 118
-                condition_charge[condition_charge <= 1] = 1
-                
-                zs_charge = zs[:, :, -1].squeeze(0)*self.norm_values[2]
-                zs_charge = torch.round(zs_charge).long()
-                zs_charge[zs_charge >= 118] = 118
-                zs_charge[zs_charge <= 1] = 1
-                
-                d_threshold_c = self.COV_R[condition_charge][connector_indices]*2*scale_factor
-            else:
-                condition_charge = None
-                d_threshold_c = [1.5]*len(connector_degrees)
-                zs_charge = None
-            
-            _, zl_corr = find_close_points_torch_and_push_op2(
-                        condition_pos,
-                        zs_new_pos, 
-                        connector_indices=connector_indices,    
-                        d_threshold_f=d_threshold_f,
-                        # d_fixed_move=0.1,
-                        w_b=w_b,
-                        all_frozen=all_frozen,
-                        z_ref=condition_charge,
-                        z_tgt=zs_charge,
-                        scale_factor=scale_factor
-                        )   
-            
-        
-            zs[:, mask_bools, :self.n_dims] = zl_corr.unsqueeze(0) 
+        if apply_geom:
+            for b in range(zs.size(0)):
+                condition_pos_b = condition_to_use[b, :, : self.n_dims]
 
-            zs_pos = zs[:, :, : self.n_dims]
-            zs_pos = zs_pos.squeeze(0)   
-            zs_new_pos = zs_pos[natom_ref:]   
-            
-            if s[0].item() > t_critical_2:      
-                zl_corr2 = enforce_min_nodes_per_connector(
-                    condition_pos,
-                    zs_new_pos,
+                condition_charge_b = condition_to_use[b, :, -1] * self.norm_values[2]
+                condition_charge_b = torch.round(condition_charge_b).long().clamp(1, 118)
+
+                zs_charge_b = zs[b, :, -1] * self.norm_values[2]
+                zs_charge_b = torch.round(zs_charge_b).long().clamp(1, 118)
+
+                d_threshold_c_b = self.COV_R[condition_charge_b][connector_indices] * 2 * scale_factor
+
+                zs_new_pos_b = zs[b, natom_ref:, : self.n_dims]
+                _, zl_b = find_close_points_torch_and_push_op2(
+                    condition_pos_b,
+                    zs_new_pos_b,
                     connector_indices=connector_indices,
-                    N=connector_degrees,
-                    d_threshold_c=d_threshold_c,
-                    )
-                zs[:, mask_bools, :self.n_dims] = zl_corr2.unsqueeze(0) 
-        
-                zs_pos = zs[:, :, : self.n_dims]
-                zs_pos = zs_pos.squeeze(0)   
-                zs_new_pos = zs_pos[natom_ref:] 
-                _, z1_corr2 = ensure_intact(
-                    condition_pos,
-                    zs_new_pos,
-                    connector_indices=connector_indices,    
-                    d_threshold=1.7,   
-                    # d_fixed_move=0.1
+                    d_threshold_f=d_threshold_f,
+                    w_b=w_b,
+                    all_frozen=all_frozen,
+                    z_ref=condition_charge_b,
+                    z_tgt=zs_charge_b,
+                    scale_factor=scale_factor,
                 )
-                zs[:, mask_bools, :self.n_dims] = z1_corr2.unsqueeze(0) 
-  
-                        
+                zs[b, mask_bools, : self.n_dims] = zl_b
+
+                if apply_enforce:
+                    zs_new_pos_b = zs[b, natom_ref:, : self.n_dims]
+                    zl2_b = enforce_min_nodes_per_connector(
+                        condition_pos_b,
+                        zs_new_pos_b,
+                        connector_indices=connector_indices,
+                        N=connector_degrees,
+                        d_threshold_c=d_threshold_c_b,
+                    )
+                    zs[b, mask_bools, : self.n_dims] = zl2_b
+
+                    zs_new_pos_b = zs[b, natom_ref:, : self.n_dims]
+                    d_intact_b = (
+                        float(d_threshold_c_b.min().item())
+                        if torch.is_tensor(d_threshold_c_b)
+                        else min(d_threshold_c_b)
+                    )
+                    _, z1_b = ensure_intact(
+                        condition_pos_b,
+                        zs_new_pos_b,
+                        connector_indices=connector_indices,
+                        d_threshold=d_intact_b,
+                    )
+                    zs[b, mask_bools, : self.n_dims] = z1_b
+
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
@@ -2765,9 +2778,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             ],
             dim=2,
         )
-        
-        self.condition_tensor = zs[:, ~mask_bools, :]   
-        
+
+        self.condition_tensor = zs[:, ~mask_bools, :]
+
         return zs
     def sample_p_zs_given_zt_op_ft(
         self,
@@ -3089,14 +3102,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             mask_node_index = torch.tensor(mask_node_index_raw, device=z.device, dtype=torch.long)
             if mask_node_index.dim() == 1:
                 mask_node_index = mask_node_index.unsqueeze(0)
-            scale_factor = getattr(inpaint_cfgs, "scale_factor", 1.1)
-            d_threshold_f = getattr(inpaint_cfgs, "d_threshold_f", 1.8)
-            w_b = getattr(inpaint_cfgs, "w_b", 2)
-            all_frozen = getattr(inpaint_cfgs, "all_frozen", False)
-            use_covalent_radii = getattr(inpaint_cfgs, "use_covalent_radii", True)
-            t_critical_1 = getattr(outpaint_cfgs, "t_critical_1", 0.8)
-            t_critical_2 = getattr(outpaint_cfgs, "t_critical_2", 0.5)
-            t_int_start =  self.T
+            constraint_strength = inpaint_cfgs.get("constraint_strength", 0.8)
+            scale_factor = inpaint_cfgs.get("scale_factor", 1.1)
+            t_int_start = self.T
             unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
             n_node_cond = condition_tensor.size(1)
             d = torch.full((n_samples, 1), fill_value=denoising_strength, device=z.device)
@@ -3181,11 +3189,11 @@ class EnVariationalDiffusion(torch.nn.Module):
   
                     _, zl_corr = find_close_points_torch_and_push_op2(
                                 condition_pos,
-                                zs_new_pos, 
-                                connector_indices=torch.tensor(list(connector_dicts.keys()), device=z.device, dtype=torch.long),    
-                                d_threshold_f=d_threshold_f,
-                                w_b=w_b,
-                                all_frozen=all_frozen,
+                                zs_new_pos,
+                                connector_indices=torch.tensor(list(connector_dicts.keys()), device=z.device, dtype=torch.long),
+                                d_threshold_f=1.8,
+                                w_b=2,
+                                all_frozen=False,
                                 z_ref=condition_charge,
                                 z_tgt=zs_charge,
                                 scale_factor=scale_factor
@@ -3272,17 +3280,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         elif condition_alg in ["outpaint", "outpaintft"]:
 
-            t_start = getattr(outpaint_cfgs, "t_start", 1.0)
+            t_start = outpaint_cfgs.get("t_start", 1.0)
             t_int_start = int(t_start * self.T)
-            t_critical_1 = getattr(outpaint_cfgs, "t_critical_1", 0.8)
-            t_critical_2 = getattr(outpaint_cfgs, "t_critical_2", 0.5)
-            d_threshold_f = getattr(outpaint_cfgs, "d_threshold_f", 1.8)
-            w_b = getattr(outpaint_cfgs, "w_b", 2)
-            all_frozen = getattr(outpaint_cfgs, "all_frozen", False)
-            use_covalent_radii = getattr(outpaint_cfgs, "use_covalent_radii", True)
-            scale_factor = getattr(outpaint_cfgs, "scale_factor", 1.1)
-            
-            connector_dicts = getattr(outpaint_cfgs, "connector_dicts", None)
+            constraint_strength = outpaint_cfgs.get("constraint_strength", 0.8)
+            scale_factor = outpaint_cfgs.get("scale_factor", 1.1)
+
+            connector_dicts = outpaint_cfgs.get("connector_dicts", None)
             if connector_dicts is None:
                 raise ValueError("connector_dicts must be specified in to use outpainting")
             connector_indices = list(connector_dicts.keys())
@@ -3402,38 +3405,28 @@ class EnVariationalDiffusion(torch.nn.Module):
                         if s/self.T < denoising_strength: 
                             z = self.sample_p_zs_given_zt_ip(
                                 s_array,
-                                t_array, 
-                                z,  
-                                node_mask, 
-                                edge_mask, 
+                                t_array,
+                                z,
+                                node_mask,
+                                edge_mask,
                                 context,
                                 mask_node_bool_corr,
                                 connector_dicts,
-                                t_critical_1,
-                                t_critical_2,
-                                d_threshold_f,
-                                w_b,
-                                all_frozen,
-                                use_covalent_radii,
-                                scale_factor,
+                                constraint_strength=constraint_strength,
+                                scale_factor=scale_factor,
                                 fix_noise=fix_noise
-                                ) 
+                                )
                         else:
                             z = z
                     elif condition_alg == "outpaint":
-                    
+
                         z = self.sample_p_zs_given_zt_op(
-                            s_array, t_array, z, 
-                            node_mask, edge_mask, 
+                            s_array, t_array, z,
+                            node_mask, edge_mask,
                             context,
                             mask_node_bool_corr,
                             connector_dicts=connector_dicts,
-                            t_critical_1=t_critical_1,
-                            t_critical_2=t_critical_2,
-                            d_threshold_f=d_threshold_f,
-                            w_b=w_b,
-                            all_frozen=all_frozen,
-                            use_covalent_radii=use_covalent_radii,
+                            constraint_strength=constraint_strength,
                             scale_factor=scale_factor,
                             fix_noise=fix_noise,
                             )
@@ -3602,36 +3595,26 @@ class EnVariationalDiffusion(torch.nn.Module):
                                 if s/self.T < denoising_strength: 
                                     z = self.sample_p_zs_given_zt_ip(
                                         s_array,
-                                        t_array, 
-                                        z,  
-                                        node_mask, 
-                                        edge_mask, 
+                                        t_array,
+                                        z,
+                                        node_mask,
+                                        edge_mask,
                                         context,
                                         mask_node_bool_corr,
                                         connector_dicts,
-                                        t_critical_1,
-                                        t_critical_2,
-                                        d_threshold_f,
-                                        w_b,
-                                        all_frozen,
-                                        use_covalent_radii,
-                                        scale_factor,
+                                        constraint_strength=constraint_strength,
+                                        scale_factor=scale_factor,
                                         fix_noise=fix_noise
-                                        ) 
+                                        )
                             elif condition_alg == "outpaint":
-                            
+
                                 z = self.sample_p_zs_given_zt_op(
-                                    s_array, t_array, z, 
-                                    node_mask, edge_mask, 
+                                    s_array, t_array, z,
+                                    node_mask, edge_mask,
                                     context,
                                     mask_node_bool_corr,
                                     connector_dicts=connector_dicts,
-                                    t_critical_1=t_critical_1,
-                                    t_critical_2=t_critical_2,
-                                    d_threshold_f=d_threshold_f,
-                                    w_b=w_b,
-                                    all_frozen=all_frozen,
-                                    use_covalent_radii=use_covalent_radii,
+                                    constraint_strength=constraint_strength,
                                     scale_factor=scale_factor,
                                     fix_noise=fix_noise,
                                     )

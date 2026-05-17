@@ -1092,7 +1092,7 @@ def ensure_intact(
     tgt: torch.Tensor,
     connector_indices: torch.Tensor = None,
     d_threshold: float = 1.0,
-    d_threshold_e: float = 1.8, 
+    d_threshold_e: float = EDGE_THRESHOLD,
     d_fixed_move: Optional[float] = None,
     steps: int = 40,
     debug: bool = False,
@@ -1121,11 +1121,7 @@ def ensure_intact(
     
     if connector_indices is None or connector_indices.numel() == 0:
         return torch.tensor([]), updated_tgt
-    
-    # Compute KDTree for connector points.
-    ref_conn = ref[connector_indices]
-    tree_conn = KDTree(ref_conn.cpu().numpy())
-    
+
     # Compute connected components on the target using KDTree.
     tree_tgt = KDTree(tgt.cpu().numpy())
     adjacency_matrix = tree_tgt.sparse_distance_matrix(tree_tgt, max_distance=d_threshold_e, output_type='coo_matrix')
@@ -1134,62 +1130,63 @@ def ensure_intact(
         shape=(tgt.size(0), tgt.size(0))
     )
     _, labels = connected_components(sparse_graph)
-    
-    # Identify subgraphs
+
+    # Identify subgraphs; keep indices as tensors for safe indexing.
     unique_labels = torch.tensor(labels, device=device).unique()
-    subgraphs = {label.item(): (labels == label.item()).nonzero()[0] for label in unique_labels}
-    
-    outlier_subgraphs = []
-    for label, indices in subgraphs.items():
-        subgraph_points = tgt[indices]
-        min_dist, _ = tree_conn.query(subgraph_points.cpu().numpy())
-        min_dist = torch.tensor(min_dist, device=device).min()
-        
-        if min_dist > d_threshold:
-            outlier_subgraphs.append(indices)
-    
-    # Move outlier subgraphs toward the closest non-outlier subgraph
-    non_outlier_indices = torch.tensor([i for i in range(tgt.size(0)) if not any(i in o for o in outlier_subgraphs)], device=device)
-    
+    subgraphs = {
+        label.item(): torch.from_numpy(
+            (labels == label.item()).nonzero()[0]
+        ).to(device)
+        for label in unique_labels
+    }
+
+    # Outliers = any component that is not the largest connected component.
+    # enforce_min_nodes_per_connector handles proximity to connectors; this
+    # function's sole job is to restore global connectivity.
+    component_sizes = {label: len(indices) for label, indices in subgraphs.items()}
+    main_label = max(component_sizes, key=component_sizes.get)
+    outlier_subgraphs = [indices for label, indices in subgraphs.items() if label != main_label]
+    non_outlier_indices = subgraphs[main_label]
+
     adjusted_indices = []
     if non_outlier_indices.numel() > 0 and len(outlier_subgraphs) > 0:
         for indices in outlier_subgraphs:
             subgraph_points = updated_tgt[indices]
-            
+
             dists = torch.cdist(subgraph_points, updated_tgt[non_outlier_indices])
             closest_idx = dists.argmin(dim=1)
             closest_points = updated_tgt[non_outlier_indices][closest_idx]
-            
+
             direction = closest_points.mean(dim=0) - subgraph_points.mean(dim=0)
             dist_dir = direction.norm()
             if dist_dir < 1e-12:
                 direction = torch.randn_like(direction)
                 dist_dir = direction.norm()
             direction_unit = direction / dist_dir
-            
+
             if d_fixed_move:
                 best_alpha = d_fixed_move
             else:
-            # Binary search to find minimal movement
+                # Binary search to find minimal movement
                 low, high = 0.0, dist_dir
                 best_alpha = high
                 for _ in range(steps):
                     mid = 0.5 * (low + high)
                     candidate_pts = subgraph_points + mid * direction_unit
                     candidate_dists = torch.norm(candidate_pts - closest_points.mean(dim=0), dim=1)
-                    
+
                     if candidate_dists.max() > d_threshold:
                         low = mid
                     else:
                         best_alpha = mid
                         high = mid
-                
-                updated_tgt[indices] += best_alpha * direction_unit
-                adjusted_indices.extend(indices.tolist())
-            
+
+            updated_tgt[indices] += best_alpha * direction_unit
+            adjusted_indices.extend(indices.tolist())
+
             if debug:
                 print(f"Moving outlier subgraph {indices.tolist()} toward closest non-outlier subgraph by {best_alpha}")
-    
+
     return torch.tensor(adjusted_indices, device=device), updated_tgt
 
 
@@ -1204,7 +1201,6 @@ def enforce_min_nodes_per_connector(
     device = ref.device
     tgt = tgt.to(device)
     updated_tgt = tgt.clone()
-    moved_nodes = set()  # track nodes already moved as part of a subgraph
 
     # Extract connector nodes from ref
     connectors = ref[connector_indices]
@@ -1256,11 +1252,6 @@ def enforce_min_nodes_per_connector(
                 if close_mask[j]:
                     continue  # skip nodes already within threshold
                 global_idx = tgt_inds[j]
-                # if debug:
-                #     print(f"Group {i}: Trying to move node {global_idx}")  # for debugging
-                if global_idx in moved_nodes:
-                    continue
-
                 candidate_found = True
                 chosen_global = global_idx
                 chosen_pos = updated_tgt[chosen_global]
@@ -1342,7 +1333,6 @@ def enforce_min_nodes_per_connector(
                     if debug:
                         print(f"Mover 3: Group {i}: Moving node {n_idx} by {alpha_move}")
                     updated_tgt[n_idx] = updated_tgt[n_idx] + alpha_move * move_vector
-                    moved_nodes.add(n_idx)
                 break  # one subgraph move; re-evaluate the group
 
             if not candidate_found:
