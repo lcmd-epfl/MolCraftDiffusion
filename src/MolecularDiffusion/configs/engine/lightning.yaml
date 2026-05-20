@@ -1,0 +1,43 @@
+# Use PyTorch Lightning Trainer
+engine_type: lightning
+
+# Lightning-specific trainer configuration
+trainer_config:
+  _target_: pytorch_lightning.Trainer
+
+  # Training
+  max_epochs: ${trainer.num_epochs}
+  accelerator: auto
+  devices: auto
+  strategy: auto  # Lightning auto-selects ddp/ddp_spawn based on devices
+
+  # Precision - will be converted to Lightning format in Python
+  precision: ${trainer.precision}
+
+  # Optimization
+  accumulate_grad_batches: 1
+  gradient_clip_val: ${trainer.grad_clip_value}
+  gradient_clip_algorithm: ${trainer.gradient_clip_mode}
+
+  # Logging & Validation
+  log_every_n_steps: ${logger.log_interval}
+  check_val_every_n_epoch: ${trainer.validation_interval}
+
+  # Checkpointing
+  enable_checkpointing: true
+  default_root_dir: ${trainer.output_path}
+
+  # Other
+  num_sanity_val_steps: 0  # Skip sanity validation
+  enable_progress_bar: true
+  enable_model_summary: true
+
+# Periodic sleep (e.g., to relieve GPU thermal throttling)
+# sleep_every_N: 0 disables the feature
+sleep_every_N: 0
+sleep_time: 60
+
+# DataLoader worker config (keep num_workers low to avoid RAM exhaustion / freezes)
+num_workers: 2
+pin_memory: false
+persistent_workers: false

@@ -7,6 +7,7 @@ with_hydrogen: True
 use_ohe_feature: True
 allow_unknown: False  # True to add +1 "unknown" column to OHE for rare/unseen atoms
 node_feature_choice: null # atom_topological, atom_geom, atom_geom_compact, atom_geom_opt
+use_row_data_features: false  # if true, append row.data['node_features'] (e.g. degree) to node features
 max_atom: 29
 xyz_dir: path_to_xyz
 coord_file: null
@@ -23,3 +24,11 @@ edge_type: fully_connected
 radius: 4.0
 n_neigh: 5
 # consider_global_attributes: False  #depricated
+chunk_size: null   # set to e.g. 50000 to stream large datasets (2M+) without OOM
+
+# pyG memory/disk-space optimisations. Applied whether or not chunking is enabled.
+# All are reconstructed on-the-fly in __getitem__; trade tiny CPU for big memory savings.
+compact_drop_edge_index: false   # drop edge_index for fully_connected (rebuilt from natoms). ~50% saving.
+compact_drop_tags: false         # drop tags+token_idx (rebuilt from natoms). ~10% saving.
+compact_pack_ohe: false          # store atom_idx int8 instead of OHE float32 (only when node_feature_choice is null).
+compact_int8_z: false            # store atomic_numbers as int8 instead of int64.

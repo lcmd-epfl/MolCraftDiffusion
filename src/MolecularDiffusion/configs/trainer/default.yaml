@@ -16,10 +16,15 @@ batch_size: ${data.batch_size}
 queue_size: 100
 init_grad_norm: 300
 ema_decay: 0.9999
-gradient_clip_mode: "value" # value or norm
+gradient_clip_mode: "norm" # norm or value (for lightning mode)
+gradient_clip_algorithm: "null" # adaptive, lightning, or null
 grad_clip_value: 1.0
-chkpt_path: 
+chkpt_path:
 output_path: logs
 precision: 32 # 16, 32, bf16
 save_top_k: 3
-save_every_val_epoch: False
+save_every_val_epoch: True
+resume_from_checkpoint: null
+load_weights_from: null
+monitor_metric: null
+monitor_mode: null
