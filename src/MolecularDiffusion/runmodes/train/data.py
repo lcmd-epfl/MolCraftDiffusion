@@ -1,9 +1,15 @@
 import os
+import time
+import logging
 import torch
 from MolecularDiffusion.data.dataset import pointcloud_dataset, pointcloud_dataset_pyG
-from MolecularDiffusion.data.component.dataset import PointCloudDataset
+from MolecularDiffusion.data.component.dataset import (
+    PointCloudDataset, LazyChunkedDataset, LazyChunkedGraphDataset,
+)
 from MolecularDiffusion.data.dataloader import pointcloud_collate, graph_collate, pointcloud_collate_v0
 from MolecularDiffusion.utils import get_vram_size
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetConfigDict:
@@ -74,6 +80,12 @@ class DataModule:
         radius: float = 4.0,
         n_neigh: int = 5,
         use_ohe_feature: bool = True,
+        chunk_size: int = None,
+        compact_drop_edge_index: bool = False,
+        compact_drop_tags: bool = False,
+        compact_pack_ohe: bool = False,
+        compact_int8_z: bool = False,
+        use_row_data_features: bool = False,
     ):
         self.root = root
         self.filename = filename
@@ -104,18 +116,72 @@ class DataModule:
 
         self.n_neigh = n_neigh
         self.use_ohe_feature = use_ohe_feature
-        
+        self.chunk_size = chunk_size
+        self.use_row_data_features = use_row_data_features
+        self.compact = dict(
+            drop_edge_index=compact_drop_edge_index,
+            drop_tags=compact_drop_tags,
+            pack_ohe=compact_pack_ohe,
+            int8_z=compact_int8_z,
+        )
+
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.root_path = os.path.join(root, f"processed_{dataset_name}.pt")
+        self.root_path = os.path.join(root, f"processed_data_{dataset_name}.pt")
+        self.chunk_dir = os.path.join(root, f"chunks_{dataset_name}")
         if self.data_type == "pyg":
             self.collate_fn = graph_collate
         else:
             if self.data_efficient_collator:
-                self.VRAM_SIZE = int(get_vram_size())
+                vram_size = get_vram_size()
+                if vram_size is None:
+                    vram_size = 40
+                    logger.warning(
+                        "Could not detect GPU VRAM; using %d GB for data-efficient collator sizing",
+                        vram_size,
+                    )
+                self.VRAM_SIZE = int(vram_size)
                 self.collate_fn = pointcloud_collate(self.VRAM_SIZE)
             else:
                 self.collate_fn = pointcloud_collate_v0  # or None
+
+    def _split_cache_path(self, total: int) -> str:
+        split_seed = int(torch.initial_seed())
+        train_ratio_tag = f"{self.train_ratio:.8f}"
+        filename = (
+            f"splits_n{total}_tr{train_ratio_tag}_seed{split_seed}.pt"
+        )
+        base_dir = self.chunk_dir if self.chunk_size or os.path.exists(self.chunk_dir) else self.root
+        return os.path.join(base_dir, filename)
+
+    def _build_or_load_splits(self, dataset, lengths):
+        cache_path = self._split_cache_path(len(dataset))
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+
+        if os.path.exists(cache_path):
+            payload = torch.load(cache_path, weights_only=False)
+            if payload.get("lengths") == lengths:
+                subsets = []
+                for key in ("train", "valid", "test"):
+                    subsets.append(torch.utils.data.Subset(dataset, payload[key]))
+                return tuple(subsets)
+
+        split_seed = int(torch.initial_seed())
+        generator = torch.Generator().manual_seed(split_seed)
+        train_set, valid_set, test_set = torch.utils.data.random_split(
+            dataset, lengths, generator=generator
+        )
+        torch.save(
+            {
+                "lengths": lengths,
+                "seed": split_seed,
+                "train": train_set.indices,
+                "valid": valid_set.indices,
+                "test": test_set.indices,
+            },
+            cache_path,
+        )
+        return train_set, valid_set, test_set
 
     def load(self):
         """
@@ -127,36 +193,73 @@ class DataModule:
             or torch.distributed.get_rank() == 0
         )
 
-        if self.load_pkl and os.path.exists(self.root_path):
-            if self.data_type == "pointcloud":
-                dataset = pointcloud_dataset(
-                    root=self.root,
-                    dataset_name=self.dataset_name,
-                    max_atom=self.max_atom,
-                    allow_unknown=self.allow_unknown,
+        _t0_load = time.perf_counter()
+
+        chunk_meta = os.path.join(self.chunk_dir, "meta.pt")
+        has_processed_pt = os.path.exists(self.root_path)
+        has_chunk_meta = os.path.exists(chunk_meta)
+
+        # Reuse any existing processed cache before touching raw data.
+        # If both cache formats exist, prefer the single-file processed dataset.
+        if has_processed_pt or has_chunk_meta:
+            if has_processed_pt:
+                if is_main_process:
+                    print(f"[DataModule] Loading single-file processed dataset from {self.root_path}")
+                _t = time.perf_counter()
+                if self.data_type == "pointcloud":
+                    dataset = pointcloud_dataset(
+                        root=self.root,
+                        dataset_name=self.dataset_name,
+                        max_atom=self.max_atom,
+                        allow_unknown=self.allow_unknown,
+                    )
+                elif self.data_type == "pyg":
+                    dataset = pointcloud_dataset_pyG(
+                        root=self.root,
+                        dataset_name=self.dataset_name,
+                        max_atom=self.max_atom,
+                        allow_unknown=self.allow_unknown,
+                        use_ohe_feature=self.use_ohe_feature,
+                    )
+                if is_main_process:
+                    print(f"[DataModule] Dataset loaded in {time.perf_counter() - _t:.2f}s ({len(dataset):,} samples)")
+
+                dataset.max_atom = self.max_atom
+                dataset.atom_vocab = self.atom_vocab
+
+                dataset.config_dict = DatasetConfigDict(
+                    self.with_hydrogen, self.node_feature_choice, self.max_atom
                 )
-            elif self.data_type == "pyg":
-                dataset = pointcloud_dataset_pyG(
-                    root=self.root,
-                    dataset_name=self.dataset_name,
-                    max_atom=self.max_atom,
-
-                    allow_unknown=self.allow_unknown,
-                    use_ohe_feature=self.use_ohe_feature,
-                )
-
-            dataset.max_atom = self.max_atom
-            dataset.atom_vocab = self.atom_vocab
-
-            dataset.config_dict = DatasetConfigDict(
-                self.with_hydrogen, self.node_feature_choice, self.max_atom
-            )
+            else:
+                # Fast path: chunked dataset already on disk
+                if is_main_process:
+                    print(f"[DataModule] Loading chunked dataset from {self.chunk_dir}")
+                _t = time.perf_counter()
+                meta = torch.load(chunk_meta, weights_only=False)
+                kind = meta.get("kind", "pointcloud")
+                if kind == "pyg":
+                    dataset = LazyChunkedGraphDataset(self.chunk_dir)
+                else:
+                    dataset = LazyChunkedDataset(self.chunk_dir)
+                dataset.max_atom = self.max_atom
+                if is_main_process:
+                    print(f"[DataModule] Chunked dataset ready in {time.perf_counter() - _t:.2f}s ({len(dataset):,} samples)")
         else:
             # Dataset construction is independent of task_type — driven only by
             # data_type (pyg vs pointcloud). Task-specific logic lives in the
             # task module, not here. Adding a new task never requires touching
             # this file.
+            if is_main_process:
+                print("[DataModule] No cached dataset found — building from raw data")
+            _t = time.perf_counter()
             verbose_level = int(is_main_process)
+            chunk_kwargs = (
+                {"chunk_size": self.chunk_size, "chunk_dir": self.chunk_dir}
+                if self.chunk_size
+                else {}
+            )
+            # Compact flags apply to both chunked and in-memory pyG paths.
+            pyg_extra = {"compact": self.compact}
             if self.data_type == "pyg":
                 dataset = pointcloud_dataset_pyG(
                     root=self.root,
@@ -179,7 +282,13 @@ class DataModule:
                     radius=self.radius,
                     n_neigh=self.n_neigh,
                     use_ohe_feature=self.use_ohe_feature,
+                    use_row_data_features=self.use_row_data_features,
+                    **pyg_extra,
+                    **chunk_kwargs,
                 )
+                if chunk_kwargs and os.path.exists(chunk_meta):
+                    dataset = LazyChunkedGraphDataset(self.chunk_dir)
+                    dataset.max_atom = self.max_atom
             else:
                 dataset = pointcloud_dataset(
                     root=self.root,
@@ -198,16 +307,36 @@ class DataModule:
                     target_fields=self.target_fields,
                     allow_unknown=self.allow_unknown,
                     verbose=verbose_level,
+                    use_row_data_features=self.use_row_data_features,
+                    **chunk_kwargs,
                 )
+                # If chunked, swap to lazy loader (processing is now on disk)
+                if chunk_kwargs and os.path.exists(chunk_meta):
+                    dataset = LazyChunkedDataset(self.chunk_dir)
+                    dataset.max_atom = self.max_atom
+            if is_main_process:
+                print(f"[DataModule] Raw data processing done in {time.perf_counter() - _t:.2f}s ({len(dataset):,} samples)")
 
         # split
         total = len(dataset)
         test_ratio = (1 - self.train_ratio) / 2
         lengths = [int(self.train_ratio * total), int(test_ratio * total)]
         lengths.append(total - sum(lengths))
-        self.train_set, self.valid_set, self.test_set = torch.utils.data.random_split(
+        if is_main_process:
+            print("[DataModule] Building/loading train/valid/test splits ...")
+        _t = time.perf_counter()
+        self.train_set, self.valid_set, self.test_set = self._build_or_load_splits(
             dataset, lengths
         )
+        if is_main_process:
+            print(f"[DataModule] Splits ready in {time.perf_counter() - _t:.2f}s")
+
+        # Keep lazy chunked subsets in storage order to avoid pathological
+        # cross-chunk seeking on the first batches. Membership stays random
+        # because random_split already chose the indices; this only sorts them.
+        if isinstance(dataset, (LazyChunkedDataset, LazyChunkedGraphDataset)):
+            for subset in (self.train_set, self.valid_set, self.test_set):
+                subset.indices = sorted(subset.indices)
 
         # attach metadata
         for subset in (self.train_set, self.valid_set, self.test_set):
@@ -222,6 +351,7 @@ class DataModule:
 
         if is_main_process:
             print(
-                f"Total: {total}, Train: {len(self.train_set)}, Valid: {len(self.valid_set)}, Test: {len(self.test_set)}"
+                f"[DataModule] Total: {total}, Train: {len(self.train_set)}, Valid: {len(self.valid_set)}, Test: {len(self.test_set)}"
             )
+            print(f"[DataModule] load() completed in {time.perf_counter() - _t0_load:.2f}s")
         return self.train_set, self.valid_set, self.test_set

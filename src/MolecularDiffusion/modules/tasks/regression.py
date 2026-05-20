@@ -140,13 +140,13 @@ class ProperyPrediction(Task, core.Configurable):
             self.register_buffer("weight", torch.as_tensor(weight, dtype=torch.float))
             self.num_class = self.num_class or num_class
             if self.mlp is None:
-                if self.mlp_type == "padded":
+                if self.prediction_mlp_type == "padded":
                     MLPRegressor = MLPRegressor_padded
-                elif self.mlp_type == "pernode":
+                elif self.prediction_mlp_type == "pernode":
                     MLPRegressor = MLPRegressor_pernode
                 else:
-                    raise ValueError(f"Unsupported MLP type: {self.mlp_type}")
-        
+                    raise ValueError(f"Unsupported MLP type: {self.prediction_mlp_type}")
+
                 self.mlp = MLPRegressor(
                     self.model.hidden_nf,
                     sum(self.num_class),
@@ -154,7 +154,7 @@ class ProperyPrediction(Task, core.Configurable):
                     num_layers=self.num_mlp_layer,
                     normalization=self.mlp_batch_norm,
                     dropout=self.mlp_dropout,
-                    activation=self.activation,
+                    activation=self.prediction_activation,
                     readout_method=self.readout,
                     prediction_level="graph",
                 )
@@ -496,26 +496,27 @@ class MLPRegressor_padded(nn.Module):
         assert self.prediction_level in ["graph", "atom"]
         assert self.readout_method in ["mean", "sum"], "readout_method must be 'mean' or 'sum'"
         
+        def _make_act():
+            if activation == 'relu':
+                return nn.ReLU()
+            elif activation == 'silu':
+                return nn.SiLU()
+            else:
+                raise ValueError(f"Unsupported activation function: {activation}")
+
         layers = []
         in_dim = latent_dim
-        if activation == 'relu':
-            act_fn = nn.ReLU()
-        elif activation == 'silu':
-            act_fn = nn.SiLU()
-        else:
-            raise ValueError(f"Unsupported activation function: {activation}")
-            
         for i in range(num_layers):
             layers.append(nn.Linear(in_dim, hidden_dim))
             if normalization == 'layernorm':
-                layers.append(nn.LayerNorm(hidden_dim)) 
+                layers.append(nn.LayerNorm(hidden_dim))
             elif normalization == 'batchnorm':
                 layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(act_fn)
+            layers.append(_make_act())
             if dropout > 0.0:
                 layers.append(nn.Dropout(dropout))
             in_dim = hidden_dim
-            
+
         layers.append(nn.Linear(hidden_dim, out_dim))
         self.mlp = nn.Sequential(*layers)
 
@@ -557,26 +558,27 @@ class MLPRegressor_pernode(nn.Module):
         assert self.prediction_level in ["graph", "atom"]
         assert self.readout_method in ["mean", "sum"], "readout_method must be 'mean' or 'sum'"
 
+        def _make_act():
+            if activation == 'relu':
+                return nn.ReLU()
+            elif activation == 'silu':
+                return nn.SiLU()
+            else:
+                raise ValueError(f"Unsupported activation function: {activation}")
+
         layers = []
         in_dim = latent_dim
-        if activation == 'relu':
-            act_fn = nn.ReLU()
-        elif activation == 'silu':
-            act_fn = nn.SiLU()
-        else:
-            raise ValueError(f"Unsupported activation function: {activation}")
-            
         for i in range(num_layers):
             layers.append(nn.Linear(in_dim, hidden_dim))
             if normalization == 'layernorm':
-                layers.append(nn.LayerNorm(hidden_dim)) 
+                layers.append(nn.LayerNorm(hidden_dim))
             elif normalization == 'batchnorm':
                 layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(act_fn)
+            layers.append(_make_act())
             if dropout > 0.0:
                 layers.append(nn.Dropout(dropout))
             in_dim = hidden_dim
-            
+
         layers.append(nn.Linear(hidden_dim, out_dim))
         self.mlp = nn.Sequential(*layers)
 

@@ -1099,6 +1099,7 @@ class GraphDataset(torch_data.Dataset):
         chunk_size: Optional[int] = None,
         chunk_dir: Optional[str] = None,
         compact: Optional[Dict[str, bool]] = None,
+        use_row_data_features: bool = False,
         **kwargs: Any,
     ):
         """
@@ -1249,6 +1250,20 @@ class GraphDataset(torch_data.Dataset):
                     else:
                         node_features = node_features_extra
 
+                if use_row_data_features:
+                    raw = (row_data or {}).get("node_features", None)
+                    if raw is not None:
+                        row_feat = torch.tensor(np.array(raw), dtype=torch.float32)
+                        if row_feat.shape[0] == n_nodes:
+                            if node_features is not None:
+                                node_features = torch.cat((node_features, row_feat), dim=1)
+                            else:
+                                node_features = row_feat
+                        elif verbose:
+                            _logger.warning(
+                                f"row id={i}: row.data['node_features'] shape {row_feat.shape} "
+                                f"mismatches n_nodes={n_nodes}, skipping."
+                            )
 
                 if torch.isnan(coords).any() or (node_features is not None and torch.isnan(node_features).any()):
                     skipped_nan += 1
@@ -2016,6 +2031,7 @@ class PointCloudDataset(torch_data.Dataset):
         use_ohe_feature: bool = True,
         chunk_size: Optional[int] = None,
         chunk_dir: Optional[str] = None,
+        use_row_data_features: bool = False,
         **kwargs: Any,
     ):
         """
@@ -2171,6 +2187,21 @@ class PointCloudDataset(torch_data.Dataset):
                         node_features = torch.cat((node_features, node_features_extra), dim=1)
                     else:
                         node_features = node_features_extra
+
+                if use_row_data_features:
+                    raw = (row_data or {}).get("node_features", None)
+                    if raw is not None:
+                        row_feat = torch.tensor(np.array(raw), dtype=torch.float32)
+                        if row_feat.shape[0] == n_nodes:
+                            if node_features is not None:
+                                node_features = torch.cat((node_features, row_feat), dim=1)
+                            else:
+                                node_features = row_feat
+                        elif verbose:
+                            _logger.warning(
+                                f"row id={i}: row.data['node_features'] shape {row_feat.shape} "
+                                f"mismatches n_nodes={n_nodes}, skipping."
+                            )
 
                 node_mask = torch.ones(n_nodes, dtype=torch.int8)
 
