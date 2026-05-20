@@ -124,6 +124,40 @@ def generate(config: str, overrides: tuple):
     )
 
 
+@cli.command("generate-sweep", context_settings=CONTEXT_SETTINGS)
+@click.argument("sweep_config", type=str)
+@click.option("--dry-run", is_flag=True, help="Print commands without executing them.")
+@click.option("--skip-gen", is_flag=True, help="Skip generation for each run.")
+@click.option("--skip-eval", is_flag=True, help="Skip evaluation for each run.")
+@click.option("--max-runs", type=int, default=None, metavar="N",
+              help="Run at most N new combinations.")
+@click.option("--retry-failed", is_flag=True,
+              help="Retry configurations recorded as failed or interrupted.")
+def generate_sweep(
+    sweep_config: str,
+    dry_run: bool,
+    skip_gen: bool,
+    skip_eval: bool,
+    max_runs: int | None,
+    retry_failed: bool,
+):
+    """Run a generation parameter sweep from a sweep YAML config."""
+    from MolecularDiffusion.runmodes.generate.sweep import main as sweep_main
+
+    argv = [sweep_config]
+    if dry_run:
+        argv.append("--dry-run")
+    if skip_gen:
+        argv.append("--skip-gen")
+    if skip_eval:
+        argv.append("--skip-eval")
+    if max_runs is not None:
+        argv.extend(["--max-runs", str(max_runs)])
+    if retry_failed:
+        argv.append("--retry-failed")
+    sweep_main(argv)
+
+
 @cli.command(context_settings=CONTEXT_SETTINGS)
 @click.argument("config", type=str)
 @click.argument("overrides", nargs=-1)
