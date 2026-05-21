@@ -65,13 +65,118 @@ def _stamp_condition_names(task, checkpoint):
         task.condition = condition_names
         log.info(f"Loaded condition_names from checkpoint: {condition_names}")
 
-def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0):
-    """Load model from checkpoint directory with auto-detection."""
+def _apply_total_step(task, total_step: int):
+    """Override diffusion step count on a loaded task."""
+    if total_step <= 0:
+        return
+    override_occurred = False
+    if hasattr(task, 'model'):
+        m_obj = task.model
+        if hasattr(m_obj, 'T'):
+            m_obj.T = total_step
+            override_occurred = True
+        elif hasattr(m_obj, 'fm_num_timesteps'):
+            m_obj.fm_num_timesteps = total_step
+            override_occurred = True
+    if hasattr(task, 'T') and not override_occurred:
+        task.T = total_step
+    if hasattr(task, 'interpolant') and hasattr(task.interpolant, 'num_timesteps'):
+        task.interpolant.num_timesteps = total_step
 
-    
-    # Original engine (.pkl files)
+
+def _find_best_lightning_ckpt(chkpt_directory: str) -> Optional[str]:
+    """Return the best .ckpt file in *chkpt_directory* or None if absent.
+
+    Priority: last.ckpt > highest metric value in filename > first found.
+    Searches the directory itself and one level of subdirectories (Lightning
+    saves checkpoints under <output_path>/checkpoints/).
+    """
+    ckpt_files = glob.glob(os.path.join(chkpt_directory, "*.ckpt"))
+    ckpt_files += glob.glob(os.path.join(chkpt_directory, "*", "*.ckpt"))
+
+    if not ckpt_files:
+        return None
+
+    # Prefer last.ckpt (always up-to-date)
+    for f in ckpt_files:
+        if os.path.basename(f) == "last.ckpt":
+            return f
+
+    # Fall back to highest metric embedded in filename
+    best_metric = -1.0
+    best_ckpt = None
+    for f in ckpt_files:
+        match = re.search(r"=([\d.]+)\.ckpt", os.path.basename(f))
+        if match:
+            metric = float(match.group(1))
+            if metric > best_metric:
+                best_metric = metric
+                best_ckpt = f
+
+    return best_ckpt or ckpt_files[0]
+
+
+def load_model_lightning(chkpt_directory: str, task_config=None, total_step: int = 0):
+    """Load a task from a PyTorch Lightning checkpoint (.ckpt).
+
+    Uses EngineLightning.load_from_checkpoint which rebuilds the task from the
+    model_config stored in hyper_parameters, then applies on_load_checkpoint to
+    restore distribution models.  The EMA model is initialised manually here
+    because on_train_start (where Lightning normally does it) is never called
+    during inference.
+    """
+    try:
+        from MolecularDiffusion.core.engine_lightning import EngineLightning
+    except ImportError as exc:
+        raise ImportError("PyTorch Lightning is required to load .ckpt checkpoints.") from exc
+
+    ckpt_path = _find_best_lightning_ckpt(chkpt_directory)
+    if ckpt_path is None:
+        raise FileNotFoundError(f"No .ckpt files found in {chkpt_directory}")
+
+    log.info(f"Loading Lightning checkpoint from: {ckpt_path}")
+
+    # Load raw dict for validation / condition name stamping
+    raw_ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    expected_task_type = task_config.get("task_type") if task_config is not None else None
+    _validate_task_type(raw_ckpt, expected_task_type)
+
+    # Lightning rebuilds the task from saved hyper_parameters['model_config']
+    pl_module = EngineLightning.load_from_checkpoint(ckpt_path, map_location="cpu", strict=False)
+    pl_module.eval()
+
+    task = pl_module.task
+
+    # on_train_start (which normally initialises EMA) is never called during
+    # inference, so manually build the EMA model from the pending state.
+    pending_ema = getattr(pl_module, '_pending_ema_state', None)
+    if pending_ema is not None:
+        ema = copy.deepcopy(task)
+        ema.eval()
+        for param in ema.parameters():
+            param.requires_grad = False
+        ema.load_state_dict(pending_ema, strict=False)
+        task = ema
+        log.info("Using EMA model from Lightning checkpoint")
+
+    _stamp_condition_names(task, raw_ckpt)
+    _apply_total_step(task, total_step)
+    task.eval()
+    return task
+
+
+def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0):
+    """Load model from checkpoint directory with auto-detection.
+
+    Tries Lightning (.ckpt) format first; falls back to original engine (.pkl).
+    """
+    # --- Lightning path (.ckpt) ---
+    if _find_best_lightning_ckpt(chkpt_directory) is not None:
+        return load_model_lightning(chkpt_directory, task_config=task_config, total_step=total_step)
+
+    # --- Original engine path (.pkl) ---
     model_path = os.path.join(chkpt_directory, "edm_chem.pkl")
-    
+
     if not os.path.exists(model_path):
         checkpoint_files = glob.glob(os.path.join(chkpt_directory, '*.pkl'))
         checkpoint_files = [f for f in checkpoint_files if 'edm_stat.pkl' not in os.path.basename(f)]
@@ -81,7 +186,7 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
 
         best_metric = -1.0
         best_checkpoint = None
-        
+
         for ckpt_file in checkpoint_files:
             match = re.search(r"metric=([\d.]+)\.pkl", os.path.basename(ckpt_file))
             if match:
@@ -89,12 +194,11 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
                 if metric > best_metric:
                     best_metric = metric
                     best_checkpoint = ckpt_file
-        
+
         model_path = best_checkpoint or checkpoint_files[0]
 
     log.info(f"Loading original engine checkpoint from: {model_path}")
 
-    # Validate task_type for original engine checkpoints
     expected_task_type = task_config.get("task_type") if task_config is not None else None
     raw_ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
     _validate_task_type(raw_ckpt, expected_task_type)
@@ -115,7 +219,7 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
                 edm_stats["prop"] = loaded_stats["prop_dist_model"]
         except Exception as e:
             log.warning(f"Failed to load edm_stat.pkl: {e}")
-    
+
     engine = Engine(None, None, None, None, None)
     engine = engine.load_from_checkpoint(model_path, interference_mode=True)
     task = engine.model
@@ -125,25 +229,8 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
         task.node_dist_model = edm_stats["node"]
     if edm_stats["prop"] is not None:
         task.prop_dist_model = edm_stats["prop"]
-    
-    if total_step > 0:
-        override_occured = False
-        if hasattr(task, 'model'):
-            m_obj = task.model
-            if hasattr(m_obj, 'T'):
-                m_obj.T = total_step
-                override_occured = True
-            elif hasattr(m_obj, 'fm_num_timesteps'):
-                m_obj.fm_num_timesteps = total_step
-                override_occured = True
-        
-        if hasattr(task, 'T') and not override_occured:
-            task.T = total_step
-            override_occured = True
-            
-        if hasattr(task, 'interpolant') and hasattr(task.interpolant, 'num_timesteps'):
-            task.interpolant.num_timesteps = total_step
 
+    _apply_total_step(task, total_step)
     task.eval()
     return task
 
