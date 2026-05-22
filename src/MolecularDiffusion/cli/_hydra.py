@@ -1,10 +1,11 @@
 """Hydra configuration utilities for CLI.
 
-Provides utilities for discovering and loading bundled configs 
+Provides utilities for discovering and loading bundled configs
 while allowing user configs to reference them.
 """
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional, List
 from importlib import resources
@@ -116,14 +117,20 @@ def run_hydra_app(
     overrides: Optional[List[str]] = None,
 ):
     """Run a Hydra-based task function with proper config setup.
-    
+
     This is the main entry point for CLI commands that use Hydra configs.
-    
+
     Args:
         config_name: Name of the config file
         task_function: Function to call with the composed config
         config_dir: Optional user config directory
         overrides: Optional Hydra overrides
     """
+    # Ensure CWD is on sys.path so that local packages like scripts.gradient_guidance
+    # referenced via Hydra _target_ strings are importable without PYTHONPATH hacks.
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+
     cfg = setup_hydra_config(config_name, config_dir, overrides)
     return task_function(cfg)

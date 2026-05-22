@@ -133,6 +133,8 @@ def generate(config: str, overrides: tuple):
               help="Run at most N new combinations.")
 @click.option("--retry-failed", is_flag=True,
               help="Retry configurations recorded as failed or interrupted.")
+@click.option("--early-fail-batches", type=int, default=None, metavar="N",
+              help="Stop generation after N consecutive failed batches before any success.")
 def generate_sweep(
     sweep_config: str,
     dry_run: bool,
@@ -140,6 +142,7 @@ def generate_sweep(
     skip_eval: bool,
     max_runs: int | None,
     retry_failed: bool,
+    early_fail_batches: int | None,
 ):
     """Run a generation parameter sweep from a sweep YAML config."""
     from MolecularDiffusion.runmodes.generate.sweep import main as sweep_main
@@ -155,6 +158,8 @@ def generate_sweep(
         argv.extend(["--max-runs", str(max_runs)])
     if retry_failed:
         argv.append("--retry-failed")
+    if early_fail_batches is not None:
+        argv.extend(["--early-fail-batches", str(early_fail_batches)])
     sweep_main(argv)
 
 

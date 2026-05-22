@@ -71,6 +71,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         mask_value: float = 0.0,
         eval_mode: bool = False,
         debug: bool = False,
+        use_noised_conditioning: bool = False,
     ):
         super().__init__()
         self.call = 0
@@ -113,6 +114,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         self.context_mask_rate = context_mask_rate
         self.mask_value = mask_value
         self.condition_tensor = None
+        self.use_noised_conditioning = use_noised_conditioning
+        self.clean_condition_tensor = None
 
         # Register buffer for device compatibility
         self.register_buffer("buffer", torch.zeros(1))
@@ -593,7 +596,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         x, h_cat, h_int = self.unnormalize(
             x, h_cat, h_int, node_mask
         )
-        
+
         if len(self.extra_norm_values) > 0:
             h_extra = h_cat[:, :, -len(self.extra_norm_values) :]
             h_cat = h_cat[:, :, : -len(self.extra_norm_values)]
@@ -611,6 +614,67 @@ class EnVariationalDiffusion(torch.nn.Module):
         eps = self.sample_combined_position_feature_noise(bs, mu.size(1), node_mask)
         return mu + sigma * eps
 
+    def _mask_padded_nodes(self, z, node_mask):
+        """Zero all channels for padded nodes before masked centering/assertions."""
+        return torch.where(node_mask > 0, z, torch.zeros_like(z))
+
+    def _normalize_guidance_grad(
+        self, grad, D, t_scale, sigma_t, x_weight, h_weight, node_mask
+    ):
+        """Normalize a raw guidance gradient into the equivariant subspace."""
+        min_t = torch.as_tensor(
+            1.0 / float(self.T), device=t_scale.device, dtype=t_scale.dtype
+        )
+        t_scale = torch.clamp(t_scale, min=min_t)
+        grad = grad.nan_to_num(0.0, posinf=0.0, neginf=0.0)
+        sigma_t = sigma_t.nan_to_num(0.0, posinf=0.0, neginf=0.0)
+        n = self.n_dims
+        nx = grad[:, :, :n].norm(dim=[1, 2], keepdim=True)
+        nh = grad[:, :, n:].norm(dim=[1, 2], keepdim=True)
+        gx = (
+            x_weight * D**0.5 / t_scale
+            * grad[:, :, :n] / (nx + 1e-6)
+            * sigma_t
+        )
+        gh = (
+            h_weight * D**0.5 / t_scale
+            * grad[:, :, n:] / (nh + 1e-6)
+            * sigma_t
+        )
+        gx = gx * node_mask
+        gh = gh * node_mask
+        grad = torch.cat([remove_mean_with_mask(gx, node_mask), gh], dim=2)
+        return grad.nan_to_num(0.0, posinf=0.0, neginf=0.0)
+
+    def _apply_structure_fix(
+        self,
+        zs,
+        s,
+        structure_guidance,
+        condition_to_use,
+        mask_bools,
+        natom_ref,
+        mask_node_index,
+        t_critical,
+    ):
+        """Apply outpaint or inpaint structure constraint to zs."""
+        if self.condition_tensor is None:
+            return zs
+        if "outpaint" in structure_guidance:
+            if s[0].item() > t_critical:
+                zs = torch.cat(
+                    [condition_to_use, zs[:, mask_bools, :]], dim=1
+                )
+            else:
+                zs[:, :natom_ref, self.n_dims:] = (
+                    condition_to_use[:, :natom_ref, self.n_dims:]
+                )
+        elif "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            zs = torch.cat(
+                [condition_to_use, zs[:, mask_node_index, :]], dim=1
+            )
+        return zs
+
 
     def log_pxh_given_z0_without_constants(
         self,
@@ -624,7 +688,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         reference_indices=None,
         epsilon=1e-10
     ):
-        
+
         z_t = z_t[:, :, self.n_dims :]
 
         if self.ndim_extra > 0:
@@ -1876,11 +1940,13 @@ class EnVariationalDiffusion(torch.nn.Module):
             Tuple[torch.Tensor, dict]: The guided sample zs and a dictionary with optimization info.
         """
         opt_info = {}
-        
-        
         D = zt.size(2)
         gamma_s = self.gamma(s).to(s.device)
         gamma_t = self.gamma(t).to(s.device)
+
+        # Defaults; overwritten below when outpaint structure guidance is active.
+        mask_bools = None
+        natom_ref = 0
 
         # In the event the reference tensor is provided
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
@@ -1926,47 +1992,41 @@ class EnVariationalDiffusion(torch.nn.Module):
             z0 = torch.cat(
                         [self.condition_tensor, z0[:, mask_bools, :]], dim=1
                     )
+            z0 = self._mask_padded_nodes(z0, node_mask)
         # guidance
         with torch.enable_grad():
             z0 = z0.requires_grad_()
             energy = target_function(z0, t).sum()
             grad = autograd.grad(energy, z0)[0]
 
+        grad = grad.nan_to_num(0.0)
         opt_info["grad_norms"] = grad.norm(dim=[1, 2])
 
-        grad_norm_x = grad[:, : , :self.n_dims].norm(dim=[1, 2])
-        grad_norm_h = grad[:, : , self.n_dims:].norm(dim=[1, 2])
-        grad_x = x_weight* D**(1/2)/t[0].item() * grad[:, : , :self.n_dims] / (grad_norm_x + 1e-6) * sigma_t
-        grad_h = h_weight* D**(1/2)/t[0].item() * grad[:, : , self.n_dims:] / (grad_norm_h + 1e-6) * sigma_t
-
-        grad = torch.cat(
-            [
-                remove_mean_with_mask(grad_x, node_mask),
-                grad_h,
-            ],
-            dim=2,
+        t_scale = t.view(-1, 1, 1) if t.numel() > 1 else t[0].view(1, 1, 1)
+        grad = self._normalize_guidance_grad(
+            grad, D, t_scale, sigma_t, x_weight, h_weight, node_mask
         )
+
+        # Clip before applying to mu (consistent with backward refinement steps).
+        clip_coef = torch.clamp(
+            max_norm / (grad.norm(dim=[1, 2], keepdim=True) + 1e-6), max=1
+        )
+        grad = grad * clip_coef
         
         mu = mu - scale * grad
 
         opt_info["mu1_norm"] = mu.norm(dim=[1, 2])
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        # In the event the reference tensor is provided
-        if self.condition_tensor is not None and "outpaint" in structure_guidance:
-            if s[0] > t_critical:
-                # Fix the reference part as conditioning
-                zs = torch.cat(
-                    [self.condition_tensor, zs[:, mask_bools, :]], dim=1
-                )
-            else:
-                # Fix just the atomm types of reference part as conditioning
-                zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
-        elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
-            zs = torch.cat(
-                [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
-            )
 
+        condition_to_use = self._select_conditioning_tensor(t)
+
+        zs = self._apply_structure_fix(
+            zs, s, structure_guidance, condition_to_use,
+            mask_bools, natom_ref, mask_node_index, t_critical,
+        )
+
+        zs = self._mask_padded_nodes(zs, node_mask)
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
@@ -1981,49 +2041,47 @@ class EnVariationalDiffusion(torch.nn.Module):
         opt_info["energies"] = target_function(zs, t)
         opt_info["z_norm"] = zs.norm(dim=[1, 2])
     
-        if n_backward > 0:  
+        if n_backward > 0 and torch.all(s > 0):
+            # s_scale / sigma_s: correct timestep for refining zs at step s.
+            s_scale = s.view(-1, 1, 1) if s.numel() > 1 else s[0].view(1, 1, 1)
             with torch.enable_grad():
                 for i in range(n_backward):
-                    zs = zs.requires_grad_()
+                    zs = zs.detach().requires_grad_(True)
                     energy_r = target_function(zs,  s).sum()
                     grad_r = autograd.grad(energy_r, zs)[0]      
                     grad_r = grad_r.nan_to_num(0.0)
-                    
-                    
-                    grad_norm_x = grad_r[:, : , :self.n_dims].norm(dim=[1, 2])
-                    grad_norm_h = grad_r[:, : , self.n_dims:].norm(dim=[1, 2])
-                    grad_r_x = x_weight*D**(1/2)/t[0].item() * grad_r[:, : , :self.n_dims] / (grad_norm_x + 1e-6) * sigma_t
-                    grad_r_h = h_weight*D**(1/2)/t[0].item() * grad_r[:, : , self.n_dims:] / (grad_norm_h + 1e-6) * sigma_t
 
-                    grad_r = torch.cat(
+                    grad_r = self._normalize_guidance_grad(
+                        grad_r, D, s_scale, sigma_s, x_weight, h_weight, node_mask
+                    )
+
+                    # Per-sample gradient clipping.
+                    clip_coef_r = torch.clamp(
+                        max_norm / (grad_r.norm(dim=[1, 2], keepdim=True) + 1e-6),
+                        max=1,
+                    )
+                    grad_r = grad_r * clip_coef_r
+                    zs = zs - scale * grad_r
+
+                    zs = self._apply_structure_fix(
+                        zs, s, structure_guidance, condition_to_use,
+                        mask_bools, natom_ref, mask_node_index, t_critical,
+                    )
+
+                    # Re-project after every step so energy sees valid geometry.
+                    zs = self._mask_padded_nodes(zs, node_mask)
+                    zs = torch.cat(
                         [
-                            remove_mean_with_mask(grad_r_x, node_mask),
-                            grad_r_h,
+                            remove_mean_with_mask(
+                                zs[:, :, :self.n_dims], node_mask
+                            ),
+                            zs[:, :, self.n_dims:],
                         ],
                         dim=2,
                     )
-        
-                    reverse_grad_zs_norm = grad_r.norm(dim=[1, 2])
-                    clip_coef_reverse_zs = max_norm / (reverse_grad_zs_norm + 1e-6)
-                    clip_coef_clamped_reverse_zs = torch.clamp(clip_coef_reverse_zs, max=1)
-                    grad_r *= clip_coef_clamped_reverse_zs[:, None, None]
-                    zs = zs - scale * grad_r 
+                    zs = zs.detach()
 
-                    # In the event the reference tensor is provided
-                    if self.condition_tensor is not None and "outpaint" in structure_guidance:
-                        if s[0].item() > t_critical:
-                            # Fix the reference part as conditioning
-                            zs = torch.cat(
-                                [self.condition_tensor, zs[:, mask_bools, :]], dim=1
-                            )
-                        else:
-                            # Fix just the atomm types of reference part as conditioning
-                            zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
-                    elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
-                        zs = torch.cat(
-                            [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
-                        )     
-
+        zs = self._mask_padded_nodes(zs, node_mask)
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
@@ -2119,13 +2177,35 @@ class EnVariationalDiffusion(torch.nn.Module):
                     eps_t_cond_negative = eps_t_cond_negative.nan_to_num(0.0)
                 eps_t = (1 + scale) * eps_t_cond_positive - scale * eps_t_cond_negative      
             else:      
-                if self.dynamics.use_adapter_module:
+                has_adapter = (
+                    hasattr(self.dynamics, "n_adapter_context")
+                    and self.dynamics.n_adapter_context > 0
+                )
+                has_concat = (
+                    hasattr(self.dynamics, "n_concat_context")
+                    and self.dynamics.n_concat_context > 0
+                )
+                adapter_only = has_adapter and not has_concat
+
+                if adapter_only:
+                    context_null = None
+                elif has_adapter:
+                    context_null = torch.zeros_like(
+                        context, device=eps_t_cond_positive.device
+                    )
+                    context_null[:, :, self.dynamics.concat_indices] = self.mask_value
+                elif getattr(self.dynamics, "use_adapter_module", False):
                     context_null = None
                 else:
-                    context_null = torch.zeros_like(context, device=eps_t_cond_positive.device) + self.mask_value   
+                    context_null = (
+                        torch.zeros_like(
+                            context, device=eps_t_cond_positive.device
+                        )
+                        + self.mask_value
+                    )
                 eps_t_uncond = self.phi(zt, t, node_mask, edge_mask, context=context_null)
                 if torch.any(torch.isnan(eps_t_uncond)):
-                    print("eps_t_uncond is nan, setting to 0") 
+                    logger.warning("eps_t_uncond is nan, setting to 0")
                     eps_t_uncond = eps_t_uncond.nan_to_num(0.0)
                 eps_t =  (1 + scale) * eps_t_cond_positive - scale * eps_t_uncond
         mu = (
@@ -2137,22 +2217,25 @@ class EnVariationalDiffusion(torch.nn.Module):
         sigma = sigma_t_given_s * sigma_s / sigma_t
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)    
+
+        condition_to_use = self._select_conditioning_tensor(t)
     
         # In the event the reference tensor is provided
         if self.condition_tensor is not None and "outpaint" in structure_guidance:  
             if s[0].item() > t_critical:
                 # Fix the reference part as conditioning
                 zs = torch.cat(
-                    [self.condition_tensor, zs[:, mask_bools, :]], dim=1
+                    [condition_to_use, zs[:, mask_bools, :]], dim=1
                 )
             else:
                 # Fix just the atomm types of reference part as conditioning
-                zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
+                zs[:, :natom_ref, 3:] = condition_to_use[:, :natom_ref, self.n_dims:]
         elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
             zs = torch.cat(
-                [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
+                [ condition_to_use, zs[:, mask_node_index, :]], dim=1
             )
         # Project down to avoid numerical runaway of the center of gravity.
+        zs = self._mask_padded_nodes(zs, node_mask)
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
@@ -2183,9 +2266,11 @@ class EnVariationalDiffusion(torch.nn.Module):
         h_weight=1,
         x_weight=1,
         fix_noise=False,
+        context_negative=None,
         structure_guidance=False,
         t_critical=0, # For outpaint
-        mask_node_index=[] # For inpaint
+        mask_node_index=[], # For inpaint
+        scale_schedule_type=None
     ):
         """Combines Classifier-Free Guidance (CFG) with Gradient-Based Guidance (GG).
 
@@ -2207,16 +2292,26 @@ class EnVariationalDiffusion(torch.nn.Module):
             h_weight (int, optional): Weight for the feature component of the gradient. Defaults to 1.
             x_weight (int, optional): Weight for the position component of the gradient. Defaults to 1.
             fix_noise (bool, optional): If True, uses fixed noise for sampling. Defaults to False.
+            context_negative (torch.Tensor, optional): Negative conditional information for guidance.
+                If None, unconditional generation is used as the negative target. Defaults to None.
             structure_guidance (bool, optional): If inpaint or outpaint, applies structure guidance. Defaults to False.
             t_critical (float, optional): Timestep threshold for applying reference tensor constraints. Defaults to None.
             mask_node_index (list, optional): List of node indices to mask during inpaiting. Defaults to [].
+            scale_schedule_type (str, optional): Type of scheduler for CFG scale. [Available: 'linear', 'cosine']. Defaults to None.
 
         Returns:
-            torch.Tensor: The guided sample zs.
+            Tuple[torch.Tensor, dict]: The guided sample zs and an opt_info dict
+            with keys mu0_norm, mu1_norm, grad_norms, energies, z_norm.
         """
+        opt_info = {}
         D = zt.size(2)
         gamma_s = self.gamma(s).to(s.device)
         gamma_t = self.gamma(t).to(s.device)
+
+        # Defaults; overwritten below when outpaint structure guidance is active.
+        mask_bools = None
+        natom_ref = 0
+
         # In the event the reference tensor is provided
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
             natom_ref = self.condition_tensor.size(1)
@@ -2236,21 +2331,53 @@ class EnVariationalDiffusion(torch.nn.Module):
         sigma_t = self.sigma(gamma_t, target_tensor=zt)
 
 
+        if scale_schedule_type is not None:
+            cfg_scale = self.scale_schedule(
+                t, 0, cfg_scale, schedule_type=scale_schedule_type
+            )
+            cfg_scale = cfg_scale.view(-1, 1, 1)
+
         # Neural net prediction.
         with torch.no_grad():
             eps_t_cond = self.phi(zt, t, node_mask, edge_mask, context=context,)
-            
-            if self.dynamics.use_adapter_module:
-                context_null = None
-            else:
-                context_null = torch.zeros_like(context, device=eps_t_cond.device) + self.mask_value   
-            eps_t_uncond = self.phi(zt, t, node_mask, edge_mask, context=context_null)
 
             if torch.any(torch.isnan(eps_t_cond)):
-                print("eps_t_cond is nan, setting to 0")  
-                eps_t_cond = context_null.nan_to_num(0.0)
+                logger.warning("eps_t_cond is nan, setting to 0")
+                eps_t_cond = eps_t_cond.nan_to_num(0.0)
+
+            if context_negative is not None:
+                eps_t_uncond = self.phi(
+                    zt, t, node_mask, edge_mask, context=context_negative
+                )
+            else:
+                has_adapter = (
+                    hasattr(self.dynamics, "n_adapter_context")
+                    and self.dynamics.n_adapter_context > 0
+                )
+                has_concat = (
+                    hasattr(self.dynamics, "n_concat_context")
+                    and self.dynamics.n_concat_context > 0
+                )
+                adapter_only = has_adapter and not has_concat
+
+                if adapter_only:
+                    context_null = None
+                elif has_adapter:
+                    context_null = torch.zeros_like(context, device=eps_t_cond.device)
+                    context_null[:, :, self.dynamics.concat_indices] = self.mask_value
+                elif getattr(self.dynamics, "use_adapter_module", False):
+                    context_null = None
+                else:
+                    context_null = (
+                        torch.zeros_like(context, device=eps_t_cond.device)
+                        + self.mask_value
+                    )
+                eps_t_uncond = self.phi(
+                    zt, t, node_mask, edge_mask, context=context_null
+                )
+
             if torch.any(torch.isnan(eps_t_uncond)):
-                print("eps_t_uncond is nan, setting to 0") 
+                logger.warning("eps_t_uncond is nan, setting to 0")
                 eps_t_uncond = eps_t_uncond.nan_to_num(0.0)
 
             eps_t =  (1 + cfg_scale) * eps_t_cond - cfg_scale * eps_t_uncond
@@ -2265,110 +2392,102 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # gradient guidance
         z0 = (zt - sigma_t * eps_t) / ((1 - sigma_t**2) ** (1 / 2))
-        if self.condition_tensor is not None and "outpaint" in structure_guidance:
-            if s[0].item() > t_critical:
-                # Fix the reference part as conditioning
-                z0 = torch.cat(
-                    [self.condition_tensor, z0[:, mask_bools, :]], dim=1
-                )
-            else:
-                # Fix just the atomm types of reference part as conditioning
-                z0[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
-        elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
-            z0 = torch.cat(
-                [ self.condition_tensor, z0[:, mask_node_index, :]], dim=1
-            )
-            
+
+        condition_to_use = self._select_conditioning_tensor(t)
+
+        z0 = self._apply_structure_fix(
+            z0, s, structure_guidance, condition_to_use,
+            mask_bools, natom_ref, mask_node_index, t_critical,
+        )
+        z0 = self._mask_padded_nodes(z0, node_mask)
+
         with torch.enable_grad():
             z0 = z0.requires_grad_()
             energy = target_function(z0, t).sum()
             grad = autograd.grad(energy, z0)[0]
-        grad_norm_x = grad[:, : , :self.n_dims].norm(dim=[1, 2])
-        grad_norm_h = grad[:, : , self.n_dims:].norm(dim=[1, 2])
-        grad_x = x_weight*D**(1/2)/t[0].item() * grad[:, : , :self.n_dims] / (grad_norm_x + 1e-6) * sigma_t
-        grad_h = h_weight*D**(1/2)/t[0].item() * grad[:, : , self.n_dims:] / (grad_norm_h + 1e-6) * sigma_t
 
-        grad = torch.cat(
-            [
-                remove_mean_with_mask(grad_x, node_mask),
-                grad_h,
-            ],
-            dim=2,
+        grad = grad.nan_to_num(0.0)
+        opt_info["grad_norms"] = grad.norm(dim=[1, 2])
+
+        t_scale = t.view(-1, 1, 1) if t.numel() > 1 else t[0].view(1, 1, 1)
+        grad = self._normalize_guidance_grad(
+            grad, D, t_scale, sigma_t, x_weight, h_weight, node_mask
         )
-        
+
+        # Clip before applying to mu (consistent with backward refinement steps).
+        clip_coef = torch.clamp(
+            max_norm / (grad.norm(dim=[1, 2], keepdim=True) + 1e-6), max=1
+        )
+        grad = grad * clip_coef
+
+        opt_info["mu0_norm"] = mu.norm(dim=[1, 2])
         mu = mu - gg_scale * grad
+        opt_info["mu1_norm"] = mu.norm(dim=[1, 2])
 
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        if self.condition_tensor is not None and "outpaint" in structure_guidance:
-            if s[0].item() > t_critical:
-                # Fix the reference part as conditioning
-                zs = torch.cat(
-                    [self.condition_tensor, zs[:, mask_bools, :]], dim=1
-                )
-            else:
-                # Fix just the atomm types of reference part as conditioning
-                zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
-        elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
-            zs = torch.cat(
-                [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
-            )
 
-        # Project down to avoid numerical runaway of the center of gravity.
+        zs = self._apply_structure_fix(
+            zs, s, structure_guidance, condition_to_use,
+            mask_bools, natom_ref, mask_node_index, t_critical,
+        )
+
+        # Project to keep CoM at zero and zero padded nodes.
+        zs = self._mask_padded_nodes(zs, node_mask)
         zs = torch.cat(
             [
-                remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
-                zs[:, :, self.n_dims :],
+                remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
+                zs[:, :, self.n_dims:],
             ],
             dim=2,
         )
 
-        if n_backward > 0:  
+        opt_info["energies"] = target_function(zs, t)
+        opt_info["z_norm"] = zs.norm(dim=[1, 2])
+
+        if n_backward > 0 and torch.all(s > 0):
+            # s_scale / sigma_s: correct timestep for refining zs at step s.
+            s_scale = s.view(-1, 1, 1) if s.numel() > 1 else s[0].view(1, 1, 1)
             with torch.enable_grad():
                 for i in range(n_backward):
-                    zs = zs.requires_grad_()
+                    zs = zs.detach().requires_grad_(True)
                     energy_r = target_function(zs,  s).sum()
                     grad_r = autograd.grad(energy_r, zs)[0]      
                     grad_r = grad_r.nan_to_num(0.0)
-                    
-                    
-                    grad_norm_x = grad_r[:, : , :self.n_dims].norm(dim=[1, 2])
-                    grad_norm_h = grad_r[:, : , self.n_dims:].norm(dim=[1, 2])
-                    grad_r_x = x_weight* D**(1/2)/t[0].item() * grad_r[:, : , :self.n_dims] / (grad_norm_x + 1e-6) * sigma_t
-                    grad_r_h = h_weight* D**(1/2)/t[0].item() * grad_r[:, : , self.n_dims:] / (grad_norm_h + 1e-6) * sigma_t
 
-                    grad_r = torch.cat(
+                    grad_r = self._normalize_guidance_grad(
+                        grad_r, D, s_scale, sigma_s, x_weight, h_weight, node_mask
+                    )
+
+                    # Per-sample gradient clipping.
+                    clip_coef_r = torch.clamp(
+                        max_norm / (grad_r.norm(dim=[1, 2], keepdim=True) + 1e-6),
+                        max=1,
+                    )
+                    grad_r = grad_r * clip_coef_r
+                    zs = zs - gg_scale * grad_r
+
+                    zs = self._apply_structure_fix(
+                        zs, s, structure_guidance, condition_to_use,
+                        mask_bools, natom_ref, mask_node_index, t_critical,
+                    )
+
+                    # Re-project after every step so energy sees valid geometry.
+                    zs = self._mask_padded_nodes(zs, node_mask)
+                    zs = torch.cat(
                         [
-                            remove_mean_with_mask(grad_r_x, node_mask),
-                            grad_r_h,
+                            remove_mean_with_mask(
+                                zs[:, :, :self.n_dims], node_mask
+                            ),
+                            zs[:, :, self.n_dims:],
                         ],
                         dim=2,
                     )
-        
-                    reverse_grad_zs_norm = grad_r.norm(dim=[1, 2])
-                    clip_coef_reverse_zs = max_norm / (reverse_grad_zs_norm + 1e-6)
-                    clip_coef_clamped_reverse_zs = torch.clamp(clip_coef_reverse_zs, max=1)
-                    grad_r *= clip_coef_clamped_reverse_zs[:, None, None]
-                    zs = zs - gg_scale * grad_r 
-
-                    # In the event the reference tensor is provided
-                    if self.condition_tensor is not None and "outpaint" in structure_guidance:
-                        if s[0].item() > t_critical:
-                            # Fix the reference part as conditioning
-                            zs = torch.cat(
-                                [self.condition_tensor, zs[:, mask_bools, :]], dim=1
-                            )
-                        else:
-                            # Fix just the atomm types of reference part as conditioning
-                            zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]      
-                    elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
-                        zs = torch.cat(
-                            [ self.condition_tensor, zs[:, mask_node_index, :]], dim=1
-                        )    
+                    zs = zs.detach()
         zs = torch.cat(
             [
-                remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
-                zs[:, :, self.n_dims :],
+                remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
+                zs[:, :, self.n_dims:],
             ],
             dim=2,
         )
@@ -2377,7 +2496,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             self.condition_tensor = zs[:, ~mask_bools, :]
         elif self.condition_tensor  is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
             self.condition_tensor = zs[:, ~mask_node_index, :]  
-        return zs
+        return zs, opt_info
 
 
     def sample_p_zs_given_zt_ssgd(
@@ -3853,6 +3972,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         outpaint_cfgs={},
         n_frames=0,
         debug=False,
+        use_noised_conditioning=False,
     ):
         """
         Guided sampling from the generative model.
@@ -3883,6 +4003,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             Save gradient norms, max gradients, clipping coefficients, and energies to files.
         - condition_tensor (torch.Tensor, optional): Tensor for conditional guidance. Defaults to None.
         - condition_mode (str, optional): Mode for conditional guidance. Defaults to None.
+        - use_noised_conditioning (bool): Use noised condition tensor for structure guidance.
         - inpaint_cfgs (dict, optional): Configuration for inpainting. 
             The dictionary must contains:        
                 - mask_node_index (torch.Tensor, optional): Indices of nodes to be inpainted. Defaults to an empty tensor.
@@ -3902,6 +4023,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         Tuple[Tensor, Tensor]: Sampled positions and features.
         """
         debug = False
+        self.clean_condition_tensor = condition_tensor
+        self.use_noised_conditioning = use_noised_conditioning
         
         
         n_nodes = node_mask.size(1)
@@ -4297,7 +4420,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                                 scale_schedule_type=cfg_scale_schedule
                             )
                         elif guidance_ver == "cfg_gg":
-                            z = self.sample_p_zs_given_zt_guidance_cfg_gg(
+                            z, opt_info = self.sample_p_zs_given_zt_guidance_cfg_gg(
                                 s_array,
                                 t_array,
                                 z,
@@ -4312,9 +4435,11 @@ class EnVariationalDiffusion(torch.nn.Module):
                                 h_weight=h_weight,
                                 x_weight=x_weight,
                                 fix_noise=fix_noise,
+                                context_negative=context_negative,
                                 t_critical=t_critical,
                                 structure_guidance=condition_alg,
-                                mask_node_index=mask_node_bool_corr
+                                mask_node_index=mask_node_bool_corr,
+                                scale_schedule_type=cfg_scale_schedule
                             )
                         else:
                             raise ValueError(f"Unknown guidance version {guidance_ver}.")
