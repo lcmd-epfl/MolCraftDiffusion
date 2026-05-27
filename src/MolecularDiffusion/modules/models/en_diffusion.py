@@ -3179,6 +3179,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         condition_mode=None,
         inpaint_cfgs={},
         outpaint_cfgs={},
+        use_noised_conditioning=False,
         fix_noise=False,
         n_frames=0,
         t_retry=180,
@@ -3188,6 +3189,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         Draw samples from the generative model.
         """
+        self.use_noised_conditioning = use_noised_conditioning
+
         if condition_tensor is not None:
             condition_tensor = condition_tensor.to(device=node_mask.device)
             if condition_tensor.size(0) == 1 and n_samples > 1:

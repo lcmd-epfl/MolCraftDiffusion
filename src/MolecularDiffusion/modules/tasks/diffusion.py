@@ -628,6 +628,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
                n_retrys=0,
                t_retry=180,
                mode="ddpm",
+               use_noised_conditioning=False,
                **kwargs):
         """
         Sample molecular structures.
@@ -702,6 +703,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 n_frames=n_frames,
                 n_retrys=n_retrys,
                 t_retry=t_retry,
+                use_noised_conditioning=use_noised_conditioning,
                 **kwargs
             )
         elif mode == "ddim":    
