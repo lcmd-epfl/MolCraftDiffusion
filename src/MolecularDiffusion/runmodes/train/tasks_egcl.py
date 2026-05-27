@@ -144,6 +144,10 @@ class ModelTaskFactory:
         # Compute feature dimensions
         n_dim_extra = len(kwargs.get("extra_norm_values", []))
         self.in_node_nf = len(atom_vocab) + n_dim_extra + 1 # +1 for atomic number
+        self.node_feature = kwargs.get("node_feature", kwargs.get("node_feature_choice", None))
+        self.node_feature_choice = kwargs.get("node_feature_choice", self.node_feature)
+        self.node_feature_dim = kwargs.get("node_feature_dim", n_dim_extra)
+        
         self.dynamics_in_node_nf = self.in_node_nf + 1 # +1 for time (always include time in dynamics)
         self.context_node_nf = len(self.condition_names)
 

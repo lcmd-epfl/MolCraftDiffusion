@@ -5,18 +5,18 @@ from torch import nn
 
 
 _criterion_name = {
-    "mse": "mean squared error",
-    "mae": "mean absolute error",
-    "bce": "binary cross entropy",
-    "ce": "cross entropy",
+    "mse": "mean_squared_error",
+    "mae": "mean_absolute_error",
+    "bce": "binary_cross_entropy",
+    "ce": "cross_entropy",
 }
 
 _metric_name = {
-    "mae": "mean absolute error",
-    "mse": "mean squared error",
-    "rmse": "root mean squared error",
+    "mae": "mean_absolute_error",
+    "mse": "mean_squared_error",
+    "rmse": "root_mean_squared_error",
     "acc": "accuracy",
-    "mcc": "matthews correlation coefficient",
+    "mcc": "matthews_correlation_coefficient",
 }
 
 
@@ -24,7 +24,7 @@ _metric_name = {
 def _get_criterion_name(criterion):
     if criterion in _criterion_name:
         return _criterion_name[criterion]
-    return "%s loss" % criterion
+    return "%s_loss" % criterion
 
 
 def _get_metric_name(metric):
@@ -67,4 +67,3 @@ class Task(nn.Module):
 
     def evaluate(self, pred, target):
         raise NotImplementedError
-

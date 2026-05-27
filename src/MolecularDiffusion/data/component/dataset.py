@@ -134,21 +134,24 @@ class LazyChunkedDataset(torch_data.Dataset):
         types = {_an[s] for s in self.atom_vocab if s in _an} - {0}
         return sorted(types)
 
-    def get_property(self, task: str) -> torch.Tensor:
-        def _load(path):
-            c = torch.load(path, weights_only=False)
-            return c["targets"].get(task, [])
+    def get_property(self, task: str, indices=None) -> torch.Tensor:
+        if indices is None:
+            indices = range(len(self))
+        grouped: Dict[int, List[tuple]] = defaultdict(list)
+        for out_idx, index in enumerate(indices):
+            chunk_idx = self._bisect.bisect_right(self._offsets, int(index)) - 1
+            local_idx = int(index) - self._offsets[chunk_idx]
+            grouped[chunk_idx].append((out_idx, local_idx))
 
-        n_workers = min(len(self.chunk_paths), (os.cpu_count() or 4), 8)
-        if n_workers > 1 and len(self.chunk_paths) > 2:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                parts = list(pool.map(_load, self.chunk_paths))
-        else:
-            parts = [_load(p) for p in self.chunk_paths]
         values: List[float] = []
-        for part in parts:
-            values.extend(part)
+        values = [0.0] * sum(len(v) for v in grouped.values())
+        for chunk_idx, positions in grouped.items():
+            path = self.chunk_paths[chunk_idx]
+            c = torch.load(path, weights_only=False, map_location="cpu")
+            target = c["targets"].get(task, [])
+            for out_idx, local_idx in positions:
+                values[out_idx] = target[local_idx]
+            del c
         return torch.tensor(values, dtype=torch.float32)
 
     @property
@@ -397,24 +400,26 @@ class LazyChunkedGraphDataset(torch_data.Dataset):
     def num_atom_type(self) -> int:
         return len(self.atom_types())
 
-    def get_property(self, task: str) -> Optional[torch.Tensor]:
+    def get_property(self, task: str, indices=None) -> Optional[torch.Tensor]:
         if task not in self._tasks:
             return None
+        if indices is None:
+            indices = range(len(self))
+        grouped: Dict[int, List[tuple]] = defaultdict(list)
+        for out_idx, index in enumerate(indices):
+            chunk_idx = self._bisect.bisect_right(self._offsets, int(index)) - 1
+            local_idx = int(index) - self._offsets[chunk_idx]
+            grouped[chunk_idx].append((out_idx, local_idx))
 
-        def _load(path):
-            c = torch.load(path, weights_only=False)
-            return c["targets"].get(task, [])
-
-        n_workers = min(len(self.chunk_paths), (os.cpu_count() or 4), 8)
-        if n_workers > 1 and len(self.chunk_paths) > 2:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                parts = list(pool.map(_load, self.chunk_paths))
-        else:
-            parts = [_load(p) for p in self.chunk_paths]
         values: List[float] = []
-        for part in parts:
-            values.extend(part)
+        values = [0.0] * sum(len(v) for v in grouped.values())
+        for chunk_idx, positions in grouped.items():
+            path = self.chunk_paths[chunk_idx]
+            c = torch.load(path, weights_only=False, map_location="cpu")
+            target = c["targets"].get(task, [])
+            for out_idx, local_idx in positions:
+                values[out_idx] = target[local_idx]
+            del c
         return torch.tensor(values, dtype=torch.float32)
 
     @property
@@ -435,9 +440,18 @@ class LazyChunkedGraphDataset(torch_data.Dataset):
 
 
 class _ASELMDBRow:
+    # Keys that are structural fields, not row data
+    _STRUCTURAL = frozenset({"atoms", "energy", "forces", "stress", "natoms", "id", "source", "data"})
+
     def __init__(self, payload: Dict[str, Any]):
         self._atoms = payload["atoms"]
-        self.data = payload.get("data", {}) or {}
+        # Start from nested 'data' sub-dict (ASE convention), then overlay any
+        # extra top-level keys (e.g. 'node_features' written by annotation scripts)
+        data = dict(payload.get("data", {}) or {})
+        for key, val in payload.items():
+            if key not in self._STRUCTURAL:
+                data.setdefault(key, val)
+        self.data = data
         self.id = payload.get("id")
 
     def toatoms(self):

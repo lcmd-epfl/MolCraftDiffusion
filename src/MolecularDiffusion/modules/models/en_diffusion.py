@@ -72,11 +72,18 @@ class EnVariationalDiffusion(torch.nn.Module):
         eval_mode: bool = False,
         debug: bool = False,
         use_noised_conditioning: bool = False,
+        reference_freeze_mode: str = "all",
     ):
         super().__init__()
+        if reference_freeze_mode not in {"all", "features_only"}:
+            raise ValueError(
+                "reference_freeze_mode must be one of {'all', 'features_only'}, "
+                f"got {reference_freeze_mode!r}"
+            )
         self.call = 0
         self.eval_mode = eval_mode
         self.debug = debug
+        self.reference_freeze_mode = reference_freeze_mode
 
         # Loss and parametrization settings
         assert loss_type in {"vlb", "l2"}
@@ -950,6 +957,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         context: Optional[torch.Tensor],
         t0_always: bool,
         reference_indices: Optional[Union[list, torch.Tensor]] = None,
+        reference_freeze_mode: str = "all",
     ) -> Tuple[torch.Tensor, dict]:
         """
         Computes the total training loss (VLB or L2) based on a randomly sampled timestep t.
@@ -1002,13 +1010,23 @@ class EnVariationalDiffusion(torch.nn.Module):
         z_t = alpha_t * xh + sigma_t * eps
 
         if reference_indices is not None:
-            # Freeze reference atoms (use clean xh)
-            z_t[:, reference_indices] = xh[:, reference_indices]
-            eps[:, reference_indices] = 0.0
-            z_t = torch.cat([
-                remove_mean_with_mask(z_t[:, :, :self.n_dims], node_mask),
-                z_t[:, :, self.n_dims:]
-            ], dim=2)
+            if reference_freeze_mode == "all":
+                z_t[:, reference_indices] = xh[:, reference_indices]
+                eps[:, reference_indices] = 0.0
+                z_t = torch.cat([
+                    remove_mean_with_mask(z_t[:, :, :self.n_dims], node_mask),
+                    z_t[:, :, self.n_dims:]
+                ], dim=2)
+            elif reference_freeze_mode == "features_only":
+                z_t[:, reference_indices, self.n_dims:] = xh[
+                    :, reference_indices, self.n_dims:
+                ]
+                eps[:, reference_indices, self.n_dims:] = 0.0
+            else:
+                raise ValueError(
+                    "reference_freeze_mode must be one of {'all', 'features_only'}, "
+                    f"got {reference_freeze_mode!r}"
+                )
 
         assert_mean_zero_with_mask(z_t[:, :, : self.n_dims], node_mask)
 
@@ -1078,6 +1096,19 @@ class EnVariationalDiffusion(torch.nn.Module):
                 n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask
             )
             z_0 = alpha_0 * xh + sigma_0 * eps_0
+            if reference_indices is not None:
+                if reference_freeze_mode == "all":
+                    z_0[:, reference_indices] = xh[:, reference_indices]
+                    eps_0[:, reference_indices] = 0.0
+                    z_0 = torch.cat([
+                        remove_mean_with_mask(z_0[:, :, :self.n_dims], node_mask),
+                        z_0[:, :, self.n_dims:]
+                    ], dim=2)
+                elif reference_freeze_mode == "features_only":
+                    z_0[:, reference_indices, self.n_dims:] = xh[
+                        :, reference_indices, self.n_dims:
+                    ]
+                    eps_0[:, reference_indices, self.n_dims:] = 0.0
 
             net_out_0 = self.phi(z_0, t_zeros, node_mask, edge_mask, context)
             loss_term_0 = -self.log_pxh_given_z0_without_constants(
@@ -1107,7 +1138,14 @@ class EnVariationalDiffusion(torch.nn.Module):
 
 
     # TODO outpaint not yet implemented
-    def compute_loss_pyG(self, mol_graph, context, t0_always, reference_indices=None):
+    def compute_loss_pyG(
+        self,
+        mol_graph,
+        context,
+        t0_always,
+        reference_indices=None,
+        reference_freeze_mode="all",
+    ):
         """Computes an estimator for the variational lower bound, or the simple loss (MSE).
         
         If reference_indices is specified, their atoms are frozen during the forward pass.
@@ -1510,6 +1548,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         edge_mask=None, 
         context=None,
         reference_indices=None,
+        reference_freeze_mode="all",
         mol_graph=None,
         ):
         """
@@ -1543,6 +1582,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 loss, loss_dict = self.compute_loss(
                     x, h, node_mask, edge_mask, context, 
                     reference_indices=reference_indices,
+                    reference_freeze_mode=reference_freeze_mode,
                     t0_always=t0_always, 
                 )
         else:
@@ -1551,6 +1591,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 loss, loss_dict = self.compute_loss_pyG(
                     mol_graph, context, 
                     reference_indices=reference_indices,
+                    reference_freeze_mode=reference_freeze_mode,
                     t0_always=t0_always, 
                 )
             else:
@@ -1558,6 +1599,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 loss, loss_dict = self.compute_loss(
                     x, h, node_mask, edge_mask, context, 
                     reference_indices=reference_indices,
+                    reference_freeze_mode=reference_freeze_mode,
                     t0_always=t0_always,
                 )
         neg_log_pxh = loss

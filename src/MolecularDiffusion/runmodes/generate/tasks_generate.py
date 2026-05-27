@@ -2,7 +2,11 @@
 
 from MolecularDiffusion.modules.tasks.task import Task
 from MolecularDiffusion.modules.tasks.pharmacophore import PharmacophoreGenerative  # noqa: F401 — registers class in Registry
-from MolecularDiffusion.utils.geom_utils import save_xyz_file, save_xyz_file_atomic_numbers
+from MolecularDiffusion.utils.geom_utils import (
+    remove_mean_with_mask,
+    save_xyz_file,
+    save_xyz_file_atomic_numbers,
+)
 
 import logging
 import glob

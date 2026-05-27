@@ -4,6 +4,7 @@ Adapted from scripts/train.py for package-level execution.
 """
 
 from typing import Any, Dict, Optional, Tuple
+import inspect
 import math
 import os
 import pickle
@@ -30,6 +31,7 @@ from MolecularDiffusion.utils import (
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
+
 
 
 def is_rank_zero():
@@ -165,7 +167,7 @@ def load_weights(task, ckpt_path, task_module=None):
             )
             cleaned_state_dict = {k: v for k, v in cleaned_state_dict.items() if k not in still_mismatched}
         missing, unexpected = task.load_state_dict(cleaned_state_dict, strict=False)
-
+        
         # Log new modules: keys present in the current model but absent from checkpoint
         new_modules = [k for k in model_state if k not in cleaned_state_dict and
                        not any(k in um for um in (unexpected or []))]
@@ -192,6 +194,7 @@ def load_weights(task, ckpt_path, task_module=None):
         log.info(f"Stored {len(ema_state_dict)} EMA parameters for deferred loading")
 
 
+
 # Lightning imports (optional)
 try:
     import pytorch_lightning as pl
@@ -204,6 +207,34 @@ try:
 except ImportError as e:
     LIGHTNING_AVAILABLE = False
     log.warning(f"PyTorch Lightning not found: {e}. Only original Engine available.")
+
+
+def evaluate_and_save(i, solver, task_module, trainer_module, logger_module, versioned_ckpt_path, use_amp, **kwargs):
+    """Helper to run evaluation and save checkpoints."""
+    if hasattr(task_module.task, "sample"):
+        output_generated_dir = os.path.join(versioned_ckpt_path, "generated_molecules")
+        os.makedirs(output_generated_dir, exist_ok=True)
+        return evaluate(
+            task_module.task_type, solver, i, kwargs.get("best_metrics", torch.inf), kwargs.get("best_checkpoints", []),
+            logger_module.logger, output_generated_dir=output_generated_dir,
+            generative_analysis=kwargs.get("generative_analysis", False),
+            n_samples=kwargs.get("n_samples", 100),
+            metric=kwargs.get("metric", "Validity Relax and connected"),
+            output_path=versioned_ckpt_path,
+            use_amp=use_amp, precision=trainer_module.precision,
+            use_posebuster=kwargs.get("use_posebuster", False),
+            batch_size=kwargs.get("batch_size", 1),
+            save_top_k=getattr(trainer_module, "save_top_k", 3),
+            save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
+        )
+    else:
+        return evaluate(
+            task_module.task_type, solver, i, kwargs.get("best_metrics", torch.inf), kwargs.get("best_checkpoints", []),
+            logger_module.logger, output_path=versioned_ckpt_path,
+            save_top_k=getattr(trainer_module, "save_top_k", 3),
+            save_every_val_epoch=getattr(trainer_module, "save_every_val_epoch", False),
+        )
+
 
 
 def evaluate_and_save(i, solver, task_module, trainer_module, logger_module, versioned_ckpt_path, use_amp, **kwargs):
@@ -235,7 +266,7 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module,
     """Training loop using original Engine."""
     trainer_module.get_optimizer()
     trainer_module.get_scheduler()
-
+    
     solver = Engine(
         task_module.task,
         data_module.train_set,
@@ -255,15 +286,15 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module,
         dir_wandb=trainer_module.output_path,
         tags_wandb=tags,
     )
-
+    
     # Resume from checkpoint if provided
     start_epoch = 0
     if resume_from_checkpoint:
         start_epoch = solver.resume(resume_from_checkpoint, strict=False)
         log.info(f"Resumed from epoch {start_epoch}")
-
+    
     use_amp = trainer_module.precision in ["bf16", 16]
-
+    
     best_checkpoints = []
     if hasattr(task_module.task, "sample"):
         models_to_save = {"node": task_module.task.node_dist_model}
@@ -285,41 +316,41 @@ def engine_wrapper(task_module, data_module, trainer_module, logger_module,
         from dataclasses import replace as _dcreplace
         _eval_cfg = _dcreplace(_eval_cfg, higher_is_better=kwargs["eval_higher_is_better"])
     best_metrics = -torch.inf if _eval_cfg.higher_is_better else torch.inf
-
+    
     # Create versioned checkpoint folder (like Lightning's version_X folders)
     versioned_ckpt_path = get_versioned_output_path(trainer_module.output_path)
-
+    
     # Adjust loop to continue from start_epoch
     for i in range(start_epoch, trainer_module.num_epochs):
         metric = solver.train(num_epoch=1, num_step=trainer_module.num_steps, use_amp=use_amp, precision=trainer_module.precision)
-
+        
         # Check if we should stop because num_steps was reached
         if trainer_module.num_steps is not None and solver.meter.batch_id >= trainer_module.num_steps:
             log.info(f"Terminating training loop after epoch {i} because num_steps={trainer_module.num_steps} was reached.")
             # Trigger final evaluation if not already done
             if i % trainer_module.validation_interval != 0:
                 best_metrics, best_checkpoints = evaluate_and_save(
-                    i, solver, task_module, trainer_module, logger_module,
-                    versioned_ckpt_path, use_amp, best_metrics=best_metrics,
+                    i, solver, task_module, trainer_module, logger_module, 
+                    versioned_ckpt_path, use_amp, best_metrics=best_metrics, 
                     best_checkpoints=best_checkpoints, **kwargs
                 )
             break
 
         if i % trainer_module.validation_interval == 0 or i == trainer_module.num_epochs - 1:
             best_metrics, best_checkpoints = evaluate_and_save(
-                i, solver, task_module, trainer_module, logger_module,
-                versioned_ckpt_path, use_amp, best_metrics=best_metrics,
+                i, solver, task_module, trainer_module, logger_module, 
+                versioned_ckpt_path, use_amp, best_metrics=best_metrics, 
                 best_checkpoints=best_checkpoints, **kwargs
             )
     return best_metrics, solver
 
 
-def lightning_wrapper(task_module, data_module, trainer_module, logger_module, engine_cfg,
+def lightning_wrapper(task_module, data_module, trainer_module, logger_module, engine_cfg, 
                       ckpt_path=None, monitor_metric=None, monitor_mode=None, model_config=None, load_weights_from=None, **kwargs):
     """Training using PyTorch Lightning Trainer."""
     if not LIGHTNING_AVAILABLE:
         raise ImportError("PyTorch Lightning required. Install with: pip install pytorch-lightning")
-
+    
     if hasattr(task_module.task, "preprocess"):
         log.info("Calling task.preprocess() for Lightning engine")
         _t_pre = time.perf_counter()
@@ -327,15 +358,16 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
         log.info(f"task.preprocess() completed in {time.perf_counter() - _t_pre:.2f}s")
         if result is not None:
             data_module.train_set, data_module.valid_set, data_module.test_set = result
-
+    
     pl_data_module = MolecularDiffusionDataModule(
         data_module=data_module,
         batch_size=data_module.batch_size,
         num_workers=int(OmegaConf.select(engine_cfg, "num_workers", default=0) or 0),
         pin_memory=bool(OmegaConf.select(engine_cfg, "pin_memory", default=True)),
         persistent_workers=bool(OmegaConf.select(engine_cfg, "persistent_workers", default=False)),
+        prefetch_factor=int(OmegaConf.select(engine_cfg, "prefetch_factor", default=1) or 1),
     )
-
+    
     pl_module = EngineLightning(
         task=task_module.task,
         optimizer_config={
@@ -344,6 +376,7 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
             "weight_decay": trainer_module.weight_decay,
             "betas": trainer_module.betas,
             "eps": trainer_module.eps,
+            "lora_lr": getattr(trainer_module, "lora_lr", None),
         },
         scheduler_config={
             "scheduler": trainer_module.scheduler_choice,
@@ -361,9 +394,9 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
     # Inject factory dimension adjustment logic so Lightning can use it natively
     if hasattr(task_module, "adjust_state_dict"):
         pl_module._custom_state_dict_adjuster = task_module.adjust_state_dict
-
+        
     callbacks = []
-
+    
     if hasattr(task_module.task, "sample") and kwargs.get("generative_analysis"):
         callbacks.append(GenerativeEvalCallback(
             n_samples=kwargs.get("n_samples", 100),
@@ -373,7 +406,7 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
             use_posebuster=kwargs.get("use_posebuster", False),
             monitor_metric=monitor_metric,
         ))
-
+    
     # Checkpoint callback
     # Handle OmegaConf ListConfig properly
     if monitor_metric is not None:
@@ -391,7 +424,7 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
     else:
         monitor_metric_key = "val/loss"
         mode = "min"
-
+    
     # Handle save_every_val_epoch
     save_top_k = trainer_module.save_top_k
     if getattr(trainer_module, "save_every_val_epoch", False) or kwargs.get("save_every_val_epoch", False):
@@ -405,10 +438,10 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
         filename=f"epoch={{epoch}}-{monitor_metric_key.replace('/', '_').replace(' ', '_')}={{{monitor_metric_key}:.3f}}",
         save_last=True,
     ))
-
+    
     # Learning rate monitor for wandb logging
     callbacks.append(LearningRateMonitor(logging_interval='step'))
-
+    
     trainer_config = OmegaConf.to_container(engine_cfg.trainer_config, resolve=True)
     if trainer_module.num_steps is not None:
         log.info(f"Setting max_steps to {trainer_module.num_steps} for Lightning trainer")
@@ -421,7 +454,7 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
 
     precision_map = {32: 32, 16: "16-mixed", "16": "16-mixed", "bf16": "bf16-mixed"}
     trainer_config["precision"] = precision_map.get(trainer_config.get("precision", 32), 32)
-
+    
     if logger_module.logger == "wandb":
         pl_logger = pl.loggers.WandbLogger(
             project=logger_module.project_wandb,
@@ -431,11 +464,14 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
         )
     else:
         pl_logger = True
-
+    
     trainer = hydra.utils.instantiate(trainer_config, callbacks=callbacks, logger=pl_logger)
-
+    
     if ckpt_path:
-        trainer.fit(pl_module, datamodule=pl_data_module, ckpt_path=ckpt_path)
+        fit_kwargs = {"datamodule": pl_data_module, "ckpt_path": ckpt_path}
+        if "weights_only" in inspect.signature(trainer.fit).parameters:
+            fit_kwargs["weights_only"] = False
+        trainer.fit(pl_module, **fit_kwargs)
     else:
         if load_weights_from:
             log.info(f"Triggering EngineLightning.on_load_checkpoint framework loader from {load_weights_from}")
@@ -491,7 +527,7 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
                 log.warning("Could not restore property_norms")
 
         trainer.fit(pl_module, datamodule=pl_data_module)
-
+    
     return trainer.callback_metrics, trainer
 
 
@@ -529,7 +565,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         with open(config_path, "w") as f:
             OmegaConf.save(config=cfg, f=f)
         log.info(f"Configuration saved to {config_path}")
-
+    
     if cfg.get("seed"):
         seed_everything(cfg.seed, workers=True)
 
@@ -537,15 +573,21 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     eval_metric_key = engine_cfg.get("eval_metric_key", None)
     eval_higher_is_better = engine_cfg.get("eval_higher_is_better", None)
 
+
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module: DataModule = hydra.utils.instantiate(cfg.data, task_type=cfg.tasks.task_type)
     _t_load = time.perf_counter()
     data_module.load()
     log.info(f"data_module.load() completed in {time.perf_counter() - _t_load:.2f}s")
-
+    
     log.info(f"Instantiating task <{cfg.tasks._target_}>")
     data_point_chk = data_module.train_set[0]
-    node_feature_0 = getattr(data_point_chk, "node_feature", None)
+    if isinstance(data_point_chk, dict):
+        node_feature_0 = data_point_chk.get("node_feature", None)
+        if node_feature_0 is None and "graph" in data_point_chk:
+            node_feature_0 = getattr(data_point_chk["graph"], "x", None)
+    else:
+        node_feature_0 = getattr(data_point_chk, "node_feature", None)
     if node_feature_0 is not None:
         n_dim = node_feature_0.shape[1]
     else:
@@ -557,18 +599,52 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     factory_cfg = cfg.tasks
     overrides = {}
-
+    data_atom_vocab = None
+    
     if "tasks_egt" in factory_cfg._target_ or "tasks_esen" in factory_cfg._target_ or "diffusion_tabasco" in factory_cfg._target_:
         overrides["train_set"] = data_module.train_set
         if "condition_names" in factory_cfg:
             overrides["task_names"] = factory_cfg.condition_names
-
+            
     if "atom_vocab" in cfg.data:
-        overrides["atom_vocab"] = list(cfg.data.atom_vocab)
-
+        data_atom_vocab = list(cfg.data.atom_vocab)
+        
     if cfg.data.get("allow_unknown", False):
-        overrides["atom_vocab"].append("Suisei")
+        if data_atom_vocab is None:
+            data_atom_vocab = []
+        data_atom_vocab.append("Suisei")
 
+    if data_atom_vocab is not None:
+        overrides["atom_vocab"] = data_atom_vocab
+
+    base_feature_dim = len(data_atom_vocab or list(factory_cfg.get("atom_vocab", [])))
+    if not cfg.data.get("use_ohe_feature", True):
+        base_feature_dim = 0
+    inferred_extra_dim = max(0, int(n_dim) - base_feature_dim)
+    configured_extra_norm_values = list(factory_cfg.get("extra_norm_values", []) or [])
+    if inferred_extra_dim > 0:
+        if configured_extra_norm_values and len(configured_extra_norm_values) != inferred_extra_dim:
+            raise ValueError(
+                "Node feature dimensionality mismatch: dataset provides "
+                f"{n_dim} node feature columns ({base_feature_dim} atom OHE + "
+                f"{inferred_extra_dim} extra), but tasks.extra_norm_values has "
+                f"{len(configured_extra_norm_values)} entries. Set it to length "
+                f"{inferred_extra_dim}, or remove it to use unit scaling."
+            )
+        if not configured_extra_norm_values:
+            overrides["extra_norm_values"] = [1.0] * inferred_extra_dim
+        log.info(
+            "Detected %d extra node feature dimensions from data.node_feature_choice=%s",
+            inferred_extra_dim,
+            cfg.data.get("node_feature_choice", None),
+        )
+
+    node_feature_choice = cfg.data.get("node_feature_choice", None)
+    if node_feature_choice is not None:
+        overrides["node_feature"] = node_feature_choice
+        overrides["node_feature_choice"] = node_feature_choice
+    overrides["node_feature_dim"] = inferred_extra_dim
+    
     if cfg.tasks.get("metrics", None) == "valid_posebuster":
         overrides["use_posebuster"] = True
         try:
@@ -577,14 +653,17 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             log.warning("PoseBuster not installed. Falling back to 'Validity Relax and connected'.")
             overrides["use_posebuster"] = False
             overrides["metrics"] = ["Validity Relax and connected"]
-
+        
     task_module = hydra.utils.instantiate(factory_cfg, **overrides)
     task_module.build()
-
+    task_module.task.node_feature = node_feature_choice
+    task_module.task.node_feature_choice = node_feature_choice
+    task_module.task.node_feature_dim = inferred_extra_dim
+    
     # Optional: Load weights from checkpoint (without resuming full state)
     if cfg.trainer.get("load_weights_from"):
         load_weights(task_module.task, cfg.trainer.load_weights_from, task_module=task_module)
-
+    
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     trainer_module: OptimSchedulerFactory = hydra.utils.instantiate(
         cfg.trainer, parameters=task_module.task.parameters()
@@ -593,7 +672,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     name_wandb = trainer_module.output_path.split('/')[-1] if "/" in trainer_module.output_path else trainer_module.output_path
     log.info(f"Instantiating loggers... <{cfg.logger._target_}>")
     logger_module: Logger = hydra.utils.instantiate(cfg.logger, name_wandb=name_wandb)
-
+    
     object_dict = {
         "cfg": cfg,
         "datamodule": data_module,
@@ -604,9 +683,11 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     log.info("Logging hyperparameters!")
     log_hyperparameters(object_dict)
-
+    
     engine_type = cfg.get("engine", {}).get("engine_type", "original")
     log.info(f"Using engine: {engine_type}")
+
+
 
     # Extract top-level tags for wandb
     tags = cfg.get("tags", None)
@@ -657,7 +738,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 tags=tags,
                 load_weights_from=cfg.trainer.get("load_weights_from", None),
             )
-
+    
     elif engine_type == "original":
         resume_ckpt = cfg.trainer.get("resume_from_checkpoint", None)
         metrics = engine_wrapper(
@@ -709,7 +790,7 @@ def log_hyperparameters(object_dict: dict):
         log.info(f"model/params/total: {total}")
         log.info(f"model/params/trainable: {trainable}")
         log.info("=" * 54 + "\n")
-
+    
     log.info("========== End of Hyperparameters ==========\n")
 
 

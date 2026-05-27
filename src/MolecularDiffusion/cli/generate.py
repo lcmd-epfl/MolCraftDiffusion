@@ -203,7 +203,13 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
     raw_ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
     _validate_task_type(raw_ckpt, expected_task_type)
 
-    edm_stats = {"node": None, "prop": None}
+    edm_stats = {
+        "node": None,
+        "prop": None,
+        "reference_freeze_mode": None,
+        "reference_feature_stats": None,
+        "reference_scaffold": None,
+    }
     stat_path = os.path.join(chkpt_directory, "edm_stat.pkl")
     if os.path.exists(stat_path):
         try:
@@ -217,6 +223,13 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
                 edm_stats["prop"] = loaded_stats["prop"]
             elif "prop_dist_model" in loaded_stats:
                 edm_stats["prop"] = loaded_stats["prop_dist_model"]
+            for key in (
+                "reference_freeze_mode",
+                "reference_feature_stats",
+                "reference_scaffold",
+            ):
+                if key in loaded_stats:
+                    edm_stats[key] = loaded_stats[key]
         except Exception as e:
             log.warning(f"Failed to load edm_stat.pkl: {e}")
 
@@ -224,11 +237,25 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0)
     engine = engine.load_from_checkpoint(model_path, interference_mode=True)
     task = engine.model
     _stamp_condition_names(task, raw_ckpt)
+    for key in (
+        "reference_indices",
+        "reference_freeze_mode",
+        "reference_feature_stats",
+        "reference_scaffold",
+    ):
+        if key in raw_ckpt:
+            setattr(task, key, raw_ckpt[key])
 
     if edm_stats["node"] is not None:
         task.node_dist_model = edm_stats["node"]
     if edm_stats["prop"] is not None:
         task.prop_dist_model = edm_stats["prop"]
+    if edm_stats["reference_freeze_mode"] is not None:
+        task.reference_freeze_mode = edm_stats["reference_freeze_mode"]
+    if edm_stats["reference_feature_stats"] is not None:
+        task.reference_feature_stats = edm_stats["reference_feature_stats"]
+    if edm_stats["reference_scaffold"] is not None:
+        task.reference_scaffold = edm_stats["reference_scaffold"]
 
     _apply_total_step(task, total_step)
     task.eval()

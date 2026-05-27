@@ -24,6 +24,7 @@ from MolecularDiffusion.utils import (
     check_stability,
     compute_mean_mad_from_dataloader,
     prepare_context,
+    prepare_context_pyG,
     random_rotation,
     remove_mean_pyG,
     remove_mean_with_mask,
@@ -54,6 +55,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         normalize_condition: str = None,
         sp_regularizer: SP_regularizer = None,
         reference_indices: List = None, # For OP task
+        reference_freeze_mode: str = "all",
     ):
         """
         Generative Diffusion model for molecular structures.
@@ -69,6 +71,11 @@ class GeomMolecularGenerative(Task, core.Configurable):
         - sp_regularizer (SP_regularizer): The self-pace learning regularizer for the model. Default is None.
         """
         super(GeomMolecularGenerative, self).__init__()
+        if reference_freeze_mode not in {"all", "features_only"}:
+            raise ValueError(
+                "reference_freeze_mode must be one of {'all', 'features_only'}, "
+                f"got {reference_freeze_mode!r}"
+            )
         self.model = diffusion_model
         self.node_dist_model = node_dist_model
         self.prop_dist_model = prop_dist_model
@@ -78,7 +85,9 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self.condition = condition
         self.sp_regularizer = sp_regularizer
         self.reference_indices = reference_indices
+        self.reference_freeze_mode = reference_freeze_mode
         self._reference_scaffold = None
+        self.reference_feature_stats = None
         self.normalize_condition = normalize_condition
         
         self.n_dim_data = self.model.in_node_nf 
@@ -171,6 +180,76 @@ class GeomMolecularGenerative(Task, core.Configurable):
         )
         return xh_ref.unsqueeze(0).detach().cpu()
 
+    def _compute_reference_feature_stats(self, train_set):
+        """Compute modal frozen node features and atomic numbers."""
+        ref_idx = self.reference_indices
+        if not ref_idx:
+            return None
+
+        max_idx = max(ref_idx)
+        feature_rows = [[] for _ in ref_idx]
+        charge_rows = [[] for _ in ref_idx]
+        _t = time.perf_counter()
+
+        for sample in train_set:
+            if "graph" in sample:
+                g = sample["graph"]
+                x = g.x
+                charges = g.atomic_numbers
+            else:
+                x = sample["node_feature"]
+                charges = sample.get("charges", None)
+                if x.dim() == 3:
+                    x = x.squeeze(0)
+                if charges is not None and charges.dim() == 2:
+                    charges = charges.squeeze(0)
+
+            if x.shape[0] <= max_idx:
+                continue
+            if charges is None:
+                charges = torch.zeros(x.shape[0], device=x.device)
+
+            for out_idx, atom_idx in enumerate(ref_idx):
+                feature_rows[out_idx].append(x[atom_idx].detach().float().cpu())
+                charge_rows[out_idx].append(
+                    charges[atom_idx].detach().float().cpu().view(())
+                )
+
+        if not feature_rows or any(len(rows) == 0 for rows in feature_rows):
+            logger.warning(
+                "preprocess: no valid molecules found for reference feature stats"
+            )
+            return None
+
+        modal_features = []
+        modal_charges = []
+        for features_at_idx, charges_at_idx in zip(feature_rows, charge_rows):
+            features = torch.stack(features_at_idx, dim=0)
+            charges = torch.stack(charges_at_idx, dim=0)
+
+            uniq_features, feature_counts = torch.unique(
+                features, dim=0, return_counts=True
+            )
+            modal_features.append(uniq_features[torch.argmax(feature_counts)])
+
+            uniq_charges, charge_counts = torch.unique(charges, return_counts=True)
+            modal_charges.append(uniq_charges[torch.argmax(charge_counts)])
+
+        _, nf, nch = self.model.norm_values
+        node_feature = torch.stack(modal_features, dim=0) / nf
+        atomic_numbers = (torch.stack(modal_charges, dim=0) / nch).unsqueeze(-1)
+        stats = {
+            "reference_indices": list(ref_idx),
+            "node_feature": node_feature.unsqueeze(0).detach().cpu(),
+            "atomic_numbers": atomic_numbers.unsqueeze(0).detach().cpu(),
+        }
+        logger.info(
+            f"preprocess: modal reference feature stats from "
+            f"{len(feature_rows[0])}/{len(train_set)} molecules in "
+            f"{time.perf_counter() - _t:.2f}s"
+        )
+        return stats
+
     def preprocess(
         self,
         train_set=None,
@@ -260,6 +339,9 @@ class GeomMolecularGenerative(Task, core.Configurable):
 
             if self.reference_indices is not None:
                 self.reference_scaffold = self._compute_mean_scaffold(train_set)
+                self.reference_feature_stats = self._compute_reference_feature_stats(
+                    train_set
+                )
         else:
             self.atomic_numbers = []
             self.atom_decoder = []
@@ -268,6 +350,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             self.max_n_nodes = 0
             self.n_node_dist = {}
             self.reference_scaffold = None
+            self.reference_feature_stats = None
 
 
     def forward(self, batch):
@@ -300,7 +383,13 @@ class GeomMolecularGenerative(Task, core.Configurable):
             else:
                 context = None
             batch["graph"].pos = remove_mean_pyG(batch["graph"].pos, batch["graph"].batch)
-            nll = self.model(x=None, h=None, mol_graph=batch, reference_indices=self.reference_indices)
+            nll = self.model(
+                x=None,
+                h=None,
+                mol_graph=batch,
+                reference_indices=self.reference_indices,
+                reference_freeze_mode=self.reference_freeze_mode,
+            )
             N = batch["graph"].natoms
         else:
             node_mask = batch["node_mask"].unsqueeze(2)
@@ -337,7 +426,15 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 assert_correctly_masked(context, node_mask)
             else:
                 context = None
-            nll = self.model(x, h, node_mask, edge_mask, context, reference_indices=self.reference_indices)
+            nll = self.model(
+                x,
+                h,
+                node_mask,
+                edge_mask,
+                context,
+                reference_indices=self.reference_indices,
+                reference_freeze_mode=self.reference_freeze_mode,
+            )
 
             N = node_mask.squeeze(2).sum(1).long()
         log_pN = self.node_dist_model.log_prob(N)
@@ -382,7 +479,13 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 assert_correctly_masked(context, node_mask)
             else:
                 context = None
-            nll = self.model(x=None, h=None, mol_graph=batch, reference_indices=self.reference_indices)
+            nll = self.model(
+                x=None,
+                h=None,
+                mol_graph=batch,
+                reference_indices=self.reference_indices,
+                reference_freeze_mode=self.reference_freeze_mode,
+            )
             N = batch["graph"].natoms
         else:
             node_mask = batch["node_mask"].unsqueeze(2)
@@ -417,8 +520,15 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 context = None
             N = node_mask.squeeze(2).sum(1).long()
   
-            nll = self.model(x, h, node_mask, edge_mask, context, 
-                            reference_indices=self.reference_indices)
+            nll = self.model(
+                x,
+                h,
+                node_mask,
+                edge_mask,
+                context,
+                reference_indices=self.reference_indices,
+                reference_freeze_mode=self.reference_freeze_mode,
+            )
 
         log_pN = self.node_dist_model.log_prob(N)
         assert nll.size() == log_pN.size()

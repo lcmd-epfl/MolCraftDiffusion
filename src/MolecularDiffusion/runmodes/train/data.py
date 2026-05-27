@@ -317,6 +317,14 @@ class DataModule:
             if is_main_process:
                 print(f"[DataModule] Raw data processing done in {time.perf_counter() - _t:.2f}s ({len(dataset):,} samples)")
 
+        dataset.max_atom = self.max_atom
+        dataset.atom_vocab = self.atom_vocab
+        dataset.node_feature = self.node_feature_choice
+        dataset.node_feature_choice = self.node_feature_choice
+        dataset.config_dict = DatasetConfigDict(
+            self.with_hydrogen, self.node_feature_choice, self.max_atom
+        )
+
         # split
         total = len(dataset)
         test_ratio = (1 - self.train_ratio) / 2
