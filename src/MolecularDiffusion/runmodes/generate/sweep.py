@@ -28,6 +28,7 @@ search:
     n_initial: 5            # Optuna warm-up trials before GP/TPE uses surrogate
     random_state: 0
     sampler: gp             # gp (default, requires optuna>=3.6) or tpe
+  early_fail_batches: 3      # optional: stop generation after N failed batches before any success
 
 collect format
 --------------
@@ -55,10 +56,12 @@ import itertools
 import json
 import math
 import random
+import re
 import shutil
 import subprocess
 import sys
 import warnings
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -106,6 +109,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Run at most N new combinations (already-recorded runs don't count)")
     p.add_argument("--retry-failed", action="store_true",
                    help="Retry configurations already recorded with failed generation/evaluation")
+    p.add_argument("--early-fail-batches", type=int, default=None, metavar="N",
+                   help=("Stop a generation trial after N consecutive 'Sampling failed' "
+                         "batches before any successful batch. Defaults to "
+                         "search.early_fail_batches or disabled."))
     return p.parse_args(argv)
 
 
@@ -244,18 +251,78 @@ def _base_combo(base_config: str, param_names: list[str]) -> dict[str, Any] | No
 # Command execution
 # ---------------------------------------------------------------------------
 
-def _run(cmd: list[str], log_path: Path, dry_run: bool) -> bool:
-    """Run *cmd*, tee output to *log_path*. Returns True on success."""
+@dataclass(frozen=True)
+class RunResult:
+    ok: bool
+    early_stopped: bool = False
+    reason: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+_SAMPLING_FAILED_RE = re.compile(r"\[Batch\s+\d+\]\s+Sampling failed:")
+_NONZERO_SUCCESS_RE = re.compile(r"success=(?!0(?:\D|$))(\d+)")
+
+
+def _run(
+    cmd: list[str],
+    log_path: Path,
+    dry_run: bool,
+    early_fail_batches: int | None = None,
+) -> RunResult:
+    """Run *cmd*, tee output to *log_path*, and optionally stop doomed trials."""
     print("  $ " + " ".join(cmd))
     if dry_run:
-        return True
+        return RunResult(ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    monitor_failures = early_fail_batches is not None and early_fail_batches > 0
+    consecutive_failures = 0
+    saw_success = False
+    early_reason = ""
+
     with open(log_path, "w") as fh:
-        result = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
-    if result.returncode != 0:
-        print(f"  [WARN] exit {result.returncode} — see {log_path}")
-        return False
-    return True
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            fh.write(line)
+            fh.flush()
+            if not monitor_failures:
+                continue
+            if _NONZERO_SUCCESS_RE.search(line):
+                saw_success = True
+                consecutive_failures = 0
+            if _SAMPLING_FAILED_RE.search(line) and not saw_success:
+                consecutive_failures += 1
+                if consecutive_failures >= early_fail_batches:
+                    early_reason = (
+                        f"{consecutive_failures} consecutive generation batches failed "
+                        "before any successful batch"
+                    )
+                    fh.write(f"\n[SWEEP] Early-stopping trial: {early_reason}\n")
+                    fh.flush()
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    break
+        result_code = proc.wait()
+
+    if early_reason:
+        print(f"  [WARN] early-stopped — {early_reason}; see {log_path}")
+        return RunResult(ok=False, early_stopped=True, reason=early_reason)
+    if result_code != 0:
+        print(f"  [WARN] exit {result_code} — see {log_path}")
+        return RunResult(ok=False)
+    return RunResult(ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +397,8 @@ def _collect_defaults(out_dir: Path) -> dict[str, Any]:
         if "both_hit" in df:
             m["n_both_hit"] = int(df["both_hit"].sum())
             m["hit_rate_both"] = round(float(df["both_hit"].mean()), 4)
+        if "both_hit_mid" in df:
+            m["n_both_hit_mid"] = int(df["both_hit_mid"].sum())
             m["hit_rate_both_mid"] = round(float(df["both_hit_mid"].mean()), 4)
         if "geometry_hit" in df:
             m["geom_hit_rate"] = round(float(df["geometry_hit"].mean()), 4)
@@ -531,6 +600,16 @@ def _make_optuna_study(
     return study
 
 
+def _failed_objective_value(search_cfg: dict[str, Any]) -> tuple[str, float]:
+    """Return the objective metric and value to record for failed trials."""
+    objective = search_cfg.get("objective", {})
+    metric = objective.get("metric", "hit_rate_both")
+    if "failed_value" in objective:
+        return metric, float(objective["failed_value"])
+    mode = str(objective.get("mode", "max")).lower()
+    return metric, 1e12 if mode == "min" else 0.0
+
+
 def _select_optuna_combo(
     study: "optuna.Study",
     param_names: list[str],
@@ -566,14 +645,34 @@ def _select_optuna_combo(
 # Main
 # ---------------------------------------------------------------------------
 
+def _load_sweep_config(cfg_path: Path) -> dict[str, Any]:
+    """Load and validate the top-level sweep YAML structure."""
+    with open(cfg_path, encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+
+    if not isinstance(cfg, dict):
+        loaded = type(cfg).__name__
+        sys.exit(f"Sweep config must be a YAML mapping, got {loaded}: {cfg_path}")
+
+    required = ("base_config", "sweep_dir", "eval_script")
+    missing = [key for key in required if key not in cfg]
+    if missing:
+        keys = ", ".join(str(key) for key in cfg.keys()) or "<none>"
+        sys.exit(
+            f"Sweep config missing required key(s): {', '.join(missing)}\n"
+            f"Loaded keys from {cfg_path}: {keys}"
+        )
+
+    return cfg
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     cfg_path = Path(args.sweep_config)
     if not cfg_path.exists():
         sys.exit(f"Sweep config not found: {cfg_path}")
 
-    with open(cfg_path) as fh:
-        cfg = yaml.safe_load(fh)
+    cfg = _load_sweep_config(cfg_path)
 
     base_config: str = cfg["base_config"]
     sweep_dir = Path(cfg["sweep_dir"])
@@ -607,20 +706,24 @@ def main(argv: list[str] | None = None) -> None:
         value_lists.append(lp_vals)
         display_value_counts.append(len(lp_vals))
 
+    base_first = bool(search_cfg.get("include_base_config", False))
+    base_combo: dict[str, Any] | None = None
+    if base_first:
+        base_combo = _base_combo(base_config, param_names)
+        if base_combo is not None:
+            for i, param in enumerate(param_names):
+                if all(_jsonable(v) != _jsonable(base_combo[param]) for v in value_lists[i]):
+                    value_lists[i].append(base_combo[param])
+            display_value_counts = [len(vl) for vl in value_lists]
+
     combos = [
         dict(zip(param_names, vals))
         for vals in itertools.product(*value_lists)
     ]
-    base_first = bool(search_cfg.get("include_base_config", False))
-    if base_first:
-        base = _base_combo(base_config, param_names)
-        if base is not None:
-            for i, param in enumerate(param_names):
-                if all(_jsonable(v) != _jsonable(base[param]) for v in value_lists[i]):
-                    value_lists[i].append(base[param])
-            base_id = _combo_key(base)
-            combos = [c for c in combos if _combo_key(c) != base_id]
-            combos.insert(0, base)
+    if base_first and base_combo is not None:
+        base_id = _combo_key(base_combo)
+        combos = [c for c in combos if _combo_key(c) != base_id]
+        combos.insert(0, base_combo)
 
     n_grid = len(combos)
 
@@ -633,6 +736,13 @@ def main(argv: list[str] | None = None) -> None:
     if base_first:
         grid_desc += " + base_config"
     collect_src = "YAML collect:" if collect_cfg else "built-in defaults"
+    early_fail_batches = (
+        args.early_fail_batches
+        if args.early_fail_batches is not None
+        else search_cfg.get("early_fail_batches")
+    )
+    if early_fail_batches is not None:
+        early_fail_batches = int(early_fail_batches)
     limit_str = f"  (--max-runs {args.max_runs})" if args.max_runs else ""
     pending_count = sum(
         1 for c in combos
@@ -647,6 +757,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Output  : {sweep_dir}")
     if args.dry_run:
         print("Mode    : DRY RUN")
+    if early_fail_batches is not None and early_fail_batches > 0:
+        print(f"Early stop: {early_fail_batches} consecutive failed generation batch(es)")
 
     if not args.dry_run:
         sweep_dir.mkdir(parents=True, exist_ok=True)
@@ -669,7 +781,13 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\n[--max-runs {args.max_runs} reached — stopping]")
             break
 
-        if search_method == "grid":
+        if (
+            base_first
+            and base_combo is not None
+            and _combo_key(base_combo) in {_combo_key(c) for c in available}
+        ):
+            combo = base_combo
+        elif search_method == "grid":
             combo = available[0]
         elif search_method == "bayesian":
             available_ids = {_combo_key(c) for c in available}
@@ -715,23 +833,31 @@ def main(argv: list[str] | None = None) -> None:
             _upsert_result(summary_csv, started_row)
 
         # Generation
-        gen_ok = True
+        gen_result = RunResult(ok=True)
         if not args.skip_gen:
             overrides = [f"{p}={_hydra_val(v)}" for p, v in combo.items()]
             overrides += [f"interference.output_path={out_dir}"]
             overrides += extra_overrides
-            gen_ok = _run(["MolCraftDiff", "generate", base_config] + overrides,
-                          out_dir / "sweep_gen.log", args.dry_run)
+            gen_result = _run(
+                ["MolCraftDiff", "generate", base_config] + overrides,
+                out_dir / "sweep_gen.log",
+                args.dry_run,
+                early_fail_batches=early_fail_batches,
+            )
+        gen_ok = bool(gen_result)
 
         # Evaluation (immediately after generation)
         eval_ok = True
-        if not args.skip_eval:
+        if gen_ok and not args.skip_eval:
             for j, script in enumerate(eval_scripts):
                 log = out_dir / (
                     "sweep_eval.log" if len(eval_scripts) == 1
                     else f"sweep_eval_{j}.log"
                 )
-                eval_ok = _run(["bash", script, str(out_dir)], log, args.dry_run) and eval_ok
+                eval_ok = bool(_run(["bash", script, str(out_dir)], log, args.dry_run)) and eval_ok
+        elif not gen_ok and not args.skip_eval:
+            print("  [WARN] skipping evaluation because generation failed")
+            eval_ok = False
 
         if args.dry_run:
             dry_run_seen.add(config_id)
@@ -742,9 +868,16 @@ def main(argv: list[str] | None = None) -> None:
         row["status"] = "complete" if (gen_ok and eval_ok) else "failed"
         row["gen_ok"] = gen_ok
         row["eval_ok"] = eval_ok
+        row["early_stopped"] = gen_result.early_stopped
+        if gen_result.reason:
+            row["failure_reason"] = gen_result.reason
         row["completed_at"] = datetime.now().isoformat(timespec="seconds")
         if out_dir.exists():
             row.update(_collect(out_dir, collect_cfg))
+        if not (gen_ok and eval_ok):
+            metric, bad_value = _failed_objective_value(search_cfg)
+            if metric not in row or pd.isna(row[metric]):
+                row[metric] = bad_value
         _upsert_result(summary_csv, row)
         status = "ok" if (gen_ok and eval_ok) else f"gen={'ok' if gen_ok else 'FAIL'} eval={'ok' if eval_ok else 'FAIL'}"
         print(f"  → recorded [{status}] in {summary_csv.name}")
@@ -758,4 +891,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

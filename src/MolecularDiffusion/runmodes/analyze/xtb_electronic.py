@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,64 @@ MOLECULAR_LEVEL_GROUPS = {"energy", "dipole", "reactivity", "global"}
 
 # Occupation threshold: orbitals with occupation > this are considered filled.
 _OCC_THRESHOLD = 0.5
+_AUTO_CHARGE_ORDER = (1, -1)
+_UNUSUAL_CHARGE_ATOMIC_NUMS = {1, 6, 9, 17, 35, 53}
+
+
+@dataclass(frozen=True)
+class _ChargeCandidate:
+    charge: int
+    valid: bool
+    reason: str
+    score: tuple[int, int, int, int] | None = None
+    formal_charge: int | None = None
+    radical_electrons: int | None = None
+    fragments: int | None = None
+    formal_charge_centers: int | None = None
+    abs_formal_charge_sum: int | None = None
+    unusual_formal_charges: int | None = None
+    valence_violations: int | None = None
+    smiles: str | None = None
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "charge": self.charge,
+            "valid": self.valid,
+            "reason": self.reason,
+            "score": self.score,
+            "formal_charge": self.formal_charge,
+            "radical_electrons": self.radical_electrons,
+            "fragments": self.fragments,
+            "formal_charge_centers": self.formal_charge_centers,
+            "abs_formal_charge_sum": self.abs_formal_charge_sum,
+            "unusual_formal_charges": self.unusual_formal_charges,
+            "valence_violations": self.valence_violations,
+            "smiles": self.smiles,
+        }
+
+
+@dataclass(frozen=True)
+class _AutoChargeSelection:
+    charge: int | None
+    reason: str
+    candidates: list[_ChargeCandidate]
+
+
+@dataclass(frozen=True)
+class _InputRecord:
+    xyz_path: Path
+    row_id: int | None = None
+    atoms: Any | None = None
+    key_value_pairs: dict[str, Any] | None = None
+    data: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _BatchInput:
+    input_path: Path
+    xyz_files: list[Path]
+    records_by_filename: dict[str, _InputRecord]
+    is_db: bool = False
 
 
 def _solvent_map() -> dict[str, Any]:
@@ -100,6 +159,222 @@ def _method_to_param(method: int | str) -> Any:
         "use method='ptb' for the binary-based PTB path."
     )
     raise ValueError(msg)
+
+
+def _total_electrons(numbers: np.ndarray, charge: int) -> int:
+    return int(np.sum(numbers)) - charge
+
+
+def _ptb_auto_charge_needed(
+    numbers: np.ndarray,
+    method: int | str,
+    charge: int,
+    n_unpaired: int,
+) -> bool:
+    if str(method).lower() != "ptb" or charge != 0 or n_unpaired != 0:
+        return False
+    return _total_electrons(numbers, charge) % 2 == 1
+
+
+def _atom_valence_violation(atom: Any) -> bool:
+    checker = getattr(atom, "HasValenceViolation", None)
+    if checker is None:
+        return False
+    try:
+        return bool(checker())
+    except Exception:
+        return False
+
+
+def _score_charge_candidate(
+    mol: Any,
+    charge: int,
+    smiles: str | None = None,
+) -> _ChargeCandidate:
+    """Score an already sanitized RDKit-like molecule for auto-charge choice."""
+    try:
+        atoms = list(mol.GetAtoms())
+    except Exception as exc:
+        return _ChargeCandidate(charge, False, f"invalid_mol:{exc}")
+
+    formal_charges = [int(atom.GetFormalCharge()) for atom in atoms]
+    radicals = [int(atom.GetNumRadicalElectrons()) for atom in atoms]
+    atom_nums = [int(atom.GetAtomicNum()) for atom in atoms]
+
+    formal_charge = sum(formal_charges)
+    radical_electrons = sum(radicals)
+    formal_charge_centers = sum(1 for fc in formal_charges if fc != 0)
+    abs_formal_charge_sum = sum(abs(fc) for fc in formal_charges)
+    unusual_formal_charges = sum(
+        1
+        for atomic_num, formal_charge_i in zip(atom_nums, formal_charges)
+        if atomic_num in _UNUSUAL_CHARGE_ATOMIC_NUMS and formal_charge_i != 0
+    )
+    valence_violations = sum(1 for atom in atoms if _atom_valence_violation(atom))
+
+    fragments = None
+    if smiles is not None:
+        fragments = smiles.count(".") + 1 if smiles else 0
+        if "." in smiles:
+            return _ChargeCandidate(
+                charge=charge,
+                valid=False,
+                reason="disconnected_fragments",
+                formal_charge=formal_charge,
+                radical_electrons=radical_electrons,
+                fragments=fragments,
+                formal_charge_centers=formal_charge_centers,
+                abs_formal_charge_sum=abs_formal_charge_sum,
+                unusual_formal_charges=unusual_formal_charges,
+                valence_violations=valence_violations,
+                smiles=smiles,
+            )
+
+    if radical_electrons:
+        return _ChargeCandidate(
+            charge=charge,
+            valid=False,
+            reason="radical_electrons",
+            formal_charge=formal_charge,
+            radical_electrons=radical_electrons,
+            fragments=fragments,
+            formal_charge_centers=formal_charge_centers,
+            abs_formal_charge_sum=abs_formal_charge_sum,
+            unusual_formal_charges=unusual_formal_charges,
+            valence_violations=valence_violations,
+            smiles=smiles,
+        )
+
+    if formal_charge != charge:
+        return _ChargeCandidate(
+            charge=charge,
+            valid=False,
+            reason="formal_charge_mismatch",
+            formal_charge=formal_charge,
+            radical_electrons=radical_electrons,
+            fragments=fragments,
+            formal_charge_centers=formal_charge_centers,
+            abs_formal_charge_sum=abs_formal_charge_sum,
+            unusual_formal_charges=unusual_formal_charges,
+            valence_violations=valence_violations,
+            smiles=smiles,
+        )
+
+    score = (
+        valence_violations,
+        formal_charge_centers,
+        abs_formal_charge_sum,
+        unusual_formal_charges,
+    )
+    return _ChargeCandidate(
+        charge=charge,
+        valid=True,
+        reason="valid",
+        score=score,
+        formal_charge=formal_charge,
+        radical_electrons=radical_electrons,
+        fragments=fragments,
+        formal_charge_centers=formal_charge_centers,
+        abs_formal_charge_sum=abs_formal_charge_sum,
+        unusual_formal_charges=unusual_formal_charges,
+        valence_violations=valence_violations,
+        smiles=smiles,
+    )
+
+
+def _rdkit_candidate_from_xyz(xyz_path: str, charge: int) -> _ChargeCandidate:
+    from rdkit import Chem
+    from rdkit.Chem import rdDetermineBonds
+
+    xyz_block = Path(xyz_path).read_text()
+    base_mol = Chem.MolFromXYZBlock(xyz_block)
+    if base_mol is None:
+        raise ValueError("MolFromXYZBlock returned None")
+
+    mol = Chem.Mol(base_mol)
+    try:
+        rdDetermineBonds.DetermineBonds(mol, charge=charge, embedChiral=True)
+    except TypeError:
+        rdDetermineBonds.DetermineBonds(mol, charge=charge)
+    Chem.SanitizeMol(mol)
+    smiles = Chem.MolToSmiles(mol)
+    return _score_charge_candidate(mol, charge, smiles)
+
+
+def _xyz2mol_candidate_from_xyz(xyz_path: str, charge: int) -> _ChargeCandidate:
+    from rdkit import Chem
+    from MolecularDiffusion.utils.smilify import smilify_xyz2mol
+
+    smiles, mol = smilify_xyz2mol(xyz_path, timeout=30, total_charge=charge)
+    if mol is None:
+        raise ValueError("xyz2mol returned None")
+    Chem.SanitizeMol(mol)
+    if smiles is None:
+        smiles = Chem.MolToSmiles(mol)
+    return _score_charge_candidate(mol, charge, smiles)
+
+
+def _infer_charge_candidate(xyz_path: str, charge: int) -> _ChargeCandidate:
+    errors = []
+    try:
+        return _rdkit_candidate_from_xyz(xyz_path, charge)
+    except Exception as exc:
+        errors.append(f"rdkit:{exc}")
+
+    try:
+        return _xyz2mol_candidate_from_xyz(xyz_path, charge)
+    except Exception as exc:
+        errors.append(f"xyz2mol:{exc}")
+
+    reason = "; ".join(errors)
+    return _ChargeCandidate(charge=charge, valid=False, reason=reason)
+
+
+def _select_auto_charge(xyz_path: str) -> _AutoChargeSelection:
+    candidates = [
+        _infer_charge_candidate(xyz_path, charge)
+        for charge in _AUTO_CHARGE_ORDER
+    ]
+    valid = [candidate for candidate in candidates if candidate.valid]
+
+    if len(valid) == 1:
+        return _AutoChargeSelection(
+            charge=valid[0].charge,
+            reason="single_valid_chemical_candidate",
+            candidates=candidates,
+        )
+
+    if len(valid) == 2:
+        best = min(valid, key=lambda candidate: candidate.score)
+        tied = [
+            candidate
+            for candidate in valid
+            if candidate.score == best.score
+        ]
+        if len(tied) == 1:
+            return _AutoChargeSelection(
+                charge=best.charge,
+                reason="best_chemical_score",
+                candidates=candidates,
+            )
+        return _AutoChargeSelection(
+            charge=None,
+            reason="ambiguous_chemical_score_fallback",
+            candidates=candidates,
+        )
+
+    return _AutoChargeSelection(
+        charge=None,
+        reason="chemical_inference_failed",
+        candidates=candidates,
+    )
+
+
+def _auto_charge_candidates_json(candidates: list[_ChargeCandidate]) -> str:
+    return json.dumps(
+        [candidate.summary() for candidate in candidates],
+        separators=(",", ":"),
+    )
 
 
 def _run_ptb_binary(
@@ -259,6 +534,7 @@ def compute_xtb_electronic(
     solvent: str | None = None,
     properties: list[str] | None = None,
     corrected: bool = True,
+    auto_charge: bool = False,
 ) -> dict[str, Any]:
     """Compute XTB electronic properties for a single XYZ file.
 
@@ -275,6 +551,8 @@ def compute_xtb_electronic(
         corrected: Kept for API compatibility. Previously applied morfeus
             empirical IP/EA corrections; now has no effect (raw ΔE values
             are returned).
+        auto_charge: For PTB only, infer +1/-1 from XYZ chemistry when a
+            neutral singlet request has parity-incompatible electron count.
 
     Returns:
         Dictionary with computed properties and metadata.
@@ -326,16 +604,63 @@ def compute_xtb_electronic(
         "charge": charge,
         "solvent": solvent,
     }
+    if auto_charge:
+        result.update(
+            {
+                "requested_charge": charge,
+                "auto_charge_applied": False,
+                "auto_charge_reason": "not_applicable",
+                "auto_charge_candidates": None,
+            }
+        )
 
     # PTB is not in the xtb-python bindings; delegate to the xtb binary.
     if str(method).lower() == "ptb":
+        run_charge = charge
+        fallback_charges: tuple[int, ...] = ()
+        if auto_charge and _ptb_auto_charge_needed(
+            numbers, method, charge, n_unpaired
+        ):
+            selection = _select_auto_charge(xyz_path)
+            result["auto_charge_reason"] = selection.reason
+            result["auto_charge_candidates"] = _auto_charge_candidates_json(
+                selection.candidates
+            )
+            if selection.charge is None:
+                run_charge = _AUTO_CHARGE_ORDER[0]
+                fallback_charges = _AUTO_CHARGE_ORDER[1:]
+            else:
+                run_charge = selection.charge
+            result["charge"] = run_charge
+            result["auto_charge_applied"] = run_charge != charge
+
         try:
             ptb_props = _run_ptb_binary(
-                xyz_path, charge, n_unpaired, solvent, requested_props
+                xyz_path, run_charge, n_unpaired, solvent, requested_props
             )
             result.update(ptb_props)
             result["success"] = True
         except Exception as e:
+            if fallback_charges:
+                errors = []
+                for fallback_charge in fallback_charges:
+                    try:
+                        ptb_props = _run_ptb_binary(
+                            xyz_path,
+                            fallback_charge,
+                            n_unpaired,
+                            solvent,
+                            requested_props,
+                        )
+                    except Exception as fallback_exc:
+                        errors.append(f"{fallback_charge}:{fallback_exc}")
+                        continue
+                    result["charge"] = fallback_charge
+                    result["auto_charge_applied"] = fallback_charge != charge
+                    result.update(ptb_props)
+                    result["success"] = True
+                    return result
+                e = RuntimeError("; ".join(errors))
             logger.warning(f"PTB error for {xyz_path}: {e}")
             result["success"] = False
             result["error"] = str(e)
@@ -471,6 +796,50 @@ def _compute_single_wrapper(args: tuple) -> dict[str, Any]:
     return compute_xtb_electronic(*args)
 
 
+def _prepare_batch_input(input_path: Path, temp_dir: Path) -> _BatchInput:
+    if input_path.is_dir():
+        xyz_files = sorted(input_path.glob("*.xyz"))
+        records = {
+            xyz_file.name: _InputRecord(xyz_path=xyz_file)
+            for xyz_file in xyz_files
+        }
+        return _BatchInput(input_path, xyz_files, records, is_db=False)
+
+    if input_path.is_file() and input_path.suffix.lower() == ".db":
+        from ase.db import connect
+        from ase.io import write
+
+        xyz_files: list[Path] = []
+        records: dict[str, _InputRecord] = {}
+        with connect(str(input_path)) as db:
+            for row in db.select():
+                atoms = row.toatoms()
+                xyz_file = temp_dir / f"row_{row.id}.xyz"
+                write(str(xyz_file), atoms)
+                xyz_files.append(xyz_file)
+                records[xyz_file.name] = _InputRecord(
+                    xyz_path=xyz_file,
+                    row_id=row.id,
+                    atoms=atoms,
+                    key_value_pairs=dict(row.key_value_pairs),
+                    data=dict(row.data or {}),
+                )
+
+        return _BatchInput(input_path, xyz_files, records, is_db=True)
+
+    msg = (
+        f"Unsupported input '{input_path}'. Expected an XYZ directory "
+        "or ASE .db file."
+    )
+    raise ValueError(msg)
+
+
+def _attach_input_metadata(result: dict[str, Any], batch_input: _BatchInput) -> None:
+    record = batch_input.records_by_filename.get(str(result.get("filename", "")))
+    if record is not None and record.row_id is not None:
+        result["ase_db_row_id"] = record.row_id
+
+
 def batch_xtb_electronic(
     input_dir: str,
     output_path: str | None = None,
@@ -483,91 +852,230 @@ def batch_xtb_electronic(
     corrected: bool = True,
     timeout: int = 120,
     n_jobs: int = 1,
+    auto_charge: bool = False,
+    annotate_db: bool = False,
 ) -> pd.DataFrame:
-    """Batch compute XTB electronic properties for XYZ files in a directory.
-
-    Args:
-        input_dir: Directory containing XYZ files.
-        output_path: Output file path (without extension for 'all' format).
-        output_format: Output format ("csv", "json", "ase", or "all").
-        method: XTB method (1=GFN1, 2=GFN2).
-        charge: Molecular charge.
-        n_unpaired: Number of unpaired electrons.
-        solvent: Solvent name for ALPB implicit solvation.
-        properties: Property groups to compute.
-        corrected: Kept for API compatibility; has no effect.
-        timeout: Timeout per molecule in seconds.
-        n_jobs: Number of parallel jobs.
-
-    Returns:
-        DataFrame with molecular-level results.
-    """
+    """Batch compute XTB electronic properties for XYZ files or ASE DB rows."""
     if not _check_xtb_available():
         raise RuntimeError("xtb-python is not available")
 
     input_path = Path(input_dir)
-    xyz_files = sorted(input_path.glob("*.xyz"))
+    if annotate_db and not (
+        input_path.is_file() and input_path.suffix.lower() == ".db"
+    ):
+        raise ValueError("--annotate-db requires an ASE .db input file")
 
-    if not xyz_files:
-        logger.warning(f"No XYZ files found in {input_dir}")
-        return pd.DataFrame()
+    with tempfile.TemporaryDirectory(prefix="molcraftdiff_xtb_") as tmpdir:
+        batch_input = _prepare_batch_input(input_path, Path(tmpdir))
+        xyz_files = batch_input.xyz_files
 
-    logger.info(f"Processing {len(xyz_files)} XYZ files...")
+        if not xyz_files:
+            logger.warning(f"No structures found in {input_dir}")
+            return pd.DataFrame()
 
-    results: list[dict[str, Any]] = []
+        logger.info(f"Processing {len(xyz_files)} structures...")
+        results: list[dict[str, Any]] = []
 
-    if n_jobs == 1:
-        for xyz_file in tqdm(xyz_files, desc="Computing XTB properties"):
-            try:
-                result = compute_xtb_electronic(
-                    str(xyz_file),
-                    method=method,
-                    charge=charge,
-                    n_unpaired=n_unpaired,
-                    solvent=solvent,
-                    properties=properties,
-                    corrected=corrected,
-                )
-                results.append(result)
-            except Exception as e:
-                logger.warning(f"Failed to process {xyz_file}: {e}")
-                results.append(
-                    {"filename": xyz_file.name, "success": False, "error": str(e)}
-                )
-    else:
-        args_list = [
-            (str(f), method, charge, n_unpaired, solvent, properties, corrected)
-            for f in xyz_files
-        ]
-        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-            futures = {
-                executor.submit(_compute_single_wrapper, args): args[0]
-                for args in args_list
-            }
-            for future in tqdm(futures, desc="Computing XTB properties"):
+        if n_jobs == 1:
+            for xyz_file in tqdm(xyz_files, desc="Computing XTB properties"):
                 try:
-                    results.append(future.result(timeout=timeout))
-                except FutureTimeoutError:
-                    fname = Path(futures[future]).name
-                    logger.warning(f"Timeout for {fname}")
-                    results.append(
-                        {"filename": fname, "success": False, "error": "timeout"}
+                    result = compute_xtb_electronic(
+                        str(xyz_file),
+                        method=method,
+                        charge=charge,
+                        n_unpaired=n_unpaired,
+                        solvent=solvent,
+                        properties=properties,
+                        corrected=corrected,
+                        auto_charge=auto_charge,
                     )
                 except Exception as e:
-                    fname = Path(futures[future]).name
-                    logger.warning(f"Error for {fname}: {e}")
-                    results.append(
-                        {"filename": fname, "success": False, "error": str(e)}
-                    )
+                    logger.warning(f"Failed to process {xyz_file}: {e}")
+                    result = {
+                        "filename": xyz_file.name,
+                        "success": False,
+                        "error": str(e),
+                    }
+                _attach_input_metadata(result, batch_input)
+                results.append(result)
+        else:
+            args_list = [
+                (
+                    str(f),
+                    method,
+                    charge,
+                    n_unpaired,
+                    solvent,
+                    properties,
+                    corrected,
+                    auto_charge,
+                )
+                for f in xyz_files
+            ]
+            with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+                futures = {
+                    executor.submit(_compute_single_wrapper, args): args[0]
+                    for args in args_list
+                }
+                for future in tqdm(futures, desc="Computing XTB properties"):
+                    try:
+                        result = future.result(timeout=timeout)
+                    except FutureTimeoutError:
+                        fname = Path(futures[future]).name
+                        logger.warning(f"Timeout for {fname}")
+                        result = {
+                            "filename": fname,
+                            "success": False,
+                            "error": "timeout",
+                        }
+                    except Exception as e:
+                        fname = Path(futures[future]).name
+                        logger.warning(f"Error for {fname}: {e}")
+                        result = {
+                            "filename": fname,
+                            "success": False,
+                            "error": str(e),
+                        }
+                    _attach_input_metadata(result, batch_input)
+                    results.append(result)
 
-    has_atomic = any(p in ATOMIC_LEVEL_GROUPS for p in (properties or ["energy"]))
-    if "all" in (properties or []):
-        has_atomic = True
+        has_atomic = any(p in ATOMIC_LEVEL_GROUPS for p in (properties or ["energy"]))
+        if "all" in (properties or []):
+            has_atomic = True
 
-    if output_path:
-        _save_outputs(results, output_path, output_format, has_atomic, input_dir)
+        if annotate_db:
+            _annotate_input_db(results, batch_input)
 
-    return _results_to_dataframe(results)
+        if output_path:
+            _save_outputs(
+                results,
+                output_path,
+                output_format,
+                has_atomic,
+                batch_input,
+            )
+
+        return _results_to_dataframe(results)
+
+
+_ATOMIC_ARRAY_KEYS = {
+    "charges",
+    "fukui_plus",
+    "fukui_minus",
+    "fukui_radical",
+    "fukui_dual",
+}
+
+
+def _prefixed_xtb_annotations(
+    result: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    key_values: dict[str, Any] = {}
+    data: dict[str, Any] = {}
+    skip_keys = {"filename", "ase_db_row_id"}
+
+    for key, value in result.items():
+        if key in skip_keys:
+            continue
+
+        target_key = f"xtb_{key}"
+        if isinstance(value, np.ndarray):
+            data[target_key] = value.tolist()
+        elif isinstance(value, dict):
+            data[target_key] = {str(k): v for k, v in value.items()}
+        elif isinstance(value, list):
+            data[target_key] = value
+        elif isinstance(value, tuple):
+            data[target_key] = list(value)
+        elif value is None:
+            data[target_key] = None
+        elif isinstance(value, (int, float, str, bool)):
+            key_values[target_key] = value
+        else:
+            data[target_key] = str(value)
+
+    return key_values, data
+
+
+def _annotate_input_db(results: list[dict], batch_input: _BatchInput) -> None:
+    from ase.db import connect
+
+    if not batch_input.is_db:
+        raise ValueError("--annotate-db requires an ASE .db input file")
+
+    with connect(str(batch_input.input_path)) as db:
+        for result in results:
+            row_id = result.get("ase_db_row_id")
+            if row_id is None:
+                continue
+            key_values, data = _prefixed_xtb_annotations(result)
+            existing_data = dict(db.get(id=row_id).data or {})
+            existing_data.update(data)
+            db.update(row_id, data=existing_data, **key_values)
+
+
+def _copy_annotated_db(
+    results: list[dict], db_path: Path, batch_input: _BatchInput
+) -> None:
+    from ase.db import connect
+
+    if db_path.exists():
+        db_path.unlink()
+
+    result_by_row_id = {
+        result.get("ase_db_row_id"): result
+        for result in results
+        if result.get("ase_db_row_id") is not None
+    }
+
+    with connect(str(db_path)) as db_out:
+        for record in batch_input.records_by_filename.values():
+            if record.row_id is None or record.atoms is None:
+                continue
+            key_values = dict(record.key_value_pairs or {})
+            data = dict(record.data or {})
+            result = result_by_row_id.get(record.row_id)
+            if result is not None:
+                xtb_key_values, xtb_data = _prefixed_xtb_annotations(result)
+                key_values.update(xtb_key_values)
+                data.update(xtb_data)
+            db_out.write(record.atoms, data=data, **key_values)
+
+
+def _add_result_arrays_to_atoms(atoms: Any, result: dict[str, Any]) -> None:
+    for key in _ATOMIC_ARRAY_KEYS:
+        value = result.get(key)
+        if isinstance(value, dict):
+            arr = np.zeros(len(atoms))
+            for idx, val in value.items():
+                arr[int(idx) - 1] = val
+            atoms.arrays[key] = arr
+        elif isinstance(value, np.ndarray):
+            atoms.arrays[key] = value
+
+
+def _result_data_for_ase(result: dict[str, Any]) -> dict[str, Any]:
+    mol_props: dict[str, Any] = {}
+    for key, value in result.items():
+        if key in {
+            "filename",
+            "success",
+            "error",
+            "n_atoms",
+            "ase_db_row_id",
+        }:
+            continue
+
+        if key in _ATOMIC_ARRAY_KEYS:
+            continue
+        if key == "bond_orders":
+            mol_props[key] = json.dumps(
+                {str(k): v for k, v in value.items()}
+            )
+        elif isinstance(value, (int, float, str, bool)):
+            mol_props[key] = value
+
+    return mol_props
 
 
 def _results_to_dataframe(results: list[dict]) -> pd.DataFrame:
@@ -586,7 +1094,7 @@ def _save_outputs(
     output_path: str,
     output_format: str,
     has_atomic: bool,
-    input_dir: str,
+    batch_input: _BatchInput,
 ) -> None:
     """Save results in the specified format(s)."""
     base_path = Path(output_path).with_suffix("")
@@ -617,14 +1125,18 @@ def _save_outputs(
 
         elif fmt == "ase":
             db_path = base_path.with_suffix(".db")
-            _save_to_ase_db(results, db_path, input_dir)
+            _save_to_ase_db(results, db_path, batch_input)
             logger.info(f"Saved ASE database to {db_path}")
 
 
 def _save_to_ase_db(
-    results: list[dict], db_path: Path, input_dir: str
+    results: list[dict], db_path: Path, batch_input: _BatchInput
 ) -> None:
     """Save results to ASE database with properties in atoms.info and arrays."""
+    if batch_input.is_db:
+        _copy_annotated_db(results, db_path, batch_input)
+        return
+
     from ase.db import connect
     from ase.io import read
 
@@ -632,18 +1144,16 @@ def _save_to_ase_db(
         db_path.unlink()
 
     db = connect(str(db_path))
-    input_path = Path(input_dir)
-
-    atomic_array_keys = {
-        "charges", "fukui_plus", "fukui_minus", "fukui_radical", "fukui_dual"
-    }
-
     for result in results:
         filename = result.get("filename")
         if not filename or not result.get("success", False):
             continue
 
-        xyz_file = input_path / filename
+        record = batch_input.records_by_filename.get(filename)
+        if record is None:
+            continue
+
+        xyz_file = record.xyz_path
         if not xyz_file.exists():
             continue
 
@@ -653,25 +1163,5 @@ def _save_to_ase_db(
             logger.warning(f"Failed to read {xyz_file} for ASE db: {e}")
             continue
 
-        mol_props: dict[str, Any] = {}
-        for key, value in result.items():
-            if key in {"filename", "success", "error", "n_atoms"}:
-                continue
-
-            if key in atomic_array_keys:
-                # 1-indexed dict → 0-indexed array
-                if isinstance(value, dict):
-                    arr = np.zeros(len(atoms))
-                    for idx, val in value.items():
-                        arr[int(idx) - 1] = val
-                    atoms.arrays[key] = arr
-                elif isinstance(value, np.ndarray):
-                    atoms.arrays[key] = value
-            elif key == "bond_orders":
-                mol_props[key] = json.dumps(
-                    {str(k): v for k, v in value.items()}
-                )
-            elif isinstance(value, (int, float, str, bool)):
-                mol_props[key] = value
-
-        db.write(atoms, data=mol_props)
+        _add_result_arrays_to_atoms(atoms, result)
+        db.write(atoms, data=_result_data_for_ase(result))

@@ -305,6 +305,7 @@ class ModelTaskFactory:
                 num_mlp_layer=self.kwargs.get("num_mlp_layer", 2),
                 mlp_batch_norm=self.kwargs.get("mlp_batch_norm", None),  # Options: None, 'layernorm', 'batchnorm'
                 mlp_dropout=self.kwargs.get("mlp_dropout", 0.0),
+                mlp_hidden_dim=self.kwargs.get("mlp_hidden_dim", None),
                 normalization=self.kwargs.get("target_normalization", True),  # Normalize targets by mean/std
                 num_class=len(self.kwargs.get("task_learn", "")),
                 prediction_mlp_type=self.kwargs.get("prediction_mlp_type", "pernode"),

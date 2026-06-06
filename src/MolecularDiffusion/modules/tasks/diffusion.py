@@ -23,6 +23,7 @@ from MolecularDiffusion.utils import (
     check_mask_correct,
     check_stability,
     compute_mean_mad_from_dataloader,
+    compute_mean_mad_from_dataloader,
     prepare_context,
     prepare_context_pyG,
     random_rotation,
@@ -32,10 +33,27 @@ from MolecularDiffusion.utils import (
     sample_gaussian_with_mask,
 )
 
+from . import _preprocess_cache as _ppcache
 from .task import Task, _get_criterion_name, _get_metric_name
 
 
 logger = logging.getLogger(__name__)
+
+_GEOM_CONSTRAINT_CFG_KEYS = {
+    "connector_dicts",
+    "constraint_strength",
+    "scale_factor",
+}
+
+
+def _without_geometric_constraint_cfgs(cfgs):
+    if not cfgs:
+        return {}
+    return {
+        key: value
+        for key, value in cfgs.items()
+        if key not in _GEOM_CONSTRAINT_CFG_KEYS
+    }
 
 
 @core.Registry.register("GeomMolecularGenerative")
@@ -86,7 +104,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self.sp_regularizer = sp_regularizer
         self.reference_indices = reference_indices
         self.reference_freeze_mode = reference_freeze_mode
-        self._reference_scaffold = None
+        self.reference_scaffold = None  # Mean scaffold geometry, set during preprocess
         self.reference_feature_stats = None
         self.normalize_condition = normalize_condition
         
@@ -94,35 +112,30 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self.n_atom_types = self.model.in_node_nf - len(self.model.extra_norm_values)
         if self.model.include_charges:
             self.n_atom_types -= 1
-
-    @property
-    def reference_scaffold(self):
-        if (
-            self._reference_scaffold is None
-            and self.node_dist_model is not None
-            and hasattr(self.node_dist_model, "reference_scaffold")
-        ):
-            self._reference_scaffold = self.node_dist_model.reference_scaffold
-        return self._reference_scaffold
-
-    @reference_scaffold.setter
-    def reference_scaffold(self, value):
-        self._reference_scaffold = value
-        if self.node_dist_model is not None:
-            self.node_dist_model.reference_scaffold = value
-
+        
+        
+        
     def _compute_mean_scaffold(self, train_set):
-        """Find a representative scaffold from training molecules."""
+        """Find the medoid scaffold from training molecules.
+
+        Iterates the training set, collects scaffold positions at
+        self.reference_indices, computes the mean position, then returns the
+        actual molecule whose scaffold is closest to that mean (the medoid).
+        Using a real molecule's geometry avoids the coordinate collapse that
+        occurs when averaging positions across diverse orientations.
+
+        Returns a normalized tensor of shape (1, n_ref, 3 + n_feat + 1), or
+        None when no valid molecules are found or reference_indices is not set.
+        """
         ref_idx = self.reference_indices
         if not ref_idx:
             return None
-
         max_idx = max(ref_idx)
         nc, nf, nch = self.model.norm_values
 
-        all_pos = []
-        all_x = []
-        all_ch = []
+        all_pos = []   # list of (n_ref, 3) tensors
+        all_x = []     # list of (n_ref, n_feat) tensors
+        all_ch = []    # list of (n_ref,) tensors
 
         _t = time.perf_counter()
         for sample in train_set:
@@ -159,37 +172,40 @@ class GeomMolecularGenerative(Task, core.Configurable):
             )
             return None
 
-        pos_stack = torch.stack(all_pos)
-        mean_pos = pos_stack.mean(0)
+        pos_stack = torch.stack(all_pos)   # (N, n_ref, 3)
+        mean_pos = pos_stack.mean(0)        # (n_ref, 3)
+
+        # Find medoid: molecule whose scaffold has the smallest mean per-atom
+        # distance to the mean position.  This gives a real, non-collapsed
+        # geometry that is representative of the training distribution.
         sq_dists = (pos_stack - mean_pos.unsqueeze(0)).pow(2).sum(-1).mean(-1)
         medoid_idx = int(sq_dists.argmin())
 
-        med_pos = all_pos[medoid_idx]
-        x_ref = all_x[medoid_idx]
-        ch_ref = all_ch[medoid_idx]
+        med_pos = all_pos[medoid_idx]   # (n_ref, 3)
+        x_ref = all_x[medoid_idx]       # (n_ref, n_feat)
+        ch_ref = all_ch[medoid_idx]     # (n_ref,)
 
         med_pos_n = med_pos / nc
         x_ref_n = x_ref / nf
         ch_ref_n = (ch_ref / nch).unsqueeze(-1)
-        xh_ref = torch.cat([med_pos_n, x_ref_n, ch_ref_n], dim=-1)
 
+        xh_ref = torch.cat([med_pos_n, x_ref_n, ch_ref_n], dim=-1)
         logger.info(
-            f"preprocess: scaffold (idx={medoid_idx}) from "
+            f"preprocess: medoid scaffold (idx={medoid_idx}) from "
             f"{len(all_pos)}/{len(train_set)} molecules "
             f"in {time.perf_counter() - _t:.2f}s, shape {list(xh_ref.shape)}"
         )
-        return xh_ref.unsqueeze(0).detach().cpu()
+        return xh_ref.unsqueeze(0).detach().cpu()  # (1, n_ref, D)
 
     def _compute_reference_feature_stats(self, train_set):
         """Compute modal frozen node features and atomic numbers."""
         ref_idx = self.reference_indices
         if not ref_idx:
             return None
-
         max_idx = max(ref_idx)
+        _t = time.perf_counter()
         feature_rows = [[] for _ in ref_idx]
         charge_rows = [[] for _ in ref_idx]
-        _t = time.perf_counter()
 
         for sample in train_set:
             if "graph" in sample:
@@ -211,9 +227,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
 
             for out_idx, atom_idx in enumerate(ref_idx):
                 feature_rows[out_idx].append(x[atom_idx].detach().float().cpu())
-                charge_rows[out_idx].append(
-                    charges[atom_idx].detach().float().cpu().view(())
-                )
+                charge_rows[out_idx].append(charges[atom_idx].detach().float().cpu().view(()))
 
         if not feature_rows or any(len(rows) == 0 for rows in feature_rows):
             logger.warning(
@@ -254,103 +268,135 @@ class GeomMolecularGenerative(Task, core.Configurable):
         self,
         train_set=None,
     ):
-        if train_set is not None:
-            if len(train_set) == 0:
-                raise ValueError("Training set is empty. check the data path and format.")
-        if train_set is not None:
-            self.atomic_numbers = train_set.atom_types()
-            self.atom_decoder = [
-                chemical_symbols[number]
-                for number in self.atomic_numbers
-                if number < len(chemical_symbols)
-            ]
-
-            self.atom_encoder = {symbol: i for i, symbol in enumerate(self.atom_decoder)}
-
-        
-            self.dataset_smiles_list = []
-            if "graph" in train_set[0]:
-                self.max_n_nodes = 0
-                self.n_node_dist = {}
-                for sample in train_set:
-                    self.dataset_smiles_list.append(sample["graph"].smiles)
-                    n_node = sample["graph"].natoms
-                    if n_node > self.max_n_nodes:
-                        self.max_n_nodes = n_node
-                    if n_node in self.n_node_dist:
-                        self.n_node_dist[n_node] += 1
-                    else:
-                        self.n_node_dist[n_node] = 1    
-                        
-            else:
-
-                self.max_n_nodes = train_set[0]["coords"].size()[0]
-                
-                # train_set = tqdm(train_set, "Determining number of atoms distibution")
-                if not self.n_node_dist:
-                    self.n_node_dist = {}
-                    for sample in train_set:
-                        node_mask = sample["node_mask"].nonzero()
-                        n_node = node_mask.size(0)
-                        if n_node in self.n_node_dist:
-                            self.n_node_dist[n_node] += 1
-                        else:
-                            self.n_node_dist[n_node] = 1
-
-            if self.node_dist_model is None:
-                print("---------------Creating node distribution model-----------------")
-                self.node_dist_model = DistributionNodes(self.n_node_dist)
-            if self.reference_scaffold is not None:
-                self.node_dist_model.reference_scaffold = self.reference_scaffold
-
-            if (self.prop_dist_model is None) and len(self.condition) > 0:
-                print("---------------Creating property distribution model---------------")
-                num_atoms = train_set.num_atoms
-                props = []
-                for task in self.condition:
-                    if task not in train_set.targets.keys():
-                        raise ValueError(f"Task {task} not found in dataset")
-                    try:
-                        props.append(train_set.get_property(task))
-                    except Exception as e:
-                        raise ValueError(f"Fail {task} to get property from dataset due to {e}")
-                    
-                props = torch.stack(props)
-                self.prop_dist_model = DistributionProperty(
-                    num_atoms, props, self.condition, num_bins=10
-                )
-
-                self.property_norms = compute_mean_mad_from_dataloader(
-                    props, self.condition
-                )
-                self.prop_dist_model.set_normalizer(self.property_norms)
-
-
-            if len(self.dataset_smiles_list) == 0:
-                smiles_list = train_set.smiles_list
-                canonical_smiles = []
-                for smiles in smiles_list:
-                    if smiles is None:
-                        continue
-                    mol = Chem.MolFromSmiles(smiles)
-                    if mol is not None:
-                        canonical_smiles.append(Chem.MolToSmiles(mol))
-                self.dataset_smiles_list = list(set(canonical_smiles))
-
-            if self.reference_indices is not None:
-                self.reference_scaffold = self._compute_mean_scaffold(train_set)
-                self.reference_feature_stats = self._compute_reference_feature_stats(
-                    train_set
-                )
-        else:
+        if train_set is None:
             self.atomic_numbers = []
             self.atom_decoder = []
             self.atom_encoder = {}
             self.dataset_smiles_list = []
             self.max_n_nodes = 0
             self.n_node_dist = {}
-            self.reference_scaffold = None
-            self.reference_feature_stats = None
+            return
+
+        if len(train_set) == 0:
+            raise ValueError("Training set is empty. check the data path and format.")
+
+        # Atom vocab (cheap, always recompute)
+        self.atomic_numbers = train_set.atom_types()
+        self.atom_decoder = [
+            chemical_symbols[number]
+            for number in self.atomic_numbers
+            if number < len(chemical_symbols)
+        ]
+        self.atom_encoder = {symbol: i for i, symbol in enumerate(self.atom_decoder)}
+
+        # Try disk cache first — covers the slow paths (n_node_dist
+        # iteration, full-chunk property scan, RDKit canonicalisation)
+        cached = _ppcache.try_load(train_set, list(self.condition))
+        if cached is not None:
+            self.n_node_dist = cached["n_node_dist"]
+            self.max_n_nodes = cached["max_n_nodes"]
+            self.dataset_smiles_list = cached["dataset_smiles_list"]
+            if self.node_dist_model is None:
+                self.node_dist_model = DistributionNodes(self.n_node_dist)
+            if (self.prop_dist_model is None
+                    and len(self.condition) > 0
+                    and cached.get("prop_dist_model") is not None):
+                self.prop_dist_model = cached["prop_dist_model"]
+                self.property_norms = cached["property_norms"]
+                self.prop_dist_model.set_normalizer(self.property_norms)
+            if self.reference_indices is not None:
+                self.reference_scaffold = self._compute_mean_scaffold(train_set)
+                self.reference_feature_stats = self._compute_reference_feature_stats(
+                    train_set
+                )
+            return
+
+        # Bulk path: derive n_node_dist from dataset attributes when available.
+        # Falls back to a per-sample loop only when the dataset does not
+        # expose `n_atoms` (e.g. the legacy padded-tensor format).
+        smiles_raw: List = []
+        bulk = _ppcache.bulk_n_node_stats(train_set)
+        if bulk is not None:
+            self.n_node_dist, self.max_n_nodes, smiles_raw = bulk
+        elif "graph" in train_set[0]:
+            logger.info(f"preprocess: falling back to per-sample loop for n_node_dist ({len(train_set):,} samples)")
+            _t = time.perf_counter()
+            self.max_n_nodes = 0
+            self.n_node_dist = {}
+            for sample in train_set:
+                smiles_raw.append(getattr(sample["graph"], "smiles", None))
+                n_node = int(sample["graph"].natoms)
+                if n_node > self.max_n_nodes:
+                    self.max_n_nodes = n_node
+                self.n_node_dist[n_node] = self.n_node_dist.get(n_node, 0) + 1
+            logger.info(f"preprocess: per-sample loop (graph) done in {time.perf_counter() - _t:.2f}s")
+        else:
+            self.max_n_nodes = train_set[0]["coords"].size()[0]
+            if not self.n_node_dist:
+                logger.info(f"preprocess: falling back to per-sample loop for n_node_dist ({len(train_set):,} samples)")
+                _t = time.perf_counter()
+                self.n_node_dist = {}
+                for sample in train_set:
+                    n_node = int(sample["node_mask"].nonzero().size(0))
+                    self.n_node_dist[n_node] = self.n_node_dist.get(n_node, 0) + 1
+                logger.info(f"preprocess: per-sample loop (pointcloud) done in {time.perf_counter() - _t:.2f}s")
+
+        if self.node_dist_model is None:
+            logger.info("Creating node distribution model")
+            self.node_dist_model = DistributionNodes(self.n_node_dist)
+
+        if (self.prop_dist_model is None) and len(self.condition) > 0:
+            logger.info("Creating property distribution model")
+            _t = time.perf_counter()
+            base, subset_indices = _ppcache.resolve_dataset_and_indices(train_set)
+            prop_indices = _ppcache.property_sample_indices(len(train_set), subset_indices)
+            if prop_indices is not subset_indices:
+                logger.info(
+                    f"preprocess: using {len(prop_indices):,}/{len(train_set):,} "
+                    "samples for property distribution"
+                )
+            num_atoms = _ppcache.subset_tensor(base.num_atoms, prop_indices)
+            props = []
+            for task in self.condition:
+                if task not in base.targets.keys():
+                    raise ValueError(f"Task {task} not found in dataset")
+                try:
+                    props.append(_ppcache.get_property_subset(base, task, prop_indices))
+                except Exception as e:
+                    raise ValueError(f"Fail {task} to get property from dataset due to {e}")
+
+            props = torch.stack(props)
+            self.prop_dist_model = DistributionProperty(
+                num_atoms, props, self.condition, num_bins=10
+            )
+            self.property_norms = compute_mean_mad_from_dataloader(props, self.condition)
+            self.prop_dist_model.set_normalizer(self.property_norms)
+            logger.info(f"preprocess: property distribution model built in {time.perf_counter() - _t:.2f}s")
+
+        # Canonicalise SMILES (parallel for large sets)
+        if not smiles_raw:
+            base, subset_indices = _ppcache.resolve_dataset_and_indices(train_set)
+            smiles_raw = _ppcache.subset_sequence(getattr(base, "smiles_list", None), subset_indices) or []
+        self.dataset_smiles_list = _ppcache.canonical_smiles_set(smiles_raw)
+
+        if self.reference_indices is not None:
+            self.reference_scaffold = self._compute_mean_scaffold(train_set)
+            self.reference_feature_stats = self._compute_reference_feature_stats(
+                train_set
+            )
+
+        # Persist for subsequent runs
+        _ppcache.save(
+            train_set,
+            list(self.condition),
+            {
+                "n_node_dist": self.n_node_dist,
+                "max_n_nodes": self.max_n_nodes,
+                "dataset_smiles_list": self.dataset_smiles_list,
+                "prop_dist_model": self.prop_dist_model,
+                "property_norms": getattr(self, "property_norms", None),
+            },
+        )
 
 
     def forward(self, batch):
@@ -369,27 +415,38 @@ class GeomMolecularGenerative(Task, core.Configurable):
         all_loss = torch.tensor(0, dtype=torch.float32, device=self.device)
         metric = {}
         
+        sp_reg_handled = False
         if "graph" in batch.keys():
             # NOTE ignore remove mean over mask for now
-            x = None
-            h = None
             if len(self.condition) > 0:
-                #TODO to write this
-                context = prepare_context_pyG(self.condition, batch, self.property_norms, 
+                context = prepare_context_pyG(self.condition, batch, self.property_norms,
                                         normalization_method=self.normalize_condition).to(
                     dtype=torch.float32, device=self.device
                 )
-                assert_correctly_masked(context, node_mask)
             else:
                 context = None
+
+            batch["context"] = context
             batch["graph"].pos = remove_mean_pyG(batch["graph"].pos, batch["graph"].batch)
-            nll = self.model(
-                x=None,
-                h=None,
-                mol_graph=batch,
-                reference_indices=self.reference_indices,
-                reference_freeze_mode=self.reference_freeze_mode,
-            )
+
+            if self.sp_regularizer is not None and self.training and hasattr(self.model, 'compute_loss_per_graph'):
+                # Mirror FM: get per-graph training losses and apply SP before log_pN correction.
+                # This avoids the scale mismatch between raw training losses and full NLL.
+                loss_per_graph = self.model.compute_loss_per_graph(
+                    batch,
+                    context,
+                    self.reference_indices,
+                    reference_freeze_mode=self.reference_freeze_mode,
+                )
+                nll = self.sp_regularizer(loss_per_graph)
+                sp_reg_handled = True
+            else:
+                nll = self.model(
+                    mol_graph=batch,
+                    context=context,
+                    reference_indices=self.reference_indices,
+                    reference_freeze_mode=self.reference_freeze_mode,
+                )
             N = batch["graph"].natoms
         else:
             node_mask = batch["node_mask"].unsqueeze(2)
@@ -437,16 +494,14 @@ class GeomMolecularGenerative(Task, core.Configurable):
             )
 
             N = node_mask.squeeze(2).sum(1).long()
-        log_pN = self.node_dist_model.log_prob(N)
-        assert nll.size() == log_pN.size()
-        # print(nll, log_pN)
-        nll = nll - log_pN
-
-        if self.sp_regularizer is not None and self.training:
-            nll = self.sp_regularizer(nll)
-        # loss = nll
+        if not sp_reg_handled:
+            log_pN = self.node_dist_model.log_prob(N)
+            assert nll.size() == log_pN.size()
+            nll = nll - log_pN
+            if self.sp_regularizer is not None and self.training:
+                nll = self.sp_regularizer(nll)
         loss = nll.mean(0)
-        metric["train negative log likelihood"] = loss
+        metric["train_negative_log_likelihood"] = loss
         all_loss += loss
 
         return all_loss, metric
@@ -459,30 +514,26 @@ class GeomMolecularGenerative(Task, core.Configurable):
 
     def evaluate(self, all_loss, dummy_tensor):
         metric = {}
-        metric["Val negative log likelihood"] = all_loss.mean()
+        metric["val_negative_log_likelihood"] = all_loss.mean()
         return metric
 
 
     def _evaluate(self, batch):
-        pred = None
 
         if "graph" in batch.keys():
-            # NOTE ignore remove mean over mask for now
-            x = None
-            h = None
             if len(self.condition) > 0:
-                #TODO to write this
                 context = prepare_context_pyG(self.condition, batch, self.property_norms, 
                                         normalization_method=self.normalize_condition).to(
                     dtype=torch.float32, device=self.device
                 )
-                assert_correctly_masked(context, node_mask)
             else:
                 context = None
+            
+            batch["context"] = context
+            batch["graph"].pos = remove_mean_pyG(batch["graph"].pos, batch["graph"].batch)
             nll = self.model(
-                x=None,
-                h=None,
                 mol_graph=batch,
+                context=context,
                 reference_indices=self.reference_indices,
                 reference_freeze_mode=self.reference_freeze_mode,
             )
@@ -494,7 +545,6 @@ class GeomMolecularGenerative(Task, core.Configurable):
             h = batch["node_feature"]
             charges = batch["charges"].unsqueeze(2)
                         
-
             if self.augment_noise > 0:
                 # Add noise eps ~ N(0, augment_noise) around points.
                 eps = sample_center_gravity_zero_gaussian_with_mask(
@@ -520,20 +570,22 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 context = None
             N = node_mask.squeeze(2).sum(1).long()
   
-            nll = self.model(
-                x,
-                h,
-                node_mask,
-                edge_mask,
-                context,
-                reference_indices=self.reference_indices,
-                reference_freeze_mode=self.reference_freeze_mode,
-            )
+            nll = self.model(x, h, node_mask, edge_mask, context, 
+                            reference_indices=self.reference_indices,
+                            reference_freeze_mode=self.reference_freeze_mode)
 
         log_pN = self.node_dist_model.log_prob(N)
-        assert nll.size() == log_pN.size()
-        nll = nll - log_pN
-        loss = nll.mean(0)
+        # Handle shape mismatch: can occur when data collator has edge cases
+        if nll.dim() == 0:
+            # nll is already reduced to scalar
+            nll = nll - log_pN.mean()
+        elif nll.size() != log_pN.size():
+            # Batch size mismatch - use minimum size
+            min_size = min(nll.size(0), log_pN.size(0))
+            nll = nll[:min_size] - log_pN[:min_size]
+        else:
+            nll = nll - log_pN
+        loss = nll.mean() if nll.dim() > 0 else nll
 
         return loss
 
@@ -659,13 +711,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
         
         
         batch_size = nodesxsample.size(0)
-
-        if batch_size > 1:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size,nnode)
-        else:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size, nnode)
+        nnode = int(torch.max(nodesxsample).item())
+        node_mask = torch.zeros(batch_size, nnode)
 
         for i in range(batch_size):
             node_mask[i, 0 : nodesxsample[i]] = 1
@@ -767,7 +814,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 charges = [charges_0, charges_retrys]
                 x = [x_0, x_retrys]
         else:
-            one_hot = h["categorical"]
+            one_hot = h.get("categorical", torch.zeros_like(x))
             charges = h["integer"]
         return one_hot, charges, x, node_mask
 
@@ -895,7 +942,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             ).unsqueeze(1)
             context.append(context_row)
         context = torch.cat(context, dim=1).float().to(self.device)
-        one_hot, charges, x, node_mask = self.sample(nodesxsample, context, fix_noise, mode=mode, n_frames=n_frames)
+        one_hot, charges, x, node_mask = self.sample(nodesxsample, context=context, fix_noise=fix_noise, mode=mode, n_frames=n_frames)
         return one_hot, charges, x, node_mask
 
     #GG
@@ -949,12 +996,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
         #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
         # )
         batch_size = nodesxsample.size(0)
-        if batch_size > 1:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size,nnode)
-        else:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size, nnode)
+        nnode = int(torch.max(nodesxsample).item())
+        node_mask = torch.zeros(batch_size, nnode)
 
         for i in range(batch_size):
             node_mask[i, 0 : nodesxsample[i]] = 1
@@ -1101,13 +1144,8 @@ class GeomMolecularGenerative(Task, core.Configurable):
         #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
         # )
         batch_size = nodesxsample.size(0)
-
-        if batch_size > 1:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size,nnode)
-        else:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size, nnode)
+        nnode = int(torch.max(nodesxsample).item())
+        node_mask = torch.zeros(batch_size, nnode)
 
         for i in range(batch_size):
             node_mask[i, 0 : nodesxsample[i]] = 1
@@ -1285,6 +1323,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
         condition_mode=None,
         inpaint_cfgs={},
         outpaint_cfgs={},
+        use_noised_conditioning=False,
         n_frames=0,
         debug=False,
     ):
@@ -1333,17 +1372,19 @@ class GeomMolecularGenerative(Task, core.Configurable):
         Returns:
         Tuple[Tensor, Tensor, Tensor, Tensor]: Positions, one-hot encoding of atoms, node mask, and edge mask.
         """
+        if guidance_ver == "cfg" and condition_mode is not None:
+            mode_prefix = condition_mode.split("_")[0]
+            if mode_prefix in ("inpaint", "outpaint"):
+                inpaint_cfgs = _without_geometric_constraint_cfgs(inpaint_cfgs)
+                outpaint_cfgs = _without_geometric_constraint_cfgs(outpaint_cfgs)
+
         # assert int(torch.max(nodesxsample)) <= self.max_n_nodes
         # nodesxsample = torch.where(
         #     nodesxsample > self.max_n_nodes, self.max_n_nodes, nodesxsample
         # )
         batch_size = nodesxsample.size(0)
-        if batch_size > 1:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size,nnode)
-        else:
-            nnode = int(nodesxsample[0])
-            node_mask = torch.zeros(batch_size, nnode)
+        nnode = int(torch.max(nodesxsample).item())
+        node_mask = torch.zeros(batch_size, nnode)
             
         for i in range(batch_size):
             node_mask[i, 0 : nodesxsample[i]] = 1
@@ -1452,6 +1493,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             condition_mode=condition_mode,
             inpaint_cfgs=inpaint_cfgs,
             outpaint_cfgs=outpaint_cfgs,
+            use_noised_conditioning=use_noised_conditioning,
             n_frames=n_frames,
             cfg_scale_schedule=cfg_scale_schedule
         )
@@ -2343,3 +2385,232 @@ class GuidanceModelPrediction(Task, core.Configurable):
             
         else:
             raise ValueError(f"Unknown loss weighting scheme: {self.loss_weighting}")
+
+
+class GuidanceModelPredictionPointCloud(GuidanceModelPrediction):
+    """
+    PointCloud-optimized subclass of GuidanceModelPrediction for EGCL/EGNN.
+    
+    Accepts dense tensor inputs (B, N, D) directly without requiring PyG Data objects.
+    Generates fully-connected edge indices on-the-fly for the EGNN backbone.
+    
+    Works with both pointcloud batch format (training) and raw tensors (inference).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._edges_dict = {}  # Cache for edge indices
+
+    def target(self, batch):
+        """Override target extraction for pointcloud batch format."""
+        target = torch.stack([batch[t].float() for t in self.task], dim=-1)
+        labeled = batch.get(
+            "labeled", torch.ones(len(target), dtype=torch.bool, device=target.device)
+        )
+        target[~labeled] = math.nan
+        return target
+
+    def predict(self, batch, all_loss=None, metric=None, evaluate=False):
+        """
+        Prediction for pointcloud batch format.
+        
+        Batch format: {coords, node_feature, charges, node_mask, edge_mask, natoms, ...}
+        """
+        if self.architecture != "egcn":
+            raise NotImplementedError(
+                f"PointCloud predict only supports EGCL/EGNN architecture, got {self.architecture}"
+            )
+        
+        # Extract from pointcloud batch format
+        x = batch["coords"]  # (B, N, 3)
+        h = batch["node_feature"]  # (B, N, F)
+        charges = batch["charges"]  # (B, N)
+        node_mask = batch["node_mask"]  # (B, N)
+        
+        bs, n_nodes, _ = x.shape
+        device = x.device
+        
+        # Ensure node_mask has correct shape
+        if node_mask.dim() == 2:
+            node_mask = node_mask.unsqueeze(-1)  # (B, N) -> (B, N, 1)
+        
+        # Add charges to features
+        if self.include_charge:
+            charges_expanded = charges.unsqueeze(-1) if charges.dim() == 2 else charges
+            h = torch.cat([h, charges_expanded], dim=-1)
+        
+        # Normalize
+        x = x / self.norm_values[0]
+        h = h / self.norm_values[1]
+        
+        # Apply node mask to features
+        h = h * node_mask
+        
+        if evaluate:
+            # For evaluation, use provided time
+            t = batch.get("times", torch.zeros(bs, 1, device=device))
+            if t.dim() == 1:
+                t = t.unsqueeze(-1)
+            z_h, z_x = h, x
+        else:
+            # For training, sample random timestep and add noise
+            t_upper = int(self.T * self.t_max)
+            t_int_value = torch.randint(0, t_upper + 1, size=(bs, 1), dtype=torch.long, device=device)
+            t = t_int_value.float() / self.T
+            
+            # Store sampled t for loss weighting in forward
+            self._last_sampled_t = t if not evaluate else None
+            
+            # Sample noise
+            eps = torch.randn_like(torch.cat([x, h], dim=-1)) * node_mask
+            eps_x = eps[:, :, :3]
+            eps_h = eps[:, :, 3:]
+            
+            # Get noise scales
+            alpha_bar = self.gamma.get_alpha_bar(t_int=t_int_value, key="pos")
+            sigma_bar = self.gamma.get_sigma_bar(t_int=t_int_value, key="pos")
+            
+            # alpha and sigma are (B, 1) - expand to (B, N, 1)
+            alpha_bar = alpha_bar.unsqueeze(1)
+            sigma_bar = sigma_bar.unsqueeze(1)
+            
+            # Add noise to coordinates
+            z_x = x * alpha_bar + eps_x * sigma_bar
+            
+            # For features, use same schedule (simplified)
+            alpha_h = self.gamma.get_alpha_bar(t_int=t_int_value, key="categorical").unsqueeze(1)
+            sigma_h = self.gamma.get_sigma_bar(t_int=t_int_value, key="categorical").unsqueeze(1)
+            z_h = h * alpha_h + eps_h * sigma_h
+        
+        # Flatten to (B*N, ...)
+        x_flat = z_x.view(bs * n_nodes, 3)
+        h_flat = z_h.view(bs * n_nodes, -1)
+        node_mask_flat = node_mask.view(bs * n_nodes, 1)
+        
+        # Expand time to per-node: (B, 1) -> (B*N, 1)
+        t_expanded = t.unsqueeze(1).expand(bs, n_nodes, 1).reshape(bs * n_nodes, 1)
+        
+        # Concatenate time to features
+        h_with_time = torch.cat([h_flat, t_expanded], dim=1)
+        
+        # Generate fully-connected edge index
+        edges = self.get_adj_matrix(self._edges_dict, n_nodes, bs)
+        
+        # Get edge mask if available
+        edge_mask = batch.get("edge_mask")
+        if edge_mask is not None:
+            edge_mask = edge_mask.view(bs * n_nodes * n_nodes, 1)
+        
+        # Forward through EGNN
+        h_final, _ = self.model(
+            h_with_time, x_flat, edges, 
+            node_mask=node_mask_flat, 
+            edge_mask=edge_mask, 
+            use_embed=True
+        )
+        
+        # Reshape back to (B, N, hidden_nf)
+        h_final = h_final.view(bs, n_nodes, -1)
+        
+        # Apply node mask
+        h_final = h_final * node_mask
+        
+        # Flatten back for MLPRegressor: (B, N, D) -> (B*N, D)
+        h_final_flat = h_final.view(bs * n_nodes, -1)
+        
+        # Create batch indices for scatter (0,0,..0, 1,1,..1, ...)
+        batch_indices = torch.arange(bs, device=device).repeat_interleave(n_nodes)
+        
+        # MLP prediction - MLPRegressor handles readout internally
+        if self.load_mlps_layer > 0:
+            x_out = self.mlp(h_final_flat, batch_indices)
+            pred = self.mlp_final(x_out, batch_indices)
+        else:
+            pred = self.mlp(h_final_flat, batch_indices)
+        
+        # Denormalize if needed
+        if self.normalization:
+            pred = pred * self.std + self.mean
+        
+        return pred
+
+
+    def predict_dense(self, x, h, node_mask, t):
+        """
+        Dense tensor prediction for gradient guidance.
+        
+        Args:
+            x: Coordinates (B, N, 3)
+            h: Node features (B, N, F) - should include atom types, charges, etc.
+            node_mask: Valid node mask (B, N, 1) or (B, N)
+            t: Timestep (B, 1) or scalar - normalized float in [0, 1]
+            
+        Returns:
+            pred: Model predictions (B, num_targets)
+        """
+        if self.architecture != "egcn":
+            raise NotImplementedError(
+                f"predict_dense only supports EGCL/EGNN architecture, got {self.architecture}"
+            )
+        
+        # Ensure proper shapes
+        bs, n_nodes, _ = x.shape
+        device = x.device
+        
+        if node_mask.dim() == 2:
+            node_mask = node_mask.unsqueeze(-1)  # (B, N) -> (B, N, 1)
+        
+        # Handle time tensor
+        if isinstance(t, (int, float)):
+            t = torch.full((bs, 1), t, device=device)
+        elif t.dim() == 0:
+            t = t.unsqueeze(0).unsqueeze(0).expand(bs, 1)
+        elif t.dim() == 1:
+            t = t.unsqueeze(-1)  # (B,) -> (B, 1)
+        
+        # Flatten to (B*N, ...)
+        x_flat = x.view(bs * n_nodes, 3)
+        h_flat = h.view(bs * n_nodes, -1)
+        node_mask_flat = node_mask.view(bs * n_nodes, 1)
+        
+        # Expand time to per-node: (B, 1) -> (B*N, 1)
+        t_expanded = t.unsqueeze(1).expand(bs, n_nodes, 1).reshape(bs * n_nodes, 1)
+        
+        # Concatenate time to features
+        h_with_time = torch.cat([h_flat, t_expanded], dim=1)
+        
+        # Generate fully-connected edge index
+        edges = self.get_adj_matrix(self._edges_dict, n_nodes, bs)
+        
+        # Forward through EGNN
+        h_final, _ = self.model(
+            h_with_time, x_flat, edges, 
+            node_mask=node_mask_flat, 
+            edge_mask=None, 
+            use_embed=True
+        )
+        
+        # Reshape back to (B, N, hidden_nf)
+        h_final = h_final.view(bs, n_nodes, -1)
+        
+        # Apply node mask
+        h_final = h_final * node_mask
+        
+        # Flatten for MLPRegressor: (B, N, D) -> (B*N, D)
+        h_final_flat = h_final.view(bs * n_nodes, -1)
+        
+        # Create batch indices for scatter (0,0,..0, 1,1,..1, ...)
+        batch_indices = torch.arange(bs, device=x.device).repeat_interleave(n_nodes)
+        
+        # MLP prediction - MLPRegressor handles readout internally
+        if self.load_mlps_layer > 0:
+            x_out = self.mlp(h_final_flat, batch_indices)
+            pred = self.mlp_final(x_out, batch_indices)
+        else:
+            pred = self.mlp(h_final_flat, batch_indices)
+        
+        # Denormalize if needed
+        if self.normalization:
+            pred = pred * self.std + self.mean
+        
+        return pred

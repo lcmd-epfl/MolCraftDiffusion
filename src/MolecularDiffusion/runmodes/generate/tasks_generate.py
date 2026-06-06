@@ -26,6 +26,23 @@ from ase.data import atomic_masses, atomic_numbers
 
 logger = logging.getLogger(__name__)
 
+_GEOM_CONSTRAINT_CFG_KEYS = {
+    "connector_dicts",
+    "constraint_strength",
+    "scale_factor",
+}
+
+
+def _without_geometric_constraint_cfgs(cfgs):
+    if not cfgs:
+        return {}
+    return {
+        key: value
+        for key, value in cfgs.items()
+        if key not in _GEOM_CONSTRAINT_CFG_KEYS
+    }
+
+
 _XYZRENDER_API = None
 _XYZRENDER_UNAVAILABLE = False
 _XYZRENDER_UNAVAILABLE_WARNED = False
@@ -517,7 +534,7 @@ class GenerativeFactory:
                         self._move_xyz(path_xyz, idx, trajectory_dir=output_path_frame)
                     x = x[:, -1]
                     one_hot = one_hot[:, -1]   
-                else:     
+                else:
                     if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                         save_xyz_file_atomic_numbers(
                             self.output_path,
@@ -955,12 +972,23 @@ class GenerativeFactory:
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                         nodesxsample = nodesxsample.repeat(current_batch_size) 
 
-                if "inpaint" in self.task_type:
-                    if nodesxsample[0].item() < xh_ref.shape[1]:
-                        nodesxsample = torch.tensor([xh_ref.shape[1]]*current_batch_size)
-                        logging.warning("Specified molecular size is too small, set it as the same size as the reference structure")
+                if "inpaint" in self.task_type or "outpaint" in self.task_type:
+                    ref_natoms = xh_ref.shape[1]
+                    if torch.any(nodesxsample < ref_natoms):
+                        nodesxsample = torch.clamp(nodesxsample, min=ref_natoms)
+                        logging.warning(
+                            "Specified molecular size is smaller than the reference "
+                            "structure for at least one sample; clamped to the "
+                            "reference structure size."
+                        )
                         
                 xh_tensor = xh_ref.repeat(current_batch_size, 1, 1)
+                inpaint_cfgs = self.condition_configs.get("inpaint_cfgs", {})
+                outpaint_cfgs = self.condition_configs.get("outpaint_cfgs", {})
+                if self.task_type in ("inpaint_cfg", "outpaint_cfg"):
+                    inpaint_cfgs = _without_geometric_constraint_cfgs(inpaint_cfgs)
+                    outpaint_cfgs = _without_geometric_constraint_cfgs(outpaint_cfgs)
+
                 one_hot, charges, x, node_mask  = self.task.sample_hybrid_guidance(
                     target_function=target_function,
                     target_value=self.target_values,
@@ -978,8 +1006,8 @@ class GenerativeFactory:
                     n_backwards=self.condition_configs.get("n_backwards",1),
                     condition_tensor=xh_tensor,
                     condition_mode=condition_mode,
-                    inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", {}),
-                    outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
+                    inpaint_cfgs=inpaint_cfgs,
+                    outpaint_cfgs=outpaint_cfgs,
                     use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                     n_frames=self.n_frames,
                 )   
@@ -1191,7 +1219,7 @@ class GenerativeFactory:
     def preprocess_ref_structure(self, device):
         """
         Load and preprocess a reference molecular structure from an XYZ file.
-
+        
         This function reads an XYZ file, encodes atomic features, normalizes
         coordinates and features, and returns a tensor combining positions
         and processed features.  When the model uses extra node features
@@ -1201,7 +1229,7 @@ class GenerativeFactory:
         Returns:
             torch.Tensor: Tensor of shape (1, n_atoms, 3 + n_features + ndim_extra + 1)
                         containing [normalized_coords | normalized_onehot | normalized_extra | normalized_charges].
-
+        
         Raises:
             FileNotFoundError: If the reference structure file is not found.
             ValueError: If the processed reference structure is empty.

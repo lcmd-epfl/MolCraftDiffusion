@@ -35,6 +35,7 @@ class ProperyPrediction(Task, core.Configurable):
         prediction_activation="relu",
         readout="mean",
         mlp_dropout=0,
+        mlp_hidden_dim=None,
         std_mean=None,
         verbose=0,
         load_mlps_layer=0, # unused/for old models
@@ -51,6 +52,7 @@ class ProperyPrediction(Task, core.Configurable):
         self.normalization = normalization
         self.mlp_batch_norm = mlp_batch_norm
         self.mlp_dropout = mlp_dropout
+        self.mlp_hidden_dim = mlp_hidden_dim
         self.verbose = verbose
         self.std_mean = std_mean
         self.num_class = (num_class,) if isinstance(num_class, int) else num_class
@@ -83,10 +85,11 @@ class ProperyPrediction(Task, core.Configurable):
             raise ValueError(f"Unsupported MLP type: {self.prediction_mlp_type}")
         
         if self.num_class:
+            _hidden_dim = self.mlp_hidden_dim or self.model.hidden_nf
             self.mlp = MLPRegressor(
                 self.model.hidden_nf,
                 sum(self.num_class),
-                hidden_dim=self.model.hidden_nf,
+                hidden_dim=_hidden_dim,
                 num_layers=self.num_mlp_layer,
                 normalization=self.mlp_batch_norm,
                 dropout=self.mlp_dropout,
@@ -132,12 +135,13 @@ class ProperyPrediction(Task, core.Configurable):
                 else:
                     num_class.append(1)
             if not hasattr(self, "mean"):
-                print("mean and std not found, registering buffer")
                 self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float))
 
             if not hasattr(self, "std"):
                 self.register_buffer("std", torch.as_tensor(std, dtype=torch.float))
-            self.register_buffer("weight", torch.as_tensor(weight, dtype=torch.float))
+
+            if not hasattr(self, "weight"):
+                self.register_buffer("weight", torch.as_tensor(weight, dtype=torch.float))
             self.num_class = self.num_class or num_class
             if self.mlp is None:
                 if self.prediction_mlp_type == "padded":
@@ -147,10 +151,11 @@ class ProperyPrediction(Task, core.Configurable):
                 else:
                     raise ValueError(f"Unsupported MLP type: {self.prediction_mlp_type}")
 
+                _hidden_dim = self.mlp_hidden_dim or self.model.hidden_nf
                 self.mlp = MLPRegressor(
                     self.model.hidden_nf,
                     sum(self.num_class),
-                    hidden_dim=self.model.hidden_nf,
+                    hidden_dim=_hidden_dim,
                     num_layers=self.num_mlp_layer,
                     normalization=self.mlp_batch_norm,
                     dropout=self.mlp_dropout,
@@ -376,6 +381,7 @@ class ProperyPrediction(Task, core.Configurable):
         elif self.architecture == "egnn_extra":
 
             if self.condition_time:
+                h = batch["graph"].x
                 t_zeropad = torch.zeros(h.shape[0], 1).to(self.device)
                 h = torch.cat([h, t_zeropad], dim=1)
                 batch["graph"].x = h

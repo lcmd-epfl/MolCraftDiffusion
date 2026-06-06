@@ -100,9 +100,13 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
 # ============================================================================
 
 @analyze.command("metrics", context_settings=CONTEXT_SETTINGS)
-@click.argument("input_dir", type=click.Path(exists=True))
+@click.argument("input_path", type=click.Path(exists=True))
 @click.option("--output", "-o", "--o", "--output-csv", default=None, type=click.Path(),
               help="Output CSV file for results")
+@click.option("--filter", "filter_column", default=None, type=str,
+              help="Filter structures by a truthy column in the generated metrics")
+@click.option("--filtered-output", default=None, type=click.Path(),
+              help="Output ASE DB path or XYZ directory for filtered structures")
 @click.option("--metrics", "-m", "--m", "metrics_type", default="all",
               type=click.Choice(["all", "core", "posebuster", "geom_revised", "shepherd"]),
               help="Which metrics to compute (default: all)")
@@ -125,19 +129,21 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="Reference .pkl or .sdf for conditional similarity metrics (shepherd mode)")
 @click.option("--mol-idx", default=0, type=int,
               help="Molecule index in reference .pkl (default: 0)")
-def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx):
-    """Compute validity and connectivity metrics for XYZ files.
+def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx):
+    """Compute validity and connectivity metrics for XYZ files or ASE DB rows.
     
     \b
     Metrics types:
-      all          Run all metrics (core + posebuster + geom_revised)
+      all          Run all metrics (core + posebuster + geom_revised + shepherd)
       core         Basic validity checks (connectivity, atom stability)
       posebuster   PoseBusters checks (bond lengths, angles, clashes)
       geom_revised Aromatic-aware stability metrics
+      shepherd     Drug-likeness and conditional similarity metrics
     
     \b
     Examples:
         MolCraftDiff analyze metrics gen_xyz/
+        MolCraftDiff analyze metrics molecules.db --metrics core --filter valid_connected
         MolCraftDiff analyze metrics gen_xyz/ --metrics posebuster
         MolCraftDiff analyze metrics gen_xyz/ --metrics geom_revised --mol-converter openbabel
         MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd
@@ -148,8 +154,10 @@ def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion
     runner = _load_analyze_module("compute_metrics").runner
     
     args = argparse.Namespace(
-        input=input_dir,
+        input=input_path,
         output=output,
+        filter=filter_column,
+        filtered_output=filtered_output,
         metrics=metrics_type,
         recheck_topo=recheck_topo,
         check_strain=check_strain,
@@ -162,8 +170,11 @@ def metrics(input_dir, output, metrics_type, recheck_topo, check_strain, portion
         mol_idx=mol_idx,
     )
     
-    click.echo(f"Computing {metrics_type} metrics for: {input_dir}")
-    runner(args)
+    click.echo(f"Computing {metrics_type} metrics for: {input_path}")
+    try:
+        runner(args)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # ============================================================================
@@ -406,7 +417,7 @@ def featurize(input_dir, backend, output, recursive,
 # ============================================================================
 
 @analyze.command("xtb-electronic", context_settings=CONTEXT_SETTINGS)
-@click.argument("input_dir", type=click.Path(exists=True))
+@click.argument("input_path", type=click.Path(exists=True))
 @click.option("--output", "--o", "-o", default=None, type=click.Path(),
               help="Output file path (without extension for 'all' format)")
 @click.option("--method", "--m", "-m", default="2", type=click.Choice(["1", "2", "ptb"]),
@@ -415,6 +426,8 @@ def featurize(input_dir, backend, output, recursive,
               help="Molecular charge (default: 0)")
 @click.option("--n-unpaired", "--unpaired", default=0, type=int,
               help="Number of unpaired electrons (default: 0)")
+@click.option("--auto-charge", is_flag=True, default=False,
+              help="For PTB neutral singlets with odd electron count, infer +1/-1 charge from XYZ chemistry")
 @click.option("--solvent", "--s", "-s", default=None, type=str,
               help="Solvent for solvation calculations (e.g., 'water', 'thf', 'chcl3')")
 @click.option("--properties", "--prop", "-p", multiple=True, 
@@ -430,9 +443,14 @@ def featurize(input_dir, backend, output, recursive,
 @click.option("--format", "--fmt", "-f", "output_format", default="csv", 
               type=click.Choice(["csv", "json", "ase", "all"]),
               help="Output format: csv, json, ase (.db), or all (default: csv)")
-def xtb_electronic(input_dir, output, method, charge, n_unpaired, 
-                   solvent, properties, corrected, timeout, n_jobs, output_format):
-    """Compute XTB electronic properties for XYZ files.
+@click.option("--annotate-db", is_flag=True, default=False,
+              help="For ASE .db input, annotate the input rows in place with xtb_* results")
+@click.option("--verbose", "-v", is_flag=True, default=False,
+              help="Log mean/min/max/std statistics for each computed scalar property")
+def xtb_electronic(input_path, output, method, charge, n_unpaired,
+                   auto_charge, solvent, properties, corrected, timeout,
+                   n_jobs, output_format, annotate_db, verbose):
+    """Compute XTB electronic properties for XYZ files or ASE DB rows.
     
     Uses morfeus to calculate quantum-chemical descriptors at the GFN-xTB level.
     
@@ -460,8 +478,11 @@ def xtb_electronic(input_dir, output, method, charge, n_unpaired,
     \b
     Examples:
         MolCraftDiff analyze xtb-electronic gen_xyz/
+        MolCraftDiff analyze xtb-electronic molecules.db -p all
+        MolCraftDiff analyze xtb-electronic molecules.db -p all --annotate-db
         MolCraftDiff analyze xtb-electronic gen_xyz/ -p energy -p reactivity
         MolCraftDiff analyze xtb-electronic gen_xyz/ -s water -p solvation
+        MolCraftDiff analyze xtb-electronic gen_xyz/ --method ptb --auto-charge
         MolCraftDiff analyze xtb-electronic gen_xyz/ -p all -f ase -o results.db
     """
     batch_xtb_electronic = _load_analyze_module("xtb_electronic").batch_xtb_electronic
@@ -475,19 +496,30 @@ def xtb_electronic(input_dir, output, method, charge, n_unpaired,
         properties = ["energy"]
     
     # Default output path
-    if output is None:
-        output = os.path.join(input_dir, "xtb_electronic")
+    if annotate_db and os.path.splitext(input_path)[1].lower() != ".db":
+        raise click.UsageError("--annotate-db requires an ASE .db input file")
+
+    if output is None and not annotate_db:
+        if os.path.isfile(input_path):
+            root, _ = os.path.splitext(input_path)
+            output = f"{root}_xtb_electronic"
+        else:
+            output = os.path.join(input_path, "xtb_electronic")
     
-    click.echo(f"Computing XTB electronic properties for: {input_dir}")
+    click.echo(f"Computing XTB electronic properties for: {input_path}")
     click.echo(f"Method: GFN{method}-xTB" if method != "ptb" else "Method: PTB")
     click.echo(f"Charge: {charge}, Unpaired: {n_unpaired}")
+    if auto_charge:
+        click.echo("Auto charge: enabled")
     if solvent:
         click.echo(f"Solvent: {solvent}")
     click.echo(f"Properties: {', '.join(properties)}")
     click.echo(f"Output format: {output_format}")
+    if annotate_db:
+        click.echo("Annotate DB: enabled")
     
     df = batch_xtb_electronic(
-        input_dir=input_dir,
+        input_dir=input_path,
         output_path=output,
         output_format=output_format,
         method=method,
@@ -498,13 +530,44 @@ def xtb_electronic(input_dir, output, method, charge, n_unpaired,
         corrected=corrected,
         timeout=timeout,
         n_jobs=n_jobs,
+        auto_charge=auto_charge,
+        annotate_db=annotate_db,
     )
     
+    import pandas as pd
+
     n_success = df["success"].sum() if "success" in df.columns else len(df)
     n_total = len(df)
-    
+
     click.echo(f"\n--- Summary ---")
     click.echo(f"Processed: {n_total} molecules")
     click.echo(f"Successful: {n_success}")
     click.echo(f"Failed: {n_total - n_success}")
-    click.echo(f"Output saved to: {output}")
+    if annotate_db:
+        click.echo(f"Annotated DB: {input_path}")
+    if output:
+        click.echo(f"Output saved to: {output}")
+
+    if verbose and not df.empty:
+        _META_COLS = {
+            "filename", "n_atoms", "method", "charge", "solvent",
+            "success", "error", "ase_db_row_id",
+            "requested_charge", "auto_charge_applied",
+            "auto_charge_reason", "auto_charge_candidates",
+        }
+        successful = df[df["success"] == True] if "success" in df.columns else df
+        numeric_cols = [
+            c for c in df.columns
+            if c not in _META_COLS and pd.api.types.is_numeric_dtype(df[c])
+        ]
+        if not successful.empty and numeric_cols:
+            click.echo("\n--- Property Statistics (successful molecules) ---")
+            for col in numeric_cols:
+                vals = successful[col].dropna()
+                if len(vals) > 0:
+                    click.echo(
+                        f"  {col:30s}  mean={vals.mean():.4g}"
+                        f"  min={vals.min():.4g}"
+                        f"  max={vals.max():.4g}"
+                        f"  std={vals.std():.4g}"
+                    )

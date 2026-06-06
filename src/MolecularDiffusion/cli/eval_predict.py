@@ -100,6 +100,28 @@ def load_checkpoint_weights(task, chkpt_path):
         task.device = next(task.parameters()).device if list(task.parameters()) else torch.device('cpu')
 
 
+def _extract_model_config_from_checkpoint(chkpt_path):
+    """Load model_config from a Lightning checkpoint hyper_parameters block."""
+    try:
+        checkpoint = torch.load(chkpt_path, map_location="cpu", weights_only=False)
+    except Exception as ex:
+        log.warning("Could not load checkpoint for model_config extraction: %s", ex)
+        return None
+
+    if not isinstance(checkpoint, dict):
+        return None
+
+    model_cfg = checkpoint.get("hyper_parameters", {}).get("model_config", None)
+    if model_cfg is None:
+        return None
+
+    if isinstance(model_cfg, DictConfig):
+        model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
+    if not isinstance(model_cfg, dict):
+        return None
+    return model_cfg
+
+
 def engine_wrapper(task_module, data_module, trainer_module):
     """Run evaluation with Engine."""
     trainer_module.get_optimizer()
@@ -136,18 +158,80 @@ def predict(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     data_module.load()
     
     log.info(f"Instantiating task <{cfg.tasks._target_}>")
-    act_fn = hydra.utils.instantiate(cfg.tasks.act_fn)
+    act_fn_cfg = cfg.tasks.get("act_fn")
+    act_fn = hydra.utils.instantiate(act_fn_cfg) if act_fn_cfg is not None else None
     
     # Store checkpoint path and temporarily disable it for task_module.build()
     # to avoid the factory's internal (legacy) loading.
     chkpt_path = cfg.tasks.get("chkpt_path")
     
-    # Create a copy of the config to modify safely
-    tasks_cfg = OmegaConf.to_container(cfg.tasks, resolve=True)
-    tasks_cfg['chkpt_path'] = None
-    tasks_cfg = OmegaConf.create(tasks_cfg)
-    
-    task_module: ModelTaskFactory_EGCL = hydra.utils.instantiate(tasks_cfg, act_fn=act_fn)
+    # Prefer model architecture/task settings saved with the checkpoint.
+    # This avoids config drift (e.g., node feature dims, backbone options).
+    cfg_tasks = OmegaConf.to_container(cfg.tasks, resolve=True)
+    ckpt_model_cfg = _extract_model_config_from_checkpoint(chkpt_path) if chkpt_path else None
+    tasks_cfg_dict = dict(ckpt_model_cfg) if ckpt_model_cfg else dict(cfg_tasks)
+
+    # Keep explicit runtime overrides from eval config for target selection/metrics if provided.
+    for key in ("task_learn", "criterion", "metric"):
+        if key in cfg_tasks and cfg_tasks[key] is not None:
+            tasks_cfg_dict[key] = cfg_tasks[key]
+
+    tasks_cfg_dict["chkpt_path"] = None
+    tasks_cfg = OmegaConf.create(tasks_cfg_dict)
+
+    # Mirror train-time overrides so eval uses identical feature dimensionality.
+    instantiate_kwargs = {"act_fn": act_fn} if act_fn is not None else {}
+    data_atom_vocab = None
+    if "atom_vocab" in cfg.data:
+        data_atom_vocab = list(cfg.data.atom_vocab)
+    if cfg.data.get("allow_unknown", False):
+        if data_atom_vocab is None:
+            data_atom_vocab = []
+        data_atom_vocab.append("Suisei")
+    if data_atom_vocab is not None:
+        instantiate_kwargs["atom_vocab"] = data_atom_vocab
+
+    node_feature_choice = cfg.data.get("node_feature_choice", None)
+    if node_feature_choice is not None:
+        instantiate_kwargs["node_feature"] = node_feature_choice
+        instantiate_kwargs["node_feature_choice"] = node_feature_choice
+
+    feature_dim = None
+    for subset in (data_module.valid_set, data_module.test_set, data_module.train_set):
+        if subset is None or len(subset) == 0:
+            continue
+        sample = subset[0]
+        if isinstance(sample, dict):
+            node_feature_0 = sample.get("node_feature", None)
+            if node_feature_0 is None and "graph" in sample:
+                node_feature_0 = getattr(sample["graph"], "x", None)
+        else:
+            node_feature_0 = getattr(sample, "node_feature", None)
+            if node_feature_0 is None:
+                node_feature_0 = getattr(sample, "x", None)
+        if node_feature_0 is not None:
+            feature_dim = int(node_feature_0.shape[1])
+            break
+
+    if feature_dim is not None:
+        base_feature_dim = len(data_atom_vocab or list(tasks_cfg.get("atom_vocab", [])))
+        if not cfg.data.get("use_ohe_feature", True):
+            base_feature_dim = 0
+        inferred_extra_dim = max(0, feature_dim - base_feature_dim)
+        instantiate_kwargs["node_feature_dim"] = inferred_extra_dim
+    elif chkpt_path:
+        # Fallback to checkpoint metadata when dataset wrappers hide raw features.
+        try:
+            checkpoint = torch.load(chkpt_path, map_location="cpu", weights_only=False)
+            model_cfg = checkpoint.get("hyper_parameters", {}).get("model_config", {})
+            if isinstance(model_cfg, DictConfig):
+                model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
+            if isinstance(model_cfg, dict) and model_cfg.get("node_feature_dim") is not None:
+                instantiate_kwargs["node_feature_dim"] = int(model_cfg["node_feature_dim"])
+        except Exception as ex:
+            log.warning("Could not infer node_feature_dim from checkpoint metadata: %s", ex)
+
+    task_module: ModelTaskFactory_EGCL = hydra.utils.instantiate(tasks_cfg, **instantiate_kwargs)
     task_module.build()
     
     # Manually load weights using our robust loader
@@ -171,10 +255,43 @@ def predict(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     y_preds, y_trues = engine_wrapper(task_module, data_module, trainer_module)
     
-    df = pd.read_csv(cfg.data.filename)
+    data_source = cfg.data.get("filename")
+    if not data_source or str(data_source) in {"path_to_csv.csv", "None"}:
+        data_source = cfg.data.get("ase_db_path")
+    elif str(data_source).endswith(".csv") and not os.path.exists(str(data_source)):
+        # Prefer ASE DB when CSV is a placeholder or missing in eval configs.
+        data_source = cfg.data.get("ase_db_path", data_source)
+
+    if data_source is not None and str(data_source).endswith('.db'):
+        from ase.db import connect
+        db = connect(data_source)
+        records = []
+        for i, row in enumerate(db.select()):
+            record = {"filename": f"db_entry_{i}"}
+            for t in cfg.tasks.task_learn:
+                val = row.data.get(t, -1) if hasattr(row, 'data') and row.data is not None else row.get(t, -1)
+                
+                # dataset.py sometimes has literal_eval
+                if val == "":
+                    val = -1
+                import math
+                from MolecularDiffusion.utils import literal_eval
+                try:
+                    val = literal_eval(str(val))
+                except (ValueError, SyntaxError):
+                    val = val
+                if val == "":
+                    val = math.nan
+                record[t] = float(val)
+            records.append(record)
+        df = pd.DataFrame(records)
+    else:
+        df = pd.read_csv(data_source)
+    
     task_matrix = df[cfg.tasks.task_learn].to_numpy()
     filenames = df["filename"].to_numpy()
     filenames_aligned = []
+    used_match_indices = set()
     
     for row in y_trues.cpu().numpy():
         mask = np.all(np.isclose(task_matrix, row, atol=1e-4), axis=1)
@@ -183,9 +300,21 @@ def predict(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if idx.size == 0:
             raise ValueError(f"No match for row {row}")
         if idx.size > 1:
-            raise ValueError(f"Multiple matches for row {row}: {filenames[idx].tolist()}")
-
-        filenames_aligned.append(filenames[idx[0]])
+            # Multiple records can share identical target values; pick a stable
+            # unmatched candidate to keep 1:1 alignment with predictions.
+            chosen = None
+            for j in idx.tolist():
+                if j not in used_match_indices:
+                    chosen = j
+                    break
+            if chosen is None:
+                chosen = int(idx[0])
+            used_match_indices.add(chosen)
+            filenames_aligned.append(filenames[chosen])
+        else:
+            chosen = int(idx[0])
+            used_match_indices.add(chosen)
+            filenames_aligned.append(filenames[chosen])
     
     df_compiled = pd.DataFrame({
         "filename": filenames_aligned,

@@ -20,13 +20,7 @@ from tqdm import tqdm
 from MolecularDiffusion.core import Engine
 from MolecularDiffusion.data.component.pointcloud import PointCloud_Mol
 from MolecularDiffusion.data.component.feature import (
-    onehot,
-    atom_topological,
-    atom_geom,
-    atom_geom_compact,
-    atom_geom_opt,
-    atom_geom_v2,
-    atom_geom_v2_trun,
+    NodeFeaturizer,
 )
 from MolecularDiffusion.utils import RankedLogger, seed_everything
 from MolecularDiffusion.utils.plot_function import (
@@ -36,6 +30,36 @@ from MolecularDiffusion.utils.plot_function import (
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
+
+
+def _to_plain(value):
+    if isinstance(value, DictConfig):
+        return OmegaConf.to_container(value, resolve=True)
+    return value
+
+
+def _extract_node_feature(metadata):
+    """Recover the training node feature choice from common checkpoint layouts."""
+    if metadata is None:
+        return None
+    metadata = _to_plain(metadata)
+    if not isinstance(metadata, dict):
+        return None
+
+    for key in ("node_feature", "node_feature_choice"):
+        value = metadata.get(key)
+        if value is not None:
+            return value
+
+    for section in ("model_config", "data", "datamodule", "cfg", "hyperparameters"):
+        nested = metadata.get(section)
+        if nested is None:
+            continue
+        value = _extract_node_feature(nested)
+        if value is not None:
+            return value
+
+    return None
 
 
 def is_rank_zero():
@@ -55,6 +79,10 @@ def load_model(chkpt_path, task_config=None, atom_vocab=None):
             from MolecularDiffusion.core.engine_lightning import EngineLightning
             wrapper = EngineLightning.load_from_checkpoint(chkpt_path, map_location="cpu")
             log.info("Successfully loaded model using EngineLightning.load_from_checkpoint")
+            node_feature = _extract_node_feature(getattr(wrapper, "hparams", {}))
+            if node_feature is not None:
+                wrapper.task.node_feature = node_feature
+                wrapper.task.node_feature_choice = node_feature
             
             # Need to return something that has a .model attribute for backward compatibility
             class SolverWrapper:
@@ -74,6 +102,7 @@ def load_model(chkpt_path, task_config=None, atom_vocab=None):
     if "hyper_parameters" in checkpoint:
         log.info("Detected Lightning checkpoint dictionary.")
         hparams = checkpoint.get("hyper_parameters", {})
+        node_feature = _extract_node_feature(hparams)
         
         # Try to get model_config from checkpoint
         model_config = hparams.get("model_config", task_config)
@@ -91,6 +120,9 @@ def load_model(chkpt_path, task_config=None, atom_vocab=None):
 
         task_factory = hydra.utils.instantiate(model_config)
         task = task_factory.build()
+        if node_feature is not None:
+            task.node_feature = node_feature
+            task.node_feature_choice = node_feature
         
         # Load weights
         state_dict = checkpoint.get("state_dict", {})
@@ -147,6 +179,10 @@ def load_model(chkpt_path, task_config=None, atom_vocab=None):
         solver.model.eval()
         # Ensure task.device is updated to the actual device solver is using
         solver.model.device = solver.device
+        node_feature = getattr(solver, "node_feature", None)
+        if node_feature is not None:
+            solver.model.node_feature = node_feature
+            solver.model.node_feature_choice = node_feature
         return solver
 
 
@@ -158,42 +194,40 @@ def xyz2mol(xyz_file, atom_vocab, node_feature, edge_type="fully_connected",
     coords = mol_xyz.get_coord()
     n_nodes = len(mol_xyz.atoms)
 
-    node_features = []
-    for atom in mol_xyz.atoms:
-        node_features.append(onehot(atom.element, atom_vocab, allow_unknown=False))
-    
+    atom_symbols = [atom.element for atom in mol_xyz.atoms]
     charges = [
         atomic_numbers[atom.element]
         for atom in mol_xyz.atoms
         if atom.element in atomic_numbers
     ]
-
-    if node_feature:
-        if node_feature in [
-            "atom_topological", "atom_geom", "atom_geom_v2",
-            "atom_geom_v2_trun", "atom_geom_opt", "atom_geom_compact"
-        ]:
-            feature_mapping = {
-                "atom_topological": atom_topological,
-                "atom_geom": atom_geom,
-                "atom_geom_v2": atom_geom_v2,
-                "atom_geom_v2_trun": atom_geom_v2_trun,
-                "atom_geom_opt": atom_geom_opt,
-                "atom_geom_compact": atom_geom_compact,
-            }
-            feature_function = feature_mapping.get(node_feature)
-            if feature_function is not None:
-                node_features_extra = feature_function(charges, coords)
-            node_features = torch.cat(
-                [torch.tensor(node_features), node_features_extra], dim=1
-            )
-        else:
-            raise ValueError("Unknown node feature type")
-    else:
-        node_features = torch.tensor(node_features, dtype=torch.float32)
-    
-    node_features = torch.tensor(node_features, dtype=torch.float32)
     charges = torch.as_tensor(charges, dtype=torch.long)
+
+    if len(charges) != n_nodes:
+        raise ValueError(f"Could not map all atoms in {xyz_file} to atomic numbers")
+
+    if isinstance(node_feature, str):
+        featurizer = NodeFeaturizer(
+            atom_vocab=atom_vocab,
+            use_ohe=True,
+            geom_feature=node_feature,
+            allow_unknown=False,
+        )
+        node_features = featurizer.featurize_all(atom_symbols, charges, coords)
+    elif node_feature:
+        raise ValueError(
+            "Prediction from XYZ supports string geometric node features only. "
+            f"Got node_feature={node_feature!r}."
+        )
+    else:
+        featurizer = NodeFeaturizer(
+            atom_vocab=atom_vocab,
+            use_ohe=True,
+            geom_feature=None,
+            allow_unknown=False,
+        )
+        node_features = featurizer.compute_ohe(atom_symbols)
+
+    node_features = node_features.to(torch.float32)
     node_mask = torch.ones(n_nodes, dtype=torch.int8)
 
     edge_mask = node_mask.unsqueeze(0) * node_mask.unsqueeze(1)
@@ -244,6 +278,19 @@ def _runner(solver, xyz_paths: list, max_atoms: int = 100) -> torch.Tensor:
     device = getattr(solver.model, 'device', next(solver.model.parameters()).device if list(solver.model.parameters()) else torch.device('cpu'))
     task_names = list(solver.model.task.keys())
     num_molecules = len(xyz_paths)
+    node_feature = getattr(solver.model, "node_feature", None)
+    expected_dim = getattr(getattr(solver.model, "model", None), "in_node_nf", None)
+    if expected_dim is not None and node_feature is None:
+        expected_x_dim = int(expected_dim) - 1
+        atom_vocab_dim = len(getattr(solver.model, "atom_vocab", []))
+        if expected_x_dim > atom_vocab_dim:
+            raise ValueError(
+                "This checkpoint expects extra node feature columns "
+                f"({expected_x_dim} x-columns vs {atom_vocab_dim} atom OHE columns), "
+                "but no node_feature/node_feature_choice was found in the checkpoint "
+                "or prediction config. Set node_feature in configs/predict.yaml to the "
+                "training value, e.g. node_feature: atom_geom_compact."
+            )
 
     progress_bar = tqdm(
         enumerate(xyz_paths),
@@ -265,21 +312,38 @@ def _runner(solver, xyz_paths: list, max_atoms: int = 100) -> torch.Tensor:
             log.info(f"Skipping {xyz_path} (atoms={n_atoms} > max_atoms={max_atoms})")
             continue
 
-        mol_obj = xyz2mol(
-            xyz_file=xyz_path,
-            atom_vocab=solver.model.atom_vocab,
-            node_feature=solver.model.node_feature,
-            device=device,
-        )
-        prediction = solver.model.predict(mol_obj, evaluate=True)[0]
-        predictions.append(prediction.detach().cpu().numpy())
-        current_preds_dict = {prop_name: prediction[j].item() for j, prop_name in enumerate(task_names)}
-        progress_bar.set_postfix({"batch": i + 1, "skipped": skipped, **current_preds_dict})
-        xyz_paths_clear.append(xyz_path)
+        try:
+            mol_obj = xyz2mol(
+                xyz_file=xyz_path,
+                atom_vocab=solver.model.atom_vocab,
+                node_feature=node_feature,
+                device=device,
+            )
+            if expected_dim is not None:
+                expected_x_dim = int(expected_dim) - 1
+                actual_x_dim = int(mol_obj["graph"].x.shape[1])
+                if actual_x_dim != expected_x_dim:
+                    raise ValueError(
+                        f"Node feature dimension mismatch for {xyz_path}: built x with "
+                        f"{actual_x_dim} columns using node_feature={node_feature!r}, "
+                        f"but model expects {expected_x_dim} columns before atomic number. "
+                        "Check that the checkpoint saved node_feature/node_feature_choice "
+                        "or pass node_feature in the prediction config."
+                    )
+            prediction = solver.model.predict(mol_obj, evaluate=True)[0]
+            predictions.append(prediction.detach().cpu().reshape(-1).numpy())
+            current_preds_dict = {prop_name: prediction[j].item() for j, prop_name in enumerate(task_names)}
+            progress_bar.set_postfix({"batch": i + 1, "skipped": skipped, **current_preds_dict})
+            xyz_paths_clear.append(xyz_path)
+        except Exception as e:
+            skipped += 1
+            progress_bar.set_postfix({"batch": i + 1, "skipped": skipped})
+            log.warning(f"Skipping {xyz_path}: {type(e).__name__}: {e}")
 
-    predictions = np.array(predictions)
-    if predictions.ndim > 1 and predictions.shape[-1] == 1:
-        predictions = predictions.squeeze(-1)
+    if predictions:
+        predictions = np.stack(predictions, axis=0)
+    else:
+        predictions = np.empty((0, len(task_names)))
     
     return predictions, xyz_paths_clear
 
@@ -309,8 +373,9 @@ def runner(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         
     if not hasattr(solver.model, 'atom_vocab'):
         solver.model.atom_vocab = cfg.atom_vocab
-    if not hasattr(solver.model, 'node_feature'):
+    if getattr(solver.model, 'node_feature', None) is None:
         solver.model.node_feature = cfg.node_feature
+        solver.model.node_feature_choice = cfg.node_feature
     
     object_dict = {"cfg": cfg, "solver": solver}
 

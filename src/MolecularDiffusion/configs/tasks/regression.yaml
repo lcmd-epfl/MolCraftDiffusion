@@ -11,6 +11,7 @@ tanh: True
 num_sublayers: 5
 sin_embedding: False
 aggregation_method: "sum"
+mlp_hidden_dim: null
 dropout: 0.0
 normalization: True
 include_cosine: True
