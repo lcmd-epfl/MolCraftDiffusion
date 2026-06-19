@@ -20,6 +20,7 @@ extensions = [
     "autoapi.extension",
     "sphinx_copybutton",
     "sphinx_sitemap",
+    "sphinx_design",
 ]
 
 myst_enable_extensions = [
