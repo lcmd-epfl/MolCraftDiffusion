@@ -1,304 +1,178 @@
-MolCraftDiffusion
-==================
+<p align="center">
+  <img src="./images/logo.png" alt="MolCraftDiffusion" width="480"/>
+</p>
 
-A unified generative AI framework for 3D molecular generation using diffusion models, designed to streamline the entire workflow from model training to deployment in data-driven computational chemistry pipelines.
+<p align="center">
+  <a href="https://pypi.org/project/molcraftdiffusion/"><img src="https://img.shields.io/pypi/v/molcraftdiffusion" alt="PyPI"/></a>
+  <a href="https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237"><img src="https://img.shields.io/badge/Paper-ChemRxiv-blue" alt="Paper"/></a>
+  <a href="https://doi.org/10.5281/zenodo.19511401"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.19511401.svg" alt="DOI"/></a>
+  <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Weights-HuggingFace-yellow" alt="Weights"/></a>
+  <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Dataset-HuggingFace-yellow" alt="Dataset"/></a>
+  <a href="https://preghosh.github.io/MolCraftDiffusion/"><img src="https://img.shields.io/badge/Docs-blue" alt="Docs"/></a>
+  <a href="https://huggingface.co/spaces/pregH/MolCraftDiffusion-demo"><img src="https://img.shields.io/badge/Demo-HuggingFace-green" alt="Demo"/></a>
+</p>
 
-MolCraftDiffusion enables researchers to train 3D molecular diffusion models, develop predictive models, and perform guided molecular generation for applications such as catalyst discovery, drug design, and exploration of chemical space.
+---
 
-![workflow](./images/overview.png)
+Three-dimensional molecular generative models assign atoms explicit Cartesian coordinates, enabling generation to be conditioned on both geometric (steric, shape) and physicochemical constraints, providing a more physically meaningful route to molecular discovery than string- or graph-based representations. The field, however, remains fragmented: implementations are scattered across incompatible repositories and evaluation protocols, impeding reproducibility and controlled comparison across methods.
 
-## Key Features
+MolCraftDiffusion is a modular, extensible platform for building, deploying, and evaluating 3D molecular diffusion models in computational chemistry. Its layered architecture decouples core training logic from model definitions and task implementations, so new generative architectures, guidance strategies, and evaluation metrics integrate with minimal changes to the codebase. Efficient pre-training is achieved through **curriculum learning**: a progressive chemical complexity ordering applied to datasets compiled from multiple sources, circumventing the cost of full retraining in downstream applications. Guided generation is supported via structure-directed mechanisms (**inpainting** for systematic structural variant exploration, **outpainting** for fragment extension) and property-directed mechanisms (gradient-based and classifier-free guidance). The platform's extensibility is demonstrated by integrating three architecturally distinct models from the literature (TABASCO, ADiT, and ShEPhERD), each without modifications to the core codebase, supporting applications from virtual library construction to inverse molecular design.
 
-MolCraftDiffusion provides a complete pipeline for training/fine-tuning diffusion models, building predictive property models, and applying them to data-driven molecular generation tasks within a unified framework.
+<p align="center">
+  <img src="./images/overview.png" alt="workflow" width="700"/>
+</p>
 
-*   **End-to-End 3D Molecular Generation Workflow:** Support training diffusion model, and preditive models, and utilize them for various molecular generation tasks, all within a unified framework.
-*   **Curriculum learning:** Efficient way for training and fine-tuning 3D molecular diffusion models
-*   **Guidance Tools:** MolCraftDiffusion includes several guidance mechanisms that enable the generation of molecules with desired structural or physicochemical properties.
-    *   **Property-Targeted Generation:** Generate molecules with a target physicochemical or electronic properties (e.g., excitation energy, dipole moment)
-    *   **Inpainting:** Systematically explore structural variants around reference molecules
-    *   **Outpainting:** Extend a molecule by generating new parts.
-*   **Command-Line Interface:** A simple and flexible CLI interface enables users to perform training, generation, prediction, and analysis tasks directly from the command line.
+## Features
 
+| | |
+|---|---|
+| **3D-native generation** | Models trained directly in Cartesian space; geometric validity by construction, not augmentation |
+| **Extensible architecture** | Multiple backbone families included; adding a new model is a single sub-package drop-in |
+| **Steerable generation** | Guide outputs toward target properties or structural constraints without retraining |
+| **End-to-end pipeline** | Raw data through training to post-generation analysis, with no glue scripts needed |
+| **Unified CLI** | `train · generate · predict · analyze · data`, all from one `MolCraftDiff` entry point |
+| **Built-in analysis suite** | Geometry optimization, validity metrics, quantum-chemical descriptors, and featurization |
 
-[![PyPI](https://img.shields.io/pypi/v/molcraftdiffusion)](https://pypi.org/project/molcraftdiffusion/)
-[![arXiv](https://img.shields.io/badge/PDF-arXiv-blue)](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19511401.svg)](https://doi.org/10.5281/zenodo.19511401)
-[![Weights](https://img.shields.io/badge/Weights-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
-[![Dataset](https://img.shields.io/badge/Dataset-HuggingFace-yellow)](https://huggingface.co/pregH/MolecularDiffusion)
-[![Tutorials](https://img.shields.io/badge/Tutorials-Docs-blue)](https://preghosh.github.io/MolCraftDiffusion/)
+## Installation
 
+```bash
+# Create environment
+conda create -n molcraft python=3.11 -y
+conda activate molcraft
+```
 
-Try our interactive demo for molecular generation: [MolCraftDiffusion-demo](https://huggingface.co/spaces/pregH/MolCraftDiffusion-demo)
+**GPU / CUDA:**
+```bash
+pip install molcraftdiffusion[gpu] \
+    --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+```
 
-Installation
------------
+**CPU-only:**
+```bash
+pip install molcraftdiffusion[cpu] \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    --find-links https://data.pyg.org/whl/torch-2.6.0+cpu.html
+```
 
-    # 1. Create environment
-    conda create -n molcraft python=3.11 -y
-    conda activate molcraft
+**Optional feature groups:**
+```bash
+pip install 'molcraftdiffusion[data]'     # data prep, augmentation, SOAP featurization
+pip install 'molcraftdiffusion[analyze]'  # metrics, xyz2mol, xtb-electronic
 
-    # 2. Install MolCraftDiffusion with a compute backend
+# xTB — must be installed via conda, not pip
+conda install -c conda-forge xtb==6.7.1 -y
+conda install xtb-python -y
+```
 
-    # GPU/CUDA install:
-    pip install molcraftdiffusion[gpu] \
-        --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
-
-    # CPU-only install:
-    pip install molcraftdiffusion[cpu] \
-        --extra-index-url https://download.pytorch.org/whl/cpu \
-        --find-links https://data.pyg.org/whl/torch-2.6.0+cpu.html
-
-    # 3. Optional feature groups
-
-    # Data preparation/augmentation/featurization utilities (includes dscribe for SOAP):
-    pip install 'molcraftdiffusion[data]'
-
-    # Analysis and post-processing utilities (metrics, compare, xyz2mol, xtb-electronic, featurize):
-    pip install 'molcraftdiffusion[analyze]'
-
-    # xTB is used by optimize, compare, and xtb-electronic — best installed from conda-forge:
-    conda install -c conda-forge xtb==6.7.1 -y
-
-The base install keeps data and analysis chemistry packages optional. If you call a `MolCraftDiff data ...` or `MolCraftDiff analyze ...` command without the required optional packages, the command exits with an installation hint instead of crashing.
+> Commands that require optional packages exit with an installation hint rather than crashing.
 
 ### UMA featurization backend (optional)
 
-The `MolCraftDiff analyze featurize --backend uma` command uses a pretrained UMA model.
-fairchem is **not** a pip dependency — clone the vendored source into the repo root:
+`MolCraftDiff analyze featurize --backend uma` uses a pretrained UMA model. fairchem is **not** a pip dependency; vendor it manually:
 
-    git clone https://github.com/pregHosh/fairchem fairchem
+```bash
+git clone https://github.com/pregHosh/fairchem fairchem
+```
 
-Download the `uma-s-1p2.pt` checkpoint from [Hugging Face](https://huggingface.co/pregH/MolecularDiffusion)
-and place it at `training_outputs/uma-s-1p2.pt` (or pass `--checkpoint /path/to/checkpoint.pt`).
-The SOAP backend (`--backend soap`, the default) has no such requirement.
+Download `uma-s-1p2.pt` from [Hugging Face](https://huggingface.co/pregH/MolecularDiffusion) and place it at `training_outputs/uma-s-1p2.pt` (or pass `--checkpoint /path/to/checkpoint.pt`). The default SOAP backend has no such requirement.
 
-### Development / editable install
+### Development install
 
-    git clone https://github.com/pregHosh/MolCraftDiffusion
-    cd MolCraftDiffusion
-    pip install -e .[gpu] \
-        --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+```bash
+git clone https://github.com/pregHosh/MolCraftDiffusion
+cd MolCraftDiffusion
+pip install -e .[gpu] --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
 
-    # Add optional feature groups in editable mode when needed:
-    pip install -e '.[data]'
-    pip install -e '.[analyze]'
+pip install -e '.[data]'     # optional
+pip install -e '.[analyze]'  # optional
+```
 
-Usage
------
+## Usage
 
-### Pre-trained Models
+Pre-trained diffusion models are available on [Hugging Face](https://huggingface.co/pregHosh/MolecularDiffusion). Starting from a pretrained checkpoint is recommended for downstream tasks.
 
-Pre-trained diffusion models are available at [Hugging Face](https://huggingface.co/pregHosh/MolecularDiffusion) or in the `models/edm_pretrained/` directory. We suggest to start from this model for downstream application.
+### CLI
 
-There are two ways to run experiments: using the `MolCraftDiff` command-line tool (recommended) or by executing the Python scripts directly.
+Run all commands from the repo root. Every command accepts a YAML config name and supports Hydra-style key overrides:
 
-### 1. `MolCraftDiff` CLI (Recommended)
+```
+MolCraftDiff [COMMAND] [CONFIG_NAME] [key=value ...]
+```
 
-Make sure you have installed the package in editable mode as described above, and that you run the commands from the root of the project directory.
+| Command | Description |
+|---|---|
+| `train` | Train a diffusion, regression, or guidance model |
+| `generate` | Sample molecules from a trained model |
+| `predict` | Run property prediction |
+| `eval-predict` | Evaluate prediction results |
+| `analyze` | Post-process and evaluate generated molecules |
+| `data` | Data preparation and augmentation utilities |
 
-**Commands:**
-*   `train`: Run a training job.
-*   `generate`: Run a molecule generation job.
-*   `predict`: Run prediction with a trained model.
-*   `eval-predict`: Evaluate predictions.
-*   `analyze`: Perform analysis and post-processing on generated molecules.
-*   `data`: Data processing utilities (preparation, augmentation, and dataset operations).
+```bash
+MolCraftDiff train   example_diffusion_config
+MolCraftDiff generate my_generation_config
+MolCraftDiff predict  my_prediction_config
+MolCraftDiff data prepare compile -s data_dir/ -d dataset.db
 
-**Command Syntax:**
+MolCraftDiff --help         # all commands
+MolCraftDiff train --help   # per-command help
+```
 
-    MolCraftDiff [COMMAND] [CONFIG_NAME/ARGUMENTS]
+### Analysis & Post-processing
 
-*   `[COMMAND]`: One of `train`, `generate`, `predict`, `eval-predict`, `analyze`, or `data`.
-*   `[CONFIG_NAME]`: The name of the configuration file from the `configs/` directory (e.g., `train`, `example_diffusion_config`).
-*   `[ARGUMENTS]`: Additional command-line arguments to override configuration settings.
+```bash
+MolCraftDiff analyze optimize  generated_molecules/                              # GFN-xTB geometry optimization
+MolCraftDiff analyze metrics   generated_molecules/                              # validity and connectivity
+MolCraftDiff analyze compare   generated_molecules/                              # RMSD, energy diff, bonds/angles
+MolCraftDiff analyze xyz2mol   generated_molecules/                              # XYZ → SMILES + fingerprints
+MolCraftDiff analyze featurize generated_molecules/                              # SOAP feature vectors (default)
+MolCraftDiff analyze featurize generated_molecules/ --backend uma --device cuda  # UMA backbone embeddings
+```
 
-**Examples:**
+## Visualization
 
-    # Train a model using the 'example_diffusion_config.yaml' configuration
-    MolCraftDiff train example_diffusion_config
+- [3DMolViewer](https://github.com/pregHosh/3DMolViewer): interactive 3D property visualization
+- [V](https://github.com/briling/v): lightweight X11 molecular viewer
 
-    # Generate molecules using the 'my_generation_config.yaml' configuration
-    MolCraftDiff generate my_generation_config
+## Tutorials
 
-    # Predict properties using a trained model
-    MolCraftDiff predict my_prediction_config
+Full tutorials are at **https://preghosh.github.io/MolCraftDiffusion/**
 
-    # Compile molecular data into an ASE database
-    MolCraftDiff data prepare compile -s data_dir/ -d dataset.db
-
-
-**Getting Help:**
-
-To see the main help message and a list of all commands:
-
-    MolCraftDiff --help
-
-To get help for a specific command:
-
-    MolCraftDiff train --help
-
-### 2. Direct Script Execution
-
-You can also execute the scripts in the `scripts/` directory directly.
-
-**Training:**
-
-    python scripts/train.py tasks=[TASK]
-
-where TASK is one of the following: `diffusion`, `guidance`, `regression`.
-
-**Generation:**
-
-    python scripts/generate.py interference=[INTERFERENCE]
-
-where INTERFERENCE is one of the following: `gen_cfg`, `gen_cfggg`, `gen_conditional`, `gen`.
-
-**Prediction:**
-
-    python scripts/predict.py
-
-
-### 3. Analysis & Post-processing
-
-The `analyze` command provides a suite of tools for processing and evaluating generated molecules.
-
-**Subcommands:**
-*   `optimize`: Optimize molecular geometries using GFN-xTB.
-*   `metrics`: Compute validity and connectivity metrics.
-*   `compare`: Calculate RMSD, energy differences, and geometric properties (bonds/angles) between generated and reference structures.
-*   `xyz2mol`: Convert XYZ files to SMILES and extract fingerprints/scaffolds.
-*   `xtb-electronic`: Compute quantum-chemical descriptors (HOMO, LUMO, charges, Fukui indices, etc.) at GFN-xTB level.
-*   `featurize`: Extract fixed-size molecular feature vectors via SOAP descriptors or pretrained UMA backbone embeddings.
-
-**Examples:**
-
-    # Optimize geometries in a directory
-    MolCraftDiff analyze optimize generated_molecules/
-
-    # Compute validity metrics
-    MolCraftDiff analyze metrics generated_molecules/
-
-    # Compare generated structures with optimized counterparts
-    MolCraftDiff analyze compare generated_molecules/
-
-    # Convert XYZ to SMILES
-    MolCraftDiff analyze xyz2mol generated_molecules/
-
-    # Featurize with SOAP (default species list, no GPU needed)
-    MolCraftDiff analyze featurize generated_molecules/
-
-    # Featurize with UMA backbone embeddings (requires fairchem clone + checkpoint)
-    MolCraftDiff analyze featurize generated_molecules/ --backend uma --device cuda
-
-
-Visualization
--------------
-
-Generated 3D molecules and their properties can be visualized using the [3DMolViewer](https://github.com/pregHosh/3DMolViewer) package.
-
-We also recommend our in-house and lightweight X11 molecular viewer [V](https://github.com/briling/v) package.
-
-
-Tutorials
----------
-
-Tutorials are now hosted in the docs site: https://preghosh.github.io/MolCraftDiffusion/
-
-The local `tutorials/` directory is deprecated and will be removed in a future release.
-
-
-
-Project Structure
------------------
+## Project Structure
 
 ```
 ├── .project-root
 ├── justfile
 ├── pyproject.toml
-├── README.md
-├── setup.py
-└── src
-    └── MolecularDiffusion
-       ├── __init__.py
-       ├── _version.py
-       ├── molcraftdiff.py
-       ├── callbacks
-       │   ├── __init__.py
-       │   └── train_helper.py
-       ├── cli
-       │   ├── __init__.py
-       │   ├── analyze.py
-       │   ├── eval_predict.py
-       │   ├── generate.py
-       │   ├── main.py
-       │   ├── predict.py
-       │   └── train.py
-       ├── configs
-       │   ├── data
-       │   ├── hydra
-       │   ├── interference
-       │   ├── logger
-       │   ├── tasks
-       │   └── trainer
-       ├── core
-       │   ├── __init__.py
-       │   ├── core.py
-       │   ├── engine.py
-       │   ├── logger.py
-       │   └── meter.py
-       ├── data
-       │   ├── __init__.py
-       │   ├── dataloader.py
-       │   ├── dataset.py
-       │   └── component
-       ├── modules
-       │   ├── __init__.py
-       │   ├── layers
-       │   ├── models
-       │   └── tasks
-       ├── runmodes
-       │   ├── __init__.py
-       │   ├── analyze
-       │   │   ├── __init__.py
-       │   │   ├── compute_energy_rmsd.py
-       │   │   ├── compute_metrics.py
-       │   │   ├── compute_pair_geometry.py
-       │   │   ├── xtb_optimization.py
-       │   │   └── xyz2mol.py
-       │   ├── generate
-       │   └── train
-       └── utils
-           ├── __init__.py
-           ├── comm.py
-           ├── diffusion_utils.py
-           ├── file.py
-           ├── geom_analyzer.py
-           ├── geom_constant.py
-           ├── geom_constraint.py
-           ├── geom_metrics.py
-           ├── geom_utils.py
-           ├── io.py
-           ├── molgraph_utils.py
-           ├── plot_function.py
-           ├── pretty.py
-           ├── sascore.py
-           ├── smilify.py
-           └── torch.py
+└── src/MolecularDiffusion/
+    ├── cli/                    # Click entry points (train, generate, predict, analyze, data)
+    ├── configs/                # Hydra config trees (tasks, data, trainer, logger, hydra, interference)
+    ├── core/                   # Training engine (PyTorch Lightning wrapper, callbacks, logging)
+    ├── data/                   # Dataset, dataloader, and featurization components
+    ├── modules/
+    │   ├── layers/             # Reusable equivariant building blocks (EGCL, Equiformer v2, …)
+    │   │                       #   Add a new layer family here; wire it into a model below.
+    │   ├── models/             # One sub-package per architecture:
+    │   │   ├── en_diffusion/   #   EDM — E(n)-equivariant diffusion (default backbone)
+    │   │   ├── ldm/            #   Latent diffusion model (Equiformer encoder/decoder + VAE)
+    │   │   ├── tabasco/        #   TABASCO flow-matching architecture
+    │   │   ├── shepherd_arch/  #   Shepherd — bundles its own equiformer_v2 variant
+    │   │   └── <new_arch>/     #   Drop a new architecture here; register it in configs/tasks/
+    │   └── tasks/              # Lightning modules that bind a model to a training objective
+    │                           #   (diffusion, regression, guidance, pharmacophore, SSL, …)
+    ├── runmodes/               # Run-mode logic (train, generate, analyze, data preparation)
+    └── utils/                  # Geometry, diffusion math, graph utilities, I/O helpers
 ```
 
+## License
 
-License
--------
+MIT
 
-This project is licensed under the MIT License.
+## Citation
 
+If you use MolCraftDiffusion in your research, please cite:
 
-Citation
---------
-
-If you use MolecularDiffusion in your research, please cite the following:
-
-[ChemRxiv: MolecularDiffusion: A Unified Generative-AI Framework for 3D Molecular Design](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237)
+[MolecularDiffusion: A Unified Generative-AI Framework for 3D Molecular Design](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237) (ChemRxiv)
 
 <!-- ```bibtex
 @article{hosh2025moleculardiffusion,
