@@ -174,8 +174,19 @@ If you use MolCraftDiffusion in your research, please cite:
 
 [MolecularDiffusion: A Unified Generative-AI Framework for 3D Molecular Design](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237) (ChemRxiv)
 
-<!-- ```bibtex
-@article{hosh2025moleculardiffusion,
-to be filled
+```bibtex
+@article{worakul_modular_2026,
+	title = {Modular {Framework} for {3D} {Molecular} {Generation} in {Computational} {Chemistry} {Applications}},
+	copyright = {https://creativecommons.org/licenses/by/4.0/},
+	issn = {0002-7863, 1520-5126},
+	url = {https://pubs.acs.org/doi/10.1021/jacs.5c19960},
+	doi = {10.1021/jacs.5c19960},
+	language = {en},
+	urldate = {2026-06-24},
+	journal = {Journal of the American Chemical Society},
+	author = {Worakul, Thanapat and Azzouzi, Mohammed and Wodrich, Matthew D. and Corminboeuf, Clémence},
+	month = jun,
+	year = {2026},
+	pages = {jacs.5c19960},
 }
-``` -->
+```

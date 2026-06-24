@@ -161,7 +161,15 @@ class EGNN(nn.Module, core.Configurable):
         if not hasattr(self, 'n_adapter_context'):
             # Old checkpoint: infer from legacy adapter_module flag
             if getattr(self, 'adapter_module', False):
-                self.n_adapter_context = getattr(self, 'in_context_nf', 0)
+                # Old EGNN never stored in_context_nf, so recover the true adapter
+                # input width from the existing emb_c_in MLP (dims[0] == in_context_nf).
+                # A bare getattr here yields 0 and silently disables conditioning.
+                emb_c = getattr(self, 'emb_c_in', None)
+                width = getattr(self, 'in_context_nf', 0)
+                if width == 0 and emb_c is not None and getattr(emb_c, 'dims', None):
+                    width = emb_c.dims[0]
+                self.n_adapter_context = width
+                self.in_context_nf = width
                 self.n_concat_context = 0
             else:
                 self.n_adapter_context = 0
