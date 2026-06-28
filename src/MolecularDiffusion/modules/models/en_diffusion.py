@@ -10,7 +10,9 @@ from torch import autograd
 from torch.distributions.categorical import Categorical
 from torch.nn import functional as F
 from torch_scatter import scatter_add
+
 from tqdm import tqdm
+from torch_geometric.data import Data, Batch
 
 from MolecularDiffusion.utils import (
     assert_mean_zero_with_mask,
@@ -19,8 +21,7 @@ from MolecularDiffusion.utils import (
     create_pyg_graph,
     enforce_min_nodes_per_connector,
     ensure_intact,
-    initialize_extra_nodes,
-    initialize_extra_nodes_seed,
+    build_extra_node_template,
     find_close_points_torch_and_push_op2,
     remove_mean_with_mask,
     remove_mean_pyG,
@@ -71,19 +72,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         mask_value: float = 0.0,
         eval_mode: bool = False,
         debug: bool = False,
+        atom_vocab: Optional[Sequence[str]] = None,
         use_noised_conditioning: bool = False,
-        reference_freeze_mode: str = "all",
     ):
         super().__init__()
-        if reference_freeze_mode not in {"all", "features_only"}:
-            raise ValueError(
-                "reference_freeze_mode must be one of {'all', 'features_only'}, "
-                f"got {reference_freeze_mode!r}"
-            )
         self.call = 0
         self.eval_mode = eval_mode
         self.debug = debug
-        self.reference_freeze_mode = reference_freeze_mode
+        self.atom_vocab = list(atom_vocab) if atom_vocab else None
 
         # Loss and parametrization settings
         assert loss_type in {"vlb", "l2"}
@@ -147,46 +143,66 @@ class EnVariationalDiffusion(torch.nn.Module):
                 f"1 / norm_value = {1. / max_norm_value}"
             )
 
+    def phi(self, x, t, node_mask, edge_mask, context):
+        net_out = self.dynamics._forward(t, x, node_mask, edge_mask, context)
+        return net_out
+
     def _get_noised_condition_tensor(self, t, clean_tensor=None):
-        """Generate noised version of condition tensor at timestep t."""
+        """
+        Generate noised version of condition tensor at timestep t.
+        
+        Args:
+            t: diffusion timestep tensor
+            clean_tensor: clean scaffold tensor (default: self.condition_tensor)
+        
+        Returns:
+            noised_tensor: forward-noised version at timestep t
+        """
         if clean_tensor is None:
             clean_tensor = getattr(self, "clean_condition_tensor", None)
             if clean_tensor is None:
                 clean_tensor = self.condition_tensor
-
+        
         if clean_tensor is None:
             return None
-
+        
+        # Get noise schedule parameters at timestep t
         gamma_t = self.gamma(t)
         sigma_t = self.sigma(gamma_t, target_tensor=clean_tensor)
         alpha_t = torch.sqrt(1 - sigma_t**2)
-
+        
+        # Sample noise with zero-mean positions
         pos_mask = torch.ones((clean_tensor.size(0), clean_tensor.size(1), 1), device=clean_tensor.device)
         eps_x = sample_center_gravity_zero_gaussian_with_mask(
             size=(clean_tensor.size(0), clean_tensor.size(1), self.n_dims),
             device=clean_tensor.device,
-            node_mask=pos_mask,
+            node_mask=pos_mask
         )
         eps_h = torch.randn(
             (clean_tensor.size(0), clean_tensor.size(1), clean_tensor.size(2) - self.n_dims),
-            device=clean_tensor.device,
+            device=clean_tensor.device
         )
         epsilon = torch.cat([eps_x, eps_h], dim=2)
-
+        
+        # Forward diffusion: z_t = alpha_t * x_0 + sigma_t * epsilon
         noised = alpha_t * clean_tensor + sigma_t * epsilon
+        
+        # Ensure center of mass is zero for the position part
         noised[:, :, :self.n_dims] = remove_mean_with_mask(noised[:, :, :self.n_dims], pos_mask)
+        
         return noised
 
     def _select_conditioning_tensor(self, t, clean_tensor=None):
-        """Return clean or noised conditioning tensor depending on mode."""
+        """
+        Return appropriate conditioning tensor based on mode.
+        
+        Returns: clean_tensor if use_noised_conditioning=False
+                 noised_tensor if use_noised_conditioning=True
+        """
         if not getattr(self, "use_noised_conditioning", False):
             return clean_tensor if clean_tensor is not None else self.condition_tensor
         else:
             return self._get_noised_condition_tensor(t, clean_tensor)
-
-    def phi(self, x, t, node_mask, edge_mask, context):
-        net_out = self.dynamics._forward(t, x, node_mask, edge_mask, context)
-        return net_out
     
     def phi_pyg(self, mol_graph):
         """
@@ -344,13 +360,16 @@ class EnVariationalDiffusion(torch.nn.Module):
         x = z[:, :, :self.n_dims]
         h_cat = z[:, :, self.n_dims : self.n_dims + self.num_classes]
 
-        if self.ndim_extra > 0:
-            h_cat = h_cat[:, :, :-self.ndim_extra]
-
         h_int = z[:, :, -1:].contiguous()
         assert h_int.size(2) == self.include_charges
 
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
+
+        # Strip extra features after unnormalization — chain frames only
+        # need core OHE features, not extras
+        if self.ndim_extra > 0:
+            h_cat = h_cat[:, :, :-self.ndim_extra]
+
         return torch.cat([x, h_cat, h_int], dim=2)
     
     def sigma_and_alpha_t_given_s(
@@ -603,14 +622,17 @@ class EnVariationalDiffusion(torch.nn.Module):
         x, h_cat, h_int = self.unnormalize(
             x, h_cat, h_int, node_mask
         )
-
+        
         if len(self.extra_norm_values) > 0:
             h_extra = h_cat[:, :, -len(self.extra_norm_values) :]
             h_cat = h_cat[:, :, : -len(self.extra_norm_values)]
         else:
             h_extra = torch.zeros(0).to(z0.device)
 
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes - len(self.extra_norm_values)) * node_mask
+        h_cat = F.one_hot(
+            torch.argmax(h_cat, dim=2),
+            self.num_classes - len(self.extra_norm_values),
+        ) * node_mask
         h_int = torch.round(h_int).long() * node_mask
         h = {"integer": h_int, "categorical": h_cat, "extra": h_extra}
         return x, h
@@ -628,7 +650,13 @@ class EnVariationalDiffusion(torch.nn.Module):
     def _normalize_guidance_grad(
         self, grad, D, t_scale, sigma_t, x_weight, h_weight, node_mask
     ):
-        """Normalize a raw guidance gradient into the equivariant subspace."""
+        """Normalize a raw guidance gradient into the equivariant subspace.
+
+        Splits grad into position ([:n_dims]) and feature ([n_dims:]) parts,
+        scales each part by its per-sample L2 norm and the GeoGuide factor
+        D^0.5 / t_scale * sigma_t, masks padded nodes, and recenters the
+        position part to zero CoM.
+        """
         min_t = torch.as_tensor(
             1.0 / float(self.T), device=t_scale.device, dtype=t_scale.dtype
         )
@@ -664,7 +692,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         mask_node_index,
         t_critical,
     ):
-        """Apply outpaint or inpaint structure constraint to zs."""
+        """Apply outpaint or inpaint structure constraint to zs.
+
+        For outpaint, hard-fixes the reference block when s > t_critical,
+        otherwise only fixes the feature channels. For inpaint, replaces the
+        reference block entirely. No-ops when condition_tensor is None.
+        """
         if self.condition_tensor is None:
             return zs
         if "outpaint" in structure_guidance:
@@ -682,7 +715,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             )
         return zs
 
-
     def log_pxh_given_z0_without_constants(
         self,
         x,
@@ -695,7 +727,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         reference_indices=None,
         epsilon=1e-10
     ):
-
+        
         z_t = z_t[:, :, self.n_dims :]
 
         if self.ndim_extra > 0:
@@ -1034,15 +1066,28 @@ class EnVariationalDiffusion(torch.nn.Module):
         # 3. CONTEXT MASKING
         # ---------------------------------------------------------------------
         if context is not None:
-            if self.dynamics.use_adapter_module:
+            has_adapter = hasattr(self.dynamics, 'n_adapter_context') and self.dynamics.n_adapter_context > 0
+            has_concat = hasattr(self.dynamics, 'n_concat_context') and self.dynamics.n_concat_context > 0
+            adapter_only = has_adapter and not has_concat
+
+            if adapter_only:
+                # Pure adapter: drop entire context with probability
                 if self.context_mask_rate > 0:
                     context_masked = None if torch.randint(1, int(1 / self.context_mask_rate), ()).item() == 1 else context.clone() * node_mask
                 else:
                     context_masked = context.clone() * node_mask
             else:
+                # Concat-only or hybrid: mask concat columns with mask_value
                 mask = torch.rand(context.size(0), device=context.device) < self.context_mask_rate
                 context_masked = context.clone()
-                context_masked[mask] = self.mask_value
+                if has_adapter:
+                    # Hybrid: zero adapter columns, set concat columns to mask_value
+                    adapter_idx = self.dynamics.adapter_indices
+                    concat_idx = self.dynamics.concat_indices
+                    context_masked[mask, :][:, adapter_idx] = 0.0
+                    context_masked[mask, :][:, concat_idx] = self.mask_value
+                else:
+                    context_masked[mask] = self.mask_value
                 context_masked *= node_mask
         else:
             context_masked = None
@@ -1251,24 +1296,12 @@ class EnVariationalDiffusion(torch.nn.Module):
             mol_graph_t["graph"].x = z_t[:, self.n_dims:]
         mol_graph_t["t"] = t_stretched
 
-
-        # TODO figure this out later
-        # if reference_indices is not None:
-        #     # # Freeze the reference atoms
-        #     # xh_ref = xh[:, reference_indices, :]
-        #     # z_t[:, reference_indices, :] = xh_ref[:, :, :]
-        #     # eps[:, reference_indices, :] = 0
-        #     # z_t = torch.cat([
-        #     #     remove_mean_with_mask(z_t[:, :, : self.n_dims], node_mask),
-        #     #     z_t[:, :, self.n_dims :],
-        #     # ],dim=2)
-
-        # assert_mean_zero_with_mask(z_t[:, :, : self.n_dims], node_mask)
-
-        # TODO figure this out later
-        # Classifer-free guidance (if context_mask_rate > 0) or conditioning (context_mask_rate = 0).
         if context is not None:
-            if self.dynamics.use_adapter_module:
+            has_adapter = hasattr(self.dynamics, 'n_adapter_context') and self.dynamics.n_adapter_context > 0
+            has_concat = hasattr(self.dynamics, 'n_concat_context') and self.dynamics.n_concat_context > 0
+            adapter_only = has_adapter and not has_concat
+
+            if adapter_only:
                 if self.context_mask_rate > 0:
                     n_rand = torch.randint(1, int(1/self.context_mask_rate), (1,), device=context.device)
                     if 1 in n_rand:
@@ -1280,7 +1313,13 @@ class EnVariationalDiffusion(torch.nn.Module):
             else:
                 mask = torch.rand(context.size(0), device=context.device) < self.context_mask_rate
                 context_masked = context.clone()
-                context_masked[mask] = self.mask_value
+                if has_adapter:
+                    adapter_idx = self.dynamics.adapter_indices
+                    concat_idx = self.dynamics.concat_indices
+                    context_masked[mask, :][:, adapter_idx] = 0.0
+                    context_masked[mask, :][:, concat_idx] = self.mask_value
+                else:
+                    context_masked[mask] = self.mask_value
                 context_masked = context_masked * node_mask
         else:
             context_masked = None
@@ -1390,11 +1429,10 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return loss, {
             "t": t_int.squeeze(),
-            "loss_t": loss.squeeze(),
-            # "error": error.squeeze(),
+            "loss_t": loss_t,
         }
-    
-      
+
+
     def compute_loss_distillation(self, x, h, node_mask, edge_mask, context, t0_always, masked_context=0):
         """Computes an estimator for the variational lower bound, or the simple loss (MSE)."""
 
@@ -1540,12 +1578,38 @@ class EnVariationalDiffusion(torch.nn.Module):
             "error": error.squeeze(),
         }
 
+    def compute_loss_per_graph(
+        self,
+        mol_graph,
+        context=None,
+        reference_indices=None,
+        reference_freeze_mode="all",
+    ):
+        """Returns raw per-graph error for sp_regularizer filtering (PyG path).
+
+        Returns loss_t (the per-graph prediction error before T multiplication
+        and neg_log_constants), so the scale is comparable to FM's per-graph MSE.
+        Only valid when batch uses PyG format ('graph' key).
+        """
+        mol_graph, delta_log_px = self.normalize_pyG(mol_graph)
+        if self.training and self.loss_type == "l2":
+            delta_log_px = torch.zeros_like(delta_log_px)
+        t0_always = not self.training
+        _, loss_dict = self.compute_loss_pyG(
+            mol_graph,
+            context,
+            t0_always,
+            reference_indices=reference_indices,
+            reference_freeze_mode=reference_freeze_mode,
+        )
+        return loss_dict["loss_t"]
+
     def forward(
-        self, 
-        x, 
-        h, 
+        self,
+        x,
+        h,
         node_mask=None,
-        edge_mask=None, 
+        edge_mask=None,
         context=None,
         reference_indices=None,
         reference_freeze_mode="all",
@@ -1568,10 +1632,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         if self.training and self.loss_type == "l2":
             delta_log_px = torch.zeros_like(delta_log_px)
 
-        if self.training and reference_indices is None:
-            t0_always = False   
-        else:
-            t0_always = True
+        t0_always = not self.training
 
         if self.dynamics_teacher is not None:
             if self.training:
@@ -1736,10 +1797,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             energy = target_function(zs, s).sum()
             grad = autograd.grad(energy, zs)[0]
 
-
+        grad = grad.nan_to_num(0.0)
         t_min = grad.min()
         t_max = grad.max()
-        grad = 2*(grad - t_min) / (t_max - t_min) -1 
+        grad = 2*(grad - t_min) / (t_max - t_min) -1
 
         grad = torch.cat(
             [
@@ -1876,6 +1937,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             energy = target_function(z0, t).sum()
             grad = autograd.grad(energy, z0)[0]
 
+        grad = grad.nan_to_num(0.0)
         opt_info["grad_norms"] = grad.norm(dim=[1, 2])
 
         grad_norm_x = grad[:, : , :self.n_dims].norm(dim=[1, 2])
@@ -1990,14 +2052,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         mask_bools = None
         natom_ref = 0
 
-        # In the event the reference tensor is provided
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
             natom_ref = self.condition_tensor.size(1)
             mask_bools = [False] * natom_ref + [True] * (
                 node_mask.size(1) - natom_ref
             )
             mask_bools = torch.tensor(mask_bools, device=zt.device, dtype=torch.bool)
-            
 
         (
             sigma2_t_given_s,
@@ -2054,7 +2114,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             max_norm / (grad.norm(dim=[1, 2], keepdim=True) + 1e-6), max=1
         )
         grad = grad * clip_coef
-        
+
         mu = mu - scale * grad
 
         opt_info["mu1_norm"] = mu.norm(dim=[1, 2])
@@ -2089,8 +2149,8 @@ class EnVariationalDiffusion(torch.nn.Module):
             with torch.enable_grad():
                 for i in range(n_backward):
                     zs = zs.detach().requires_grad_(True)
-                    energy_r = target_function(zs,  s).sum()
-                    grad_r = autograd.grad(energy_r, zs)[0]      
+                    energy_r = target_function(zs, s).sum()
+                    grad_r = autograd.grad(energy_r, zs)[0]
                     grad_r = grad_r.nan_to_num(0.0)
 
                     grad_r = self._normalize_guidance_grad(
@@ -2114,9 +2174,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     zs = self._mask_padded_nodes(zs, node_mask)
                     zs = torch.cat(
                         [
-                            remove_mean_with_mask(
-                                zs[:, :, :self.n_dims], node_mask
-                            ),
+                            remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
                             zs[:, :, self.n_dims:],
                         ],
                         dim=2,
@@ -2219,35 +2277,21 @@ class EnVariationalDiffusion(torch.nn.Module):
                     eps_t_cond_negative = eps_t_cond_negative.nan_to_num(0.0)
                 eps_t = (1 + scale) * eps_t_cond_positive - scale * eps_t_cond_negative      
             else:      
-                has_adapter = (
-                    hasattr(self.dynamics, "n_adapter_context")
-                    and self.dynamics.n_adapter_context > 0
-                )
-                has_concat = (
-                    hasattr(self.dynamics, "n_concat_context")
-                    and self.dynamics.n_concat_context > 0
-                )
+                has_adapter = hasattr(self.dynamics, 'n_adapter_context') and self.dynamics.n_adapter_context > 0
+                has_concat = hasattr(self.dynamics, 'n_concat_context') and self.dynamics.n_concat_context > 0
                 adapter_only = has_adapter and not has_concat
 
                 if adapter_only:
                     context_null = None
                 elif has_adapter:
-                    context_null = torch.zeros_like(
-                        context, device=eps_t_cond_positive.device
-                    )
+                    # Hybrid: zero adapter columns, mask_value for concat columns
+                    context_null = torch.zeros_like(context, device=eps_t_cond_positive.device)
                     context_null[:, :, self.dynamics.concat_indices] = self.mask_value
-                elif getattr(self.dynamics, "use_adapter_module", False):
-                    context_null = None
                 else:
-                    context_null = (
-                        torch.zeros_like(
-                            context, device=eps_t_cond_positive.device
-                        )
-                        + self.mask_value
-                    )
+                    context_null = torch.zeros_like(context, device=eps_t_cond_positive.device) + self.mask_value   
                 eps_t_uncond = self.phi(zt, t, node_mask, edge_mask, context=context_null)
                 if torch.any(torch.isnan(eps_t_uncond)):
-                    logger.warning("eps_t_uncond is nan, setting to 0")
+                    print("eps_t_uncond is nan, setting to 0") 
                     eps_t_uncond = eps_t_uncond.nan_to_num(0.0)
                 eps_t =  (1 + scale) * eps_t_cond_positive - scale * eps_t_uncond
         mu = (
@@ -2271,7 +2315,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 )
             else:
                 # Fix just the atomm types of reference part as conditioning
-                zs[:, :natom_ref, 3:] = condition_to_use[:, :natom_ref, self.n_dims:]
+                zs[:, :natom_ref, 3:] = condition_to_use[:, :natom_ref, self.n_dims:]      
         elif  self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
             zs = torch.cat(
                 [ condition_to_use, zs[:, mask_node_index, :]], dim=1
@@ -2354,14 +2398,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         mask_bools = None
         natom_ref = 0
 
-        # In the event the reference tensor is provided
         if self.condition_tensor is not None and "outpaint" in structure_guidance:
             natom_ref = self.condition_tensor.size(1)
             mask_bools = [False] * natom_ref + [True] * (
                 node_mask.size(1) - natom_ref
             )
             mask_bools = torch.tensor(mask_bools, device=zt.device, dtype=torch.bool)
-            
 
         (
             sigma2_t_given_s,
@@ -2374,10 +2416,8 @@ class EnVariationalDiffusion(torch.nn.Module):
 
 
         if scale_schedule_type is not None:
-            cfg_scale = self.scale_schedule(
-                t, 0, cfg_scale, schedule_type=scale_schedule_type
-            )
-            cfg_scale = cfg_scale.view(-1, 1, 1)
+            cfg_scale = self.scale_schedule(t, 0, cfg_scale, schedule_type=scale_schedule_type)
+            cfg_scale = cfg_scale.view(-1, 1, 1)  # Reshape for broadcasting
 
         # Neural net prediction.
         with torch.no_grad():
@@ -2388,18 +2428,10 @@ class EnVariationalDiffusion(torch.nn.Module):
                 eps_t_cond = eps_t_cond.nan_to_num(0.0)
 
             if context_negative is not None:
-                eps_t_uncond = self.phi(
-                    zt, t, node_mask, edge_mask, context=context_negative
-                )
+                eps_t_uncond = self.phi(zt, t, node_mask, edge_mask, context=context_negative)
             else:
-                has_adapter = (
-                    hasattr(self.dynamics, "n_adapter_context")
-                    and self.dynamics.n_adapter_context > 0
-                )
-                has_concat = (
-                    hasattr(self.dynamics, "n_concat_context")
-                    and self.dynamics.n_concat_context > 0
-                )
+                has_adapter = hasattr(self.dynamics, 'n_adapter_context') and self.dynamics.n_adapter_context > 0
+                has_concat = hasattr(self.dynamics, 'n_concat_context') and self.dynamics.n_concat_context > 0
                 adapter_only = has_adapter and not has_concat
 
                 if adapter_only:
@@ -2407,22 +2439,15 @@ class EnVariationalDiffusion(torch.nn.Module):
                 elif has_adapter:
                     context_null = torch.zeros_like(context, device=eps_t_cond.device)
                     context_null[:, :, self.dynamics.concat_indices] = self.mask_value
-                elif getattr(self.dynamics, "use_adapter_module", False):
-                    context_null = None
                 else:
-                    context_null = (
-                        torch.zeros_like(context, device=eps_t_cond.device)
-                        + self.mask_value
-                    )
-                eps_t_uncond = self.phi(
-                    zt, t, node_mask, edge_mask, context=context_null
-                )
+                    context_null = torch.zeros_like(context, device=eps_t_cond.device) + self.mask_value
+                eps_t_uncond = self.phi(zt, t, node_mask, edge_mask, context=context_null)
 
             if torch.any(torch.isnan(eps_t_uncond)):
                 logger.warning("eps_t_uncond is nan, setting to 0")
                 eps_t_uncond = eps_t_uncond.nan_to_num(0.0)
 
-            eps_t =  (1 + cfg_scale) * eps_t_cond - cfg_scale * eps_t_uncond
+            eps_t = (1 + cfg_scale) * eps_t_cond - cfg_scale * eps_t_uncond
         mu = (
             zt / alpha_t_given_s
             - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
@@ -2434,7 +2459,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # gradient guidance
         z0 = (zt - sigma_t * eps_t) / ((1 - sigma_t**2) ** (1 / 2))
-
+        
         condition_to_use = self._select_conditioning_tensor(t)
 
         z0 = self._apply_structure_fix(
@@ -2493,8 +2518,8 @@ class EnVariationalDiffusion(torch.nn.Module):
             with torch.enable_grad():
                 for i in range(n_backward):
                     zs = zs.detach().requires_grad_(True)
-                    energy_r = target_function(zs,  s).sum()
-                    grad_r = autograd.grad(energy_r, zs)[0]      
+                    energy_r = target_function(zs, s).sum()
+                    grad_r = autograd.grad(energy_r, zs)[0]
                     grad_r = grad_r.nan_to_num(0.0)
 
                     grad_r = self._normalize_guidance_grad(
@@ -2518,14 +2543,13 @@ class EnVariationalDiffusion(torch.nn.Module):
                     zs = self._mask_padded_nodes(zs, node_mask)
                     zs = torch.cat(
                         [
-                            remove_mean_with_mask(
-                                zs[:, :, :self.n_dims], node_mask
-                            ),
+                            remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
                             zs[:, :, self.n_dims:],
                         ],
                         dim=2,
                     )
                     zs = zs.detach()
+
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
@@ -2533,11 +2557,11 @@ class EnVariationalDiffusion(torch.nn.Module):
             ],
             dim=2,
         )
-        
-        if self.condition_tensor  is not None and "outpaint" in structure_guidance:
+
+        if self.condition_tensor is not None and "outpaint" in structure_guidance:
             self.condition_tensor = zs[:, ~mask_bools, :]
-        elif self.condition_tensor  is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
-            self.condition_tensor = zs[:, ~mask_node_index, :]  
+        elif self.condition_tensor is not None and "inpaint" in structure_guidance and len(mask_node_index) > 0:
+            self.condition_tensor = zs[:, ~mask_node_index, :]
         return zs, opt_info
 
 
@@ -2700,13 +2724,16 @@ class EnVariationalDiffusion(torch.nn.Module):
         sigma_t = self.sigma(gamma_t, target_tensor=zt)
 
         # Neural net prediction.
+        if not torch.isfinite(zt).all():
+            n_bad = (~torch.isfinite(zt)).sum().item()
+            print(f"[ip] zt has {n_bad} non-finite values before phi — sanitising")
+            zt = zt.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
         eps_t = self.phi(zt, t, node_mask, edge_mask, context)
+        eps_t = eps_t.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
         if torch.all(eps_t == 0):
             raise ValueError("NaN in eps_t, stop sampling.")
 
         # Compute mu for p(zs | zt).
-        # assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
-        # assert_mean_zero_with_mask(eps_t[:, :, : self.n_dims], node_mask)
         mu = (
             zt / alpha_t_given_s
             - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
@@ -2717,12 +2744,13 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+        zs = zs.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
 
         condition_to_use = self._select_conditioning_tensor(t)
 
         if len(mask_node_index) > 0 and len(connector_dicts) > 0:
             zs = torch.cat(
-                [condition_to_use, zs[:, mask_node_index, :]], dim=1
+                [ condition_to_use, zs[:, mask_node_index, :]], dim=1
             )
 
             apply_geom = s[0].item() < t_critical_1
@@ -2778,7 +2806,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                             d_threshold=d_intact_b,
                         )
                         zs[b, mask_node_index, : self.n_dims] = z1_b
-
+        
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
@@ -2786,9 +2814,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             ],
             dim=2,
         )
-
+        
         if len(mask_node_index) > 0:
-            self.condition_tensor = zs[:, ~mask_node_index, :]
+            self.condition_tensor = zs[:, ~mask_node_index, :]   
+    
 
         return zs
     
@@ -2841,7 +2870,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         connector_indices = torch.tensor(list(connector_dicts.keys()), device=zt.device, dtype=torch.long)
         connector_degrees = torch.tensor([value[0] for value in connector_dicts.values()], device=zt.device, dtype=torch.long)
         natom_ref = (~mask_bools).sum()
-
+        
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
@@ -2856,7 +2885,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         eps_s = self.phi(zt, t, node_mask, edge_mask, context)
         if torch.all(eps_s == 0):
             raise ValueError("NaN in eps_t, stop sampling.")
-
+        
         # Compute mu for p(zs | zt).
         assert_mean_zero_with_mask(zt[:, :, : self.n_dims], node_mask)
         assert_mean_zero_with_mask(eps_s[:, :, : self.n_dims], node_mask)
@@ -2864,6 +2893,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             zt / alpha_t_given_s
             - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_s
         )
+     
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
@@ -2875,7 +2905,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         zs = torch.cat(
             [condition_to_use,
-             zs[:, mask_bools, :]], dim=1
+             zs[:, mask_bools, : ]], dim=1
         )
 
         apply_geom = s[0].item() < t_critical_1
@@ -2931,7 +2961,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                         d_threshold=d_intact_b,
                     )
                     zs[b, mask_bools, : self.n_dims] = z1_b
-
+  
+                        
         zs = torch.cat(
             [
                 remove_mean_with_mask(zs[:, :, : self.n_dims], node_mask),
@@ -2939,9 +2970,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             ],
             dim=2,
         )
-
-        self.condition_tensor = zs[:, ~mask_bools, :]
-
+        
+        self.condition_tensor = zs[:, ~mask_bools, :]   
+        
         return zs
     def sample_p_zs_given_zt_op_ft(
         self,
@@ -3009,14 +3040,16 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the parameters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
+        condition_to_use = self._select_conditioning_tensor(t)
+
         if s > t_critical:
             # Fix the reference part as conditioning
             zs = torch.cat(
-                [self.condition_tensor, zs[:, mask_bools, :]], dim=1
+                [condition_to_use, zs[:, mask_bools, :]], dim=1
             )
         else:
             # Fix just the atomm types of reference part as conditioning
-            zs[:, :natom_ref, 3:] = self.condition_tensor[:, :natom_ref, self.n_dims:]       
+            zs[:, :natom_ref, 3:] = condition_to_use[:, :natom_ref, self.n_dims:]       
 
         # Project down to avoid numerical runaway of the center of gravity.
         zs = torch.cat(
@@ -3166,10 +3199,119 @@ class EnVariationalDiffusion(torch.nn.Module):
         else:
             chain_flat = None
         return x, h, chain_flat
- 
+
+    def _build_outpaint_extras(
+        self, condition_tensor, connector_indices, natom_extra,
+        init_method, skeleton_type, seed_dist, min_dist, spread, n_bq_atom,
+        bond_len=1.5,
+    ):
+        """Build clean extra-node coords for dense outpaint init.
+
+        Supports init_method in {'skeleton', 'seed'} via build_extra_node_template
+        (the legacy seed blob is method='seed'). 'data'/'fragment' are PyG-only
+        for now and raise a clear error here.
+        """
+        if init_method in ("skeleton", "fragment", "seed"):
+            return build_extra_node_template(
+                condition_tensor, connector_indices, natom_extra,
+                method=init_method, skeleton_type=skeleton_type,
+                seed_dist=seed_dist, min_dist=min_dist, spread=spread,
+                n_bq_atom=n_bq_atom, bond_len=bond_len,
+            )
+        raise NotImplementedError(
+            f"outpaint init_method={init_method!r} is not available on the dense "
+            "model (use 'skeleton', 'fragment', or 'seed'); 'data' is wired on "
+            "the PyG model."
+        )
+
+    def _outpaint_forward_noise(
+        self, z, condition_tensor, natom_ref, node_mask, t_int_start,
+        reference_freeze_mode="all", forward_noise="jitter", jitter_scale=0.75,
+    ):
+        """Inject noise into a clean outpaint template before denoising.
+
+        Modes (``forward_noise``):
+          * "schedule" — full training-marginal noise ``alpha_t*xh0 + sigma_t*eps``
+            (SDEdit). At typical t_start this injects large sigma and can swamp the
+            placeholder — historically the model was used with clean starts.
+          * "jitter" — small fixed scatter (~jitter_scale) on positions only,
+            matching the legacy seed-blob noise regime around a structured
+            placeholder. Default.
+          * "off" — use the clean placeholder directly.
+        In all modes the scaffold prefix is pinned to clean values and recentered.
+        """
+        mode = str(forward_noise).strip().lower()
+        if mode in ("schedule", "true", "True") and t_int_start is not None:
+            t_norm = min((int(t_int_start) + 1) / self.T, 1.0)
+            t_tensor = torch.full((z.size(0), 1), t_norm, device=z.device)
+            gamma_t = self.inflate_batch_array(self.gamma(t_tensor), z)
+            alpha_t = self.alpha(gamma_t, z)
+            sigma_t = self.sigma(gamma_t, z)
+            eps = self.sample_combined_position_feature_noise(
+                z.size(0), z.size(1), node_mask
+            )
+            z = alpha_t * z + sigma_t * eps
+        elif mode == "jitter":
+            eps = self.sample_combined_position_feature_noise(
+                z.size(0), z.size(1), node_mask
+            )
+            z = torch.cat(
+                [z[:, :, :self.n_dims] + float(jitter_scale) * eps[:, :, :self.n_dims],
+                 z[:, :, self.n_dims:]],
+                dim=2,
+            )
+        # "off": leave z as the clean placeholder.
+        if reference_freeze_mode == "features_only":
+            z[:, :natom_ref, self.n_dims:] = condition_tensor[:, :natom_ref, self.n_dims:]
+        else:
+            z[:, :natom_ref] = condition_tensor[:, :natom_ref]
+        z = torch.cat(
+            [
+                remove_mean_with_mask(z[:, :, :self.n_dims], node_mask),
+                z[:, :, self.n_dims:],
+            ],
+            dim=2,
+        )
+        return z
+
+    def _init_inpaint_extend_nodes(
+        self, z, connector_indices, n_extend,
+        init_method="skeleton", skeleton_type="random_walk", bond_len=1.5,
+        seed_dist=2.0, min_dist=1.0, spread=1.0, n_bq_atom=0,
+        forward_noise="jitter", jitter_scale=None, alpha_d=None, sigma_d=None,
+    ):
+        """Build + noise the extra atoms for extended inpainting (same as outpaint).
+
+        Places a clean skeleton/fragment for the ``n_extend`` new atoms, anchored
+        at the connectors in the current latent ``z``, then injects noise per
+        ``forward_noise``: "schedule" uses the inpaint denoising_strength
+        alpha_d/sigma_d, "jitter" a small fixed scatter (~jitter_scale or spread),
+        "off"/"seed" none. ``init_method="seed"`` is the outpaint seed-blob (no
+        noise). Returns ``(B, n_extend, D)``.
+        """
+        new = build_extra_node_template(
+            z, connector_indices, n_extend, method=init_method,
+            skeleton_type=skeleton_type, seed_dist=seed_dist, min_dist=min_dist,
+            spread=spread, n_bq_atom=n_bq_atom, bond_len=bond_len,
+        )
+        mode = "off" if init_method == "seed" else str(forward_noise).strip().lower()
+        jit = float(spread if jitter_scale is None else jitter_scale)
+        nm = torch.ones((new.size(0), n_extend, 1), device=new.device)
+        if mode in ("schedule", "true", "True") and alpha_d is not None:
+            eps = self.sample_combined_position_feature_noise(new.size(0), n_extend, nm)
+            new = alpha_d[:, :1, :] * new + sigma_d[:, :1, :] * eps
+        elif mode == "jitter":
+            eps = self.sample_combined_position_feature_noise(new.size(0), n_extend, nm)
+            new = torch.cat(
+                [new[:, :, :self.n_dims] + jit * eps[:, :, :self.n_dims],
+                 new[:, :, self.n_dims:]],
+                dim=2,
+            )
+        return new
+
     @torch.no_grad()
     def sample(
-        self, 
+        self,
         n_samples, 
         n_nodes,
         node_mask, 
@@ -3191,26 +3333,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         self.use_noised_conditioning = use_noised_conditioning
 
-        if condition_tensor is not None:
-            condition_tensor = condition_tensor.to(device=node_mask.device)
-            if condition_tensor.size(0) == 1 and n_samples > 1:
-                condition_tensor = condition_tensor.expand(
-                    n_samples, -1, -1
-                ).contiguous()
-            elif condition_tensor.size(0) != n_samples:
-                raise ValueError(
-                    "condition_tensor batch dimension must be 1 or match "
-                    f"n_samples ({condition_tensor.size(0)} != {n_samples})"
-                )
-            if condition_tensor.size(1) > node_mask.size(1):
-                raise ValueError(
-                    "condition_tensor has more reference nodes than the "
-                    f"sampling node count ({condition_tensor.size(1)} > "
-                    f"{node_mask.size(1)})"
-                )
-            # Keep the caller's tensor immutable across repeated sampling calls.
-            condition_tensor = condition_tensor.clone()
-        
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
             z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
@@ -3218,18 +3340,29 @@ class EnVariationalDiffusion(torch.nn.Module):
             z = self.sample_combined_position_feature_noise(
                 n_samples, n_nodes, node_mask
             )
-            
+
         self.COV_R = torch.tensor(covalent_radii, dtype=torch.float32, device=z.device)
-               
+
         # assert_mean_zero_with_mask(z[:, :, : self.n_dims], node_mask)
 
-        
         if condition_mode:
             condition_alg, condition_component = condition_mode.split("_")
         else:
             condition_alg = None
             condition_component = None
-        
+
+        if condition_tensor is not None:
+            condition_tensor = condition_tensor.to(device=z.device)
+            if condition_tensor.size(0) == 1 and n_samples > 1:
+                condition_tensor = condition_tensor.expand(n_samples, -1, -1).contiguous()
+            elif condition_tensor.size(0) not in (1, n_samples):
+                raise ValueError(
+                    f"condition_tensor batch dim {condition_tensor.size(0)} "
+                    f"!= n_samples {n_samples}"
+                )
+
+        self.clean_condition_tensor = condition_tensor
+
         if condition_component == "xh" or condition_component == "x":
             n_node_cond = condition_tensor.size(1)
     
@@ -3256,10 +3389,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         t_int_start = self.T
         if condition_alg == "inpaint":
 
-            denoising_strength = getattr(inpaint_cfgs, "denoising_strength", None)
+            denoising_strength = inpaint_cfgs.get("denoising_strength", None)
             if denoising_strength is None:
                 raise ValueError("denoising_strength must be specified in to use inpainting")
-            noise_initial_mask = getattr(inpaint_cfgs, "noise_initial_mask", False)
+            noise_initial_mask = inpaint_cfgs.get("noise_initial_mask", False)
             mask_node_index_raw = inpaint_cfgs.get("mask_node_index", [])
             if mask_node_index_raw is None:
                 mask_node_index_raw = []
@@ -3268,7 +3401,17 @@ class EnVariationalDiffusion(torch.nn.Module):
                 mask_node_index = mask_node_index.unsqueeze(0)
             constraint_strength = inpaint_cfgs.get("constraint_strength", 0.8)
             scale_factor = inpaint_cfgs.get("scale_factor", 1.1)
-            t_int_start = self.T
+            # Extended-inpainting init knobs (mirror outpaint).
+            ext_init_method = str(inpaint_cfgs.get("init_method", "skeleton"))
+            ext_skeleton_type = str(inpaint_cfgs.get("skeleton_type", "random_walk"))
+            ext_bond_len = float(inpaint_cfgs.get("bond_len", 1.5))
+            ext_forward_noise = str(inpaint_cfgs.get("forward_noise", "jitter"))
+            ext_seed_dist = float(inpaint_cfgs.get("seed_dist", 2.0))
+            ext_min_dist = float(inpaint_cfgs.get("min_dist", 1.0))
+            ext_spread = float(inpaint_cfgs.get("spread", 1.0))
+            ext_n_bq = int(inpaint_cfgs.get("n_bq_atom", 0))
+            ext_jitter_scale = float(inpaint_cfgs.get("jitter_scale", ext_spread))
+            t_int_start =  self.T
             unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
             n_node_cond = condition_tensor.size(1)
             d = torch.full((n_samples, 1), fill_value=denoising_strength, device=z.device)
@@ -3322,10 +3465,11 @@ class EnVariationalDiffusion(torch.nn.Module):
                 node_mask_um = torch.ones((n_samples, n_node_cond-mask_node_index.size(1)), device=z.device)  
                 node_mask_um = node_mask_um.unsqueeze(-1)
     
-                mask_node_bool = [True if i in mask_node_index else False for i in range(n_node_cond)]
-                mask_node_bool = torch.tensor(mask_node_bool, device=z.device)
-                mask_node_bool_corr = torch.cat([torch.zeros(n_node_cond - mask_node_bool.sum(), device=z.device),
-                                                 torch.ones(mask_node_bool.sum(), device=z.device)]).bool()
+                n_masked_nodes = mask_node_index.size(1)
+                mask_node_bool_corr = torch.cat([
+                    torch.zeros(n_node_cond - n_masked_nodes, device=z.device),
+                    torch.ones(n_masked_nodes, device=z.device),
+                ]).bool()
                 
                 xh_unmasked = condition_tensor[:,~mask_node_bool_corr, :] # not to be denoise
 
@@ -3344,26 +3488,24 @@ class EnVariationalDiffusion(torch.nn.Module):
                         dim=2,
                     )      
        
-                    zs_pos = z[:, :, : self.n_dims]
-                    zs_pos = zs_pos.squeeze(0)  
-                    zs_new_pos = zs_pos[mask_node_bool_corr]
-                    condition_pos = xh_unmasked[:, :, : self.n_dims].squeeze(0)
-                    condition_charge = None
-                    zs_charge = None
-  
-                    _, zl_corr = find_close_points_torch_and_push_op2(
-                                condition_pos,
-                                zs_new_pos,
-                                connector_indices=torch.tensor(list(connector_dicts.keys()), device=z.device, dtype=torch.long),
-                                d_threshold_f=1.8,
-                                w_b=2,
-                                all_frozen=False,
-                                z_ref=condition_charge,
-                                z_tgt=zs_charge,
-                                scale_factor=scale_factor
-                                )
-
-                    z[:, mask_node_bool_corr, :self.n_dims] = zl_corr.unsqueeze(0) 
+                    ci_keys = torch.tensor(
+                        list(connector_dicts.keys()), device=z.device, dtype=torch.long
+                    )
+                    for b in range(n_samples):
+                        condition_pos_b = xh_unmasked[b, :, : self.n_dims]
+                        zs_new_pos_b = z[b, mask_node_bool_corr, : self.n_dims]
+                        _, zl_b = find_close_points_torch_and_push_op2(
+                            condition_pos_b,
+                            zs_new_pos_b,
+                            connector_indices=ci_keys,
+                            d_threshold_f=1.8,
+                            w_b=2,
+                            all_frozen=False,
+                            z_ref=None,
+                            z_tgt=None,
+                            scale_factor=scale_factor,
+                        )
+                        z[b, mask_node_bool_corr, : self.n_dims] = zl_b
 
                 
                 
@@ -3376,7 +3518,10 @@ class EnVariationalDiffusion(torch.nn.Module):
                 if condition_component == "xh":
                     eps_s_ref = self.sample_combined_position_feature_noise(
                     n_samples=condition_tensor.size(0), n_nodes=condition_tensor.size(1), node_mask=node_mask[:, :condition_tensor.size(1), :])
-                    z = alpha_d * condition_tensor + sigma_d * eps_s_ref
+                    if noise_initial_mask:
+                        z = alpha_d * condition_tensor + sigma_d * eps_s_ref
+                    else:
+                        z = condition_tensor
                     z = torch.cat(
                         [
                             remove_mean_with_mask(z[:, :, : self.n_dims], node_mask[:, :condition_tensor.size(1), :]),
@@ -3391,10 +3536,13 @@ class EnVariationalDiffusion(torch.nn.Module):
                         device=node_mask.device,
                         node_mask=node_mask[:, :condition_tensor.size(1), :],
                     )
-                    z = torch.cat([
-                        alpha_d * condition_tensor[:, :, : self.n_dims] + sigma_d * eps_s_ref,
-                        condition_tensor[:, :, self.n_dims:]
-                    ], dim=2)
+                    if noise_initial_mask:
+                        z = torch.cat([
+                            alpha_d * condition_tensor[:, :, : self.n_dims] + sigma_d * eps_s_ref,
+                            condition_tensor[:, :, self.n_dims:]
+                        ], dim=2)
+                    else:
+                        z = condition_tensor
                     z = torch.cat(
                         [
                             remove_mean_with_mask(z[:, :, : self.n_dims], node_mask[:, :condition_tensor.size(1), :]),
@@ -3408,11 +3556,13 @@ class EnVariationalDiffusion(torch.nn.Module):
                         device=node_mask.device,
                         node_mask=node_mask[:, :condition_tensor.size(1), :],
                     )
-
-                    z = torch.cat([
-                        condition_tensor[:, :, : self.n_dims],
-                        alpha_d * condition_tensor[:, :, self.n_dims:] + sigma_d * eps_s_ref
-                    ], dim=2)
+                    if noise_initial_mask:
+                        z = torch.cat([
+                            condition_tensor[:, :, : self.n_dims],
+                            alpha_d * condition_tensor[:, :, self.n_dims:] + sigma_d * eps_s_ref
+                        ], dim=2)
+                    else:
+                        z = condition_tensor
                     z = torch.cat(
                         [
                             remove_mean_with_mask(z[:, :, : self.n_dims], node_mask[:, :condition_tensor.size(1), :]),
@@ -3432,12 +3582,19 @@ class EnVariationalDiffusion(torch.nn.Module):
                     n_connector = condition_pos.size(0)
                     connector_indices = torch.arange(0 , n_connector, device=z.device)
                 
-                new_nodes = initialize_extra_nodes(z, connector_indices, n_node_extend, eps=2.0, min_samples=1)
-                z = torch.cat([z, new_nodes], dim=1) 
+                new_nodes = self._init_inpaint_extend_nodes(
+                    z, connector_indices, n_node_extend,
+                    init_method=ext_init_method, skeleton_type=ext_skeleton_type,
+                    bond_len=ext_bond_len, seed_dist=ext_seed_dist,
+                    min_dist=ext_min_dist, spread=ext_spread, n_bq_atom=ext_n_bq,
+                    forward_noise=ext_forward_noise, jitter_scale=ext_jitter_scale,
+                    alpha_d=alpha_d, sigma_d=sigma_d,
+                )
+                z = torch.cat([z, new_nodes], dim=1)
 
                 if mask_node_index.size(1) > 0:
-                    mask_node_bool_corr = torch.cat([mask_node_bool_corr, 
-                                                     torch.ones(n_node_extend, device=z.device)]).bool() 
+                    mask_node_bool_corr = torch.cat([mask_node_bool_corr,
+                                                     torch.ones(n_node_extend, device=z.device)]).bool()
                                        
                                        
             self.condition_tensor = z[:, ~mask_node_bool_corr, :] 
@@ -3448,28 +3605,31 @@ class EnVariationalDiffusion(torch.nn.Module):
             t_int_start = int(t_start * self.T)
             constraint_strength = outpaint_cfgs.get("constraint_strength", 0.8)
             scale_factor = outpaint_cfgs.get("scale_factor", 1.1)
-
-            connector_dicts = outpaint_cfgs.get("connector_dicts", None)
-            if connector_dicts is None:
+            
+            # outpaintft (prefix-freeze growth) does not require connectors;
+            # only plain "outpaint" needs explicit connector geometry.
+            connector_dicts = outpaint_cfgs.get("connector_dicts", None) or {}
+            if not connector_dicts and condition_alg == "outpaint":
                 raise ValueError("connector_dicts must be specified in to use outpainting")
             connector_indices = list(connector_dicts.keys())
             connector_indices = torch.tensor(connector_indices, device=z.device, dtype=torch.long)
-            min_dist = getattr(outpaint_cfgs, "min_dist", 1.0)
-            seed_dist = getattr(outpaint_cfgs, "seed_dist", 2.0)
-            spread = getattr(outpaint_cfgs, "spread", 1.0)
-            n_bq_atom = getattr(outpaint_cfgs, "n_bq_atom", 0)
-                
+            min_dist = outpaint_cfgs.get("min_dist", 1.0)
+            seed_dist = outpaint_cfgs.get("seed_dist", 2.0)
+            spread = outpaint_cfgs.get("spread", 1.0)
+            n_bq_atom = outpaint_cfgs.get("n_bq_atom", 0)
+            init_method = str(outpaint_cfgs.get("init_method", "skeleton"))
+            skeleton_type = str(outpaint_cfgs.get("skeleton_type", "random_walk"))
+            bond_len = float(outpaint_cfgs.get("bond_len", 1.5))
+            forward_noise = str(outpaint_cfgs.get("forward_noise", "jitter"))
+            jitter_scale = float(outpaint_cfgs.get("jitter_scale", spread))
+
             natom_ref = condition_tensor.size(1)
             natom_extra = n_nodes - natom_ref
 
-            new_nodes = initialize_extra_nodes_seed(
-                condition_tensor, 
-                connector_indices, 
-                natom_extra, 
-                seed_dist=seed_dist, 
-                min_dist=min_dist, 
-                spread=spread,
-                n_bq_atom=n_bq_atom
+            new_nodes = self._build_outpaint_extras(
+                condition_tensor, connector_indices, natom_extra,
+                init_method, skeleton_type, seed_dist, min_dist, spread,
+                n_bq_atom, bond_len,
             )
             if any(idx > natom_ref - 1 for idx in connector_indices):
                 raise ValueError("connector_indices is out of bound")
@@ -3501,10 +3661,21 @@ class EnVariationalDiffusion(torch.nn.Module):
                     except RuntimeError:
                         chain_retry = [torch.zeros((n_frames_retry+1,) + z_size, device=z.device) for _ in range(n_retrys)]
                     
-            condition_tensor = z[:, :natom_ref, :]   
-            mask_node_bool_corr = torch.cat([torch.zeros(natom_ref, device=z.device), 
+            condition_tensor = z[:, :natom_ref, :]
+            mask_node_bool_corr = torch.cat([torch.zeros(natom_ref, device=z.device),
                                                 torch.ones(n_nodes - natom_ref, device=z.device)]).bool()
-            self.condition_tensor = z[:, ~mask_node_bool_corr, :]     
+            self.condition_tensor = z[:, ~mask_node_bool_corr, :]
+
+            # Training-consistent init: forward-noise the clean template to
+            # t_start instead of using the raw seed blob directly.
+            if init_method != "seed":
+                z = self._outpaint_forward_noise(
+                    z, condition_tensor, natom_ref, node_mask, t_int_start,
+                    reference_freeze_mode="all",
+                    forward_noise=forward_noise, jitter_scale=jitter_scale,
+                )
+                condition_tensor = z[:, :natom_ref, :]
+                self.condition_tensor = z[:, ~mask_node_bool_corr, :]
 
         if context is not None:
             context = (
@@ -3636,6 +3807,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         N_COMPONENT_MAX = 10
         N_DEGREE_MAX = 8
 
+        z = z.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
         try:
             # Finally sample p(x, h | z_0).
             x, h = self.sample_p_xh_given_z0(
@@ -3645,17 +3817,28 @@ class EnVariationalDiffusion(torch.nn.Module):
             to_inspect_chain = True       
         # 2 ---------------------------------------------------------------------
         # Address overshoot cases, there maybe a good xh already before 0    
-        #TODO extra nf!
         if to_inspect_chain and n_frames > 0:
             n_chain = chain.size(0)
-            x_chain = chain[:, :, :, 0:3]
-            x_chain = x_chain.squeeze(1)
-            one_hot_chain = chain[:, :, :, 3:-1]
-            one_hot_chain = one_hot_chain.squeeze(1)
+            x_chain = chain[:, :, :, 0:self.n_dims]
+            
+            # Compute correct indices based on extra features
+            if self.ndim_extra > 0:
+                nextra = self.ndim_extra
+                n_cat_core = self.num_classes - nextra
+                h_int_idx = self.n_dims + n_cat_core
+                one_hot_chain = chain[:, :, :, self.n_dims:h_int_idx]
+                charges_chain = chain[:, :, :, h_int_idx:h_int_idx+1].squeeze(-1)
+                extra_chain = chain[:, :, :, h_int_idx+1:]
+            else:
+                one_hot_chain = chain[:, :, :, self.n_dims:-1]
+                charges_chain = chain[:, :, :, -1]
+                extra_chain = None
+            
             one_hot_chain = F.one_hot(
-                torch.argmax(one_hot_chain, dim=2), num_classes=self.num_classes - len(self.extra_norm_values)
+                torch.argmax(one_hot_chain, dim=-1),
+                num_classes=self.num_classes - self.ndim_extra,
             )
-            charges_chain = torch.round(chain[:, :, :, -1]).long().squeeze(1)
+            charges_chain = torch.round(charges_chain).long()
             charges_chain = torch.abs(charges_chain)*self.norm_values[2]
 
             good_chain = False
@@ -3671,11 +3854,13 @@ class EnVariationalDiffusion(torch.nn.Module):
                 good_chain = (num_components < N_COMPONENT_MAX) and all([n_degree < N_DEGREE_MAX for n_degree in n_degrees])
                 if good_chain:
                     h = {}
-                    x  = x_chain[-1-i].unsqueeze(0)
-                    h["integer"] = charges_chain[-1-i].unsqueeze(0)
-                    h["integer"] = h["integer"].unsqueeze(-1)
-                    h["categorical"] = one_hot_chain[-1-i].unsqueeze(0)
-
+                    x  = x_chain[-1-i]
+                    h["integer"] = charges_chain[-1-i].unsqueeze(-1)
+                    h["categorical"] = one_hot_chain[-1-i]
+                    if extra_chain is not None:
+                        h["extra"] = extra_chain[-1-i]
+                    else:
+                        h["extra"] = torch.zeros(0).to(z.device)
                     break
             # cannot find a good xh, last resort
             if not(good_chain):
@@ -3704,13 +3889,20 @@ class EnVariationalDiffusion(torch.nn.Module):
             n_degrees = [0]*x.size(1)
     
         # 3.5 ---------------------------------------------------------------------
-        #TODO extra nf!
         # In the event EGNN fails at p(xh | z0), we retry the chain
         bad_xh = (num_components > N_COMPONENT_MAX) or any([n_degree > N_DEGREE_MAX for n_degree in n_degrees])
         if bad_xh and n_retrys > 0 and n_frames > 0:
-            x = chain[-2, :, :, 0:3]
-            h["integer"] = chain[-2, :, :, -1:].long()  
-            h["categorical"] = chain[-2, :, :, 3:-1]
+            x = chain[-2, :, :, 0:self.n_dims]
+            if self.ndim_extra > 0:
+                nextra = self.ndim_extra
+                n_cat_core = self.num_classes - nextra
+                h_int_idx = self.n_dims + n_cat_core
+                h["categorical"] = chain[-2, :, :, self.n_dims:h_int_idx]
+                h["integer"] = chain[-2, :, :, h_int_idx:h_int_idx+1].long()
+                h["extra"] = chain[-2, :, :, h_int_idx+1:]
+            else:
+                h["integer"] = chain[-2, :, :, -1:].long()  
+                h["categorical"] = chain[-2, :, :, self.n_dims:-1]
             try:
                 is_connected, num_components, n_degrees = check_quality(x.squeeze(0), h["integer"].squeeze(0))
             except:
@@ -3729,7 +3921,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         else:
             to_retry = not(is_connected)
 
-        if n_frames > 0: 
+        if n_frames > 0:
+            # Chain was allocated without extra features (z_size excludes them),
+            # so we should NOT include h["extra"] when storing to chain
             xh = torch.cat([x, h["categorical"], h["integer"]], dim=2)
             chain[-1] = xh     
         else:
@@ -3817,17 +4011,29 @@ class EnVariationalDiffusion(torch.nn.Module):
                         pbar.update(1)               
                     # Finally sample p(x, h | z_0).
 
-                #TODO extra nf!
                 if to_inspect_chain:
                     n_chain = chain_retry[n_retry].size(0)
-                    x_chain = chain_retry[n_retry][:, :, :, 0:3]
+                    x_chain = chain_retry[n_retry][:, :, :, 0:self.n_dims]
                     x_chain = x_chain.squeeze(1)
-                    one_hot_chain = chain_retry[n_retry][:, :, :, 3:-1]
-                    one_hot_chain = one_hot_chain.squeeze(1)
+                    
+                    # Compute correct indices based on extra features
+                    if self.ndim_extra > 0:
+                        nextra = self.ndim_extra
+                        n_cat_core = self.num_classes - nextra
+                        h_int_idx = self.n_dims + n_cat_core
+                        one_hot_chain = chain_retry[n_retry][:, :, :, self.n_dims:h_int_idx]
+                        charges_chain = chain_retry[n_retry][:, :, :, h_int_idx:h_int_idx+1].squeeze(-1)
+                        extra_chain_retry = chain_retry[n_retry][:, :, :, h_int_idx+1:]
+                    else:
+                        one_hot_chain = chain_retry[n_retry][:, :, :, self.n_dims:-1]
+                        charges_chain = chain_retry[n_retry][:, :, :, -1:].squeeze(-1)
+                        extra_chain_retry = None
+                    
                     one_hot_chain = F.one_hot(
-                        torch.argmax(one_hot_chain, dim=2), num_classes=self.num_classes - len(self.extra_norm_values)
+                        torch.argmax(one_hot_chain, dim=-1),
+                        num_classes=self.num_classes - self.ndim_extra,
                     )
-                    charges_chain = torch.round(chain_retry[n_retry][:, :, :, -1:]).long().squeeze(1)
+                    charges_chain = torch.round(charges_chain).long()
 
                     good_chain = False
 
@@ -3844,9 +4050,13 @@ class EnVariationalDiffusion(torch.nn.Module):
 
                         if good_chain:
                             h_retry = {}
-                            x_retry  = x_chain[-1-i].unsqueeze(0)
-                            h_retry["integer"] = charges_chain[-1-i].unsqueeze(0)
-                            h_retry["categorical"] = one_hot_chain[-1-i].unsqueeze(0)
+                            x_retry  = x_chain[-1-i]
+                            h_retry["integer"] = charges_chain[-1-i].unsqueeze(-1)
+                            h_retry["categorical"] = one_hot_chain[-1-i]
+                            if extra_chain_retry is not None:
+                                h_retry["extra"] = extra_chain_retry[-1-i]
+                            else:
+                                h_retry["extra"] = torch.zeros(0).to(z.device)
                             break
                     # cannot find a good xh, last resort
                     if not(good_chain):
@@ -3881,12 +4091,19 @@ class EnVariationalDiffusion(torch.nn.Module):
 
    
                 bad_xh = (num_components > N_COMPONENT_MAX) or any([n_degree > N_DEGREE_MAX for n_degree in n_degrees])
-                #TODO extra nf!
                 # In the event EGNN fails at p(xh | z0), we retry the chain
                 if bad_xh and n_frames > 0:
-                    x_retry = chain_retry[n_retry][-2, :, :, 0:3]
-                    h_retry["integer"] = chain_retry[n_retry][-2, :, :, -1:].long()  
-                    h_retry["categorical"] = chain_retry[n_retry][-2, :, :, 3:-1]
+                    x_retry = chain_retry[n_retry][-2, :, :, 0:self.n_dims]
+                    if self.ndim_extra > 0:
+                        nextra = self.ndim_extra
+                        n_cat_core = self.num_classes - nextra
+                        h_int_idx = self.n_dims + n_cat_core
+                        h_retry["categorical"] = chain_retry[n_retry][-2, :, :, self.n_dims:h_int_idx]
+                        h_retry["integer"] = chain_retry[n_retry][-2, :, :, h_int_idx:h_int_idx+1].long()
+                        h_retry["extra"] = chain_retry[n_retry][-2, :, :, h_int_idx+1:]
+                    else:
+                        h_retry["integer"] = chain_retry[n_retry][-2, :, :, -1:].long()  
+                        h_retry["categorical"] = chain_retry[n_retry][-2, :, :, self.n_dims:-1]
                     try:
                         is_connected, num_components, n_degrees = check_quality(x_retry.squeeze(0), h_retry["integer"].squeeze(0))
                     except:
@@ -3919,13 +4136,17 @@ class EnVariationalDiffusion(torch.nn.Module):
                 x = torch.cat([x, x_retry], dim=0)
                 h["categorical"] = torch.cat([h["categorical"], h_retry["categorical"]], dim=0) 
                 h["integer"] = torch.cat([h["integer"], h_retry["integer"]], dim=0)
+                if self.ndim_extra > 0 and "extra" in h and "extra" in h_retry:
+                    h["extra"] = torch.cat([h["extra"], h_retry["extra"]], dim=0)
 
                 n_retry+=1
                 
 
-            if n_frames > 0: 
+            if n_frames > 0:
+                # Chain_retry was also allocated without extra features,
+                # so we should NOT include h_retry["extra"] when storing
                 xh_retry = torch.cat([x_retry, h_retry["categorical"], h_retry["integer"]], dim=2)
-                chain_retry[n_retry][-1] = xh_retry                          
+                chain_retry[n_retry-1][-1] = xh_retry                          
             else:
                 chain_flat = None
                 chain = None
@@ -4015,9 +4236,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         condition_mode=None,
         inpaint_cfgs={},
         outpaint_cfgs={},
+        use_noised_conditioning=False,
         n_frames=0,
         debug=False,
-        use_noised_conditioning=False,
     ):
         """
         Guided sampling from the generative model.
@@ -4048,7 +4269,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             Save gradient norms, max gradients, clipping coefficients, and energies to files.
         - condition_tensor (torch.Tensor, optional): Tensor for conditional guidance. Defaults to None.
         - condition_mode (str, optional): Mode for conditional guidance. Defaults to None.
-        - use_noised_conditioning (bool): Use noised condition tensor for structure guidance.
         - inpaint_cfgs (dict, optional): Configuration for inpainting. 
             The dictionary must contains:        
                 - mask_node_index (torch.Tensor, optional): Indices of nodes to be inpainted. Defaults to an empty tensor.
@@ -4068,9 +4288,22 @@ class EnVariationalDiffusion(torch.nn.Module):
         Tuple[Tensor, Tensor]: Sampled positions and features.
         """
         debug = False
+        if condition_tensor is not None:
+            condition_tensor = condition_tensor.to(device=node_mask.device)
+            if condition_tensor.size(0) == 1 and n_samples > 1:
+                condition_tensor = condition_tensor.expand(n_samples, -1, -1).contiguous()
+            elif condition_tensor.size(0) != n_samples:
+                raise ValueError(
+                    "condition_tensor batch dimension must be 1 or match n_samples "
+                    f"({condition_tensor.size(0)} != {n_samples})"
+                )
+            if condition_tensor.size(1) > node_mask.size(1):
+                raise ValueError(
+                    "condition_tensor has more reference nodes than the sampling "
+                    f"node count ({condition_tensor.size(1)} > {node_mask.size(1)})"
+                )
         self.clean_condition_tensor = condition_tensor
         self.use_noised_conditioning = use_noised_conditioning
-        
         
         n_nodes = node_mask.size(1)
         if fix_noise:
@@ -4122,11 +4355,21 @@ class EnVariationalDiffusion(torch.nn.Module):
         if condition_alg:
             if  "inpaint" in condition_alg:
                 
-                denoising_strength = getattr(inpaint_cfgs, "denoising_strength", None)
+                denoising_strength = inpaint_cfgs.get("denoising_strength", None)
                 if denoising_strength is None:
                     raise ValueError("denoising_strength must be specified in to use inpainting")
-                noise_initial_mask = getattr(inpaint_cfgs, "noise_initial_mask", False)
-                mask_node_index = getattr(inpaint_cfgs, "mask_node_index", torch.tensor([], device=z.device, dtype=torch.long))
+                noise_initial_mask = inpaint_cfgs.get("noise_initial_mask", False)
+                # Extended-inpainting init knobs (mirror outpaint).
+                ext_init_method = str(inpaint_cfgs.get("init_method", "skeleton"))
+                ext_skeleton_type = str(inpaint_cfgs.get("skeleton_type", "random_walk"))
+                ext_bond_len = float(inpaint_cfgs.get("bond_len", 1.5))
+                ext_forward_noise = str(inpaint_cfgs.get("forward_noise", "jitter"))
+                ext_seed_dist = float(inpaint_cfgs.get("seed_dist", 2.0))
+                ext_min_dist = float(inpaint_cfgs.get("min_dist", 1.0))
+                ext_spread = float(inpaint_cfgs.get("spread", 1.0))
+                ext_n_bq = int(inpaint_cfgs.get("n_bq_atom", 0))
+                ext_jitter_scale = float(inpaint_cfgs.get("jitter_scale", ext_spread))
+                mask_node_index = inpaint_cfgs.get("mask_node_index", torch.tensor([], device=z.device, dtype=torch.long))
                 t_critical = 0.0
                 
                 mask_node_index = torch.tensor([mask_node_index], device=z.device, dtype=torch.long)
@@ -4145,12 +4388,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
                 #-----------------------partial inpainting------------------------------------#
                 if mask_node_index.size(1) > 0:
-                    #
-                    # CONSTANTS
-                    scale_factor = 1.1
-                    all_frozen = False
-                    w_b = 2
-                    d_threshold_f = 1.4
+                    scale_factor = inpaint_cfgs.get("scale_factor", 1.1)
                     # Reorder condition_tensor such that connector nodes are the first nodes
                     connector_mask = torch.zeros(condition_tensor.size(1), dtype=torch.bool, device=z.device)
                     connector_mask[mask_node_index] = True  
@@ -4191,10 +4429,11 @@ class EnVariationalDiffusion(torch.nn.Module):
                     node_mask_um = torch.ones((n_samples, n_node_cond-mask_node_index.size(1)), device=z.device)  
                     node_mask_um = node_mask_um.unsqueeze(-1)
         
-                    mask_node_bool = [True if i in mask_node_index else False for i in range(n_node_cond)]
-                    mask_node_bool = torch.tensor(mask_node_bool, device=z.device)
-                    mask_node_bool_corr = torch.cat([torch.zeros(n_node_cond - mask_node_bool.sum(), device=z.device),
-                                                    torch.ones(mask_node_bool.sum(), device=z.device)]).bool()
+                    n_masked_nodes = mask_node_index.size(1)
+                    mask_node_bool_corr = torch.cat([
+                        torch.zeros(n_node_cond - n_masked_nodes, device=z.device),
+                        torch.ones(n_masked_nodes, device=z.device),
+                    ]).bool()
                     
                     xh_unmasked = condition_tensor[:,~mask_node_bool_corr, :] # not to be denoise
 
@@ -4213,26 +4452,24 @@ class EnVariationalDiffusion(torch.nn.Module):
                             dim=2,
                         )      
         
-                        zs_pos = z[:, :, : self.n_dims]
-                        zs_pos = zs_pos.squeeze(0)  
-                        zs_new_pos = zs_pos[mask_node_bool_corr]
-                        condition_pos = xh_unmasked[:, :, : self.n_dims].squeeze(0)
-                        condition_charge = None
-                        zs_charge = None
-    
-                        _, zl_corr = find_close_points_torch_and_push_op2(
-                                    condition_pos,
-                                    zs_new_pos, 
-                                    connector_indices=torch.tensor(list(connector_dicts.keys()), device=z.device, dtype=torch.long),    
-                                    d_threshold_f=d_threshold_f,
-                                    w_b=w_b,
-                                    all_frozen=all_frozen,
-                                    z_ref=condition_charge,
-                                    z_tgt=zs_charge,
-                                    scale_factor=scale_factor
-                                    )
-
-                        z[:, mask_node_bool_corr, :self.n_dims] = zl_corr.unsqueeze(0) 
+                        ci_keys = torch.tensor(
+                            list(connector_dicts.keys()), device=z.device, dtype=torch.long
+                        )
+                        for b in range(n_samples):
+                            condition_pos_b = xh_unmasked[b, :, : self.n_dims]
+                            zs_new_pos_b = z[b, mask_node_bool_corr, : self.n_dims]
+                            _, zl_b = find_close_points_torch_and_push_op2(
+                                condition_pos_b,
+                                zs_new_pos_b,
+                                connector_indices=ci_keys,
+                                d_threshold_f=1.8,
+                                w_b=2,
+                                all_frozen=False,
+                                z_ref=None,
+                                z_tgt=None,
+                                scale_factor=scale_factor,
+                            )
+                            z[b, mask_node_bool_corr, : self.n_dims] = zl_b
 
                     # keep the masked nodes clean
                     else:
@@ -4303,11 +4540,18 @@ class EnVariationalDiffusion(torch.nn.Module):
                         n_connector = condition_tensor.size(1)
                         connector_indices = torch.arange(0 , n_connector, device=z.device)
                     
-                    new_nodes = initialize_extra_nodes(z, connector_indices, n_node_extend, eps=2.0, min_samples=1)
-                    z = torch.cat([z, new_nodes], dim=1) 
+                    new_nodes = self._init_inpaint_extend_nodes(
+                        z, connector_indices, n_node_extend,
+                        init_method=ext_init_method, skeleton_type=ext_skeleton_type,
+                        bond_len=ext_bond_len, seed_dist=ext_seed_dist,
+                        min_dist=ext_min_dist, spread=ext_spread, n_bq_atom=ext_n_bq,
+                        forward_noise=ext_forward_noise, jitter_scale=ext_jitter_scale,
+                        alpha_d=alpha_d, sigma_d=sigma_d,
+                    )
+                    z = torch.cat([z, new_nodes], dim=1)
                     if mask_node_index.size(1) > 0:
-                        mask_node_bool_corr = torch.cat([mask_node_bool_corr, 
-                                                        torch.ones(n_node_extend, device=z.device)]).bool() 
+                        mask_node_bool_corr = torch.cat([mask_node_bool_corr,
+                                                        torch.ones(n_node_extend, device=z.device)]).bool()
                         # connector_dicts = {key + n_node_extend: value for key, value in connector_dicts.items()}
                         
                 if mask_node_index.size(1) > 0:
@@ -4315,39 +4559,48 @@ class EnVariationalDiffusion(torch.nn.Module):
                 
             elif "outpaint" in condition_alg:
                 
-                t_start = getattr(outpaint_cfgs, "t_start", 1.0)
-                t_critical = getattr(outpaint_cfgs, "t_critical", 0.0)
-                connector_indices = getattr(outpaint_cfgs, "connector_indices", None)
+                t_start = outpaint_cfgs.get("t_start", 1.0)
+                t_critical = outpaint_cfgs.get("t_critical", 0.0)
+                connector_indices = outpaint_cfgs.get("connector_indices", None)
                 if connector_indices is None:
                     raise ValueError("connector_indices must be specified in to use outpainting")
                 connector_indices = torch.tensor(connector_indices, device=z.device, dtype=torch.long)
-                min_dist = getattr(outpaint_cfgs, "min_dist", 1.0)
-                seed_dist = getattr(outpaint_cfgs, "seed_dist", 2.0)
-                spread = getattr(outpaint_cfgs, "spread", 1.0)
-                n_bq_atom = getattr(outpaint_cfgs, "n_bq_atom", 0)
+                min_dist = outpaint_cfgs.get("min_dist", 1.0)
+                seed_dist = outpaint_cfgs.get("seed_dist", 2.0)
+                spread = outpaint_cfgs.get("spread", 1.0)
+                n_bq_atom = outpaint_cfgs.get("n_bq_atom", 0)
+                init_method = str(outpaint_cfgs.get("init_method", "skeleton"))
+                skeleton_type = str(outpaint_cfgs.get("skeleton_type", "random_walk"))
+                bond_len = float(outpaint_cfgs.get("bond_len", 1.5))
+                forward_noise = str(outpaint_cfgs.get("forward_noise", "jitter"))
+                jitter_scale = float(outpaint_cfgs.get("jitter_scale", spread))
 
-                
-                s_saves = torch.linspace(0, self.T * t_start, 
-                                         steps=n_frames, device=z.device).long() 
+                s_saves = torch.linspace(0, self.T * t_start,
+                                         steps=n_frames, device=z.device).long()
                 t_int_start = self.T * t_start
                 self.condition_tensor = condition_tensor
 
                 natom_ref = condition_tensor.size(1)
                 natom_extra = n_nodes - natom_ref
-                new_nodes = initialize_extra_nodes_seed(
-                    condition_tensor, 
-                    connector_indices, 
-                    natom_extra, 
-                    seed_dist=seed_dist, 
-                    min_dist=min_dist, 
-                    spread=spread,
-                    n_bq_atom=n_bq_atom
+                new_nodes = self._build_outpaint_extras(
+                    condition_tensor, connector_indices, natom_extra,
+                    init_method, skeleton_type, seed_dist, min_dist, spread,
+                    n_bq_atom, bond_len,
                 )
                 if any(idx > natom_ref - 1 for idx in connector_indices):
                     raise ValueError("connector_indices is out of bound")
                 if connector_indices.size(0) == 0 and condition_alg == "outpaint":
                     raise ValueError("connector_indices is empty")
                 z = torch.cat([condition_tensor, new_nodes], dim=1)
+                z = self._mask_padded_nodes(z, node_mask)
+                # Training-consistent init: forward-noise clean template to t_start.
+                if init_method != "seed":
+                    z = self._outpaint_forward_noise(
+                        z, condition_tensor, natom_ref, node_mask,
+                        int(t_int_start), reference_freeze_mode="all",
+                        forward_noise=forward_noise, jitter_scale=jitter_scale,
+                    )
+                    self.condition_tensor = z[:, :natom_ref, :]
                 if n_frames > 0:
                     chain = torch.zeros((n_frames,) + z_size, device=z.device)
                 mask_node_bool_corr = None
@@ -4356,6 +4609,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             t_critical = 0
             t_int_start = self.T
             mask_node_bool_corr = None
+        z = self._mask_padded_nodes(z, node_mask)
         z = torch.cat(  
             [
                 remove_mean_with_mask(z[:, :, : self.n_dims], node_mask),
@@ -4770,6 +5024,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         print(info)
 
         return info
+
 
 
 class PositiveLinear(torch.nn.Module):

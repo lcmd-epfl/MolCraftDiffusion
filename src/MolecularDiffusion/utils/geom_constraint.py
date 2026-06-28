@@ -10,9 +10,78 @@ from torch_geometric.nn import radius_graph
 from torch_geometric.utils import to_networkx
 from typing import List, Optional
 from ase.data import covalent_radii
+from .substituent_builder import select_fragment, place_fragment
 
 EDGE_THRESHOLD = 2
 WEIGHT_FACTOR = 2
+
+# Nominal valence by atomic number for the common (organic) element subset.
+# Used only as a heuristic to locate open attachment sites on a scaffold when
+# outpaint connectors are not supplied explicitly.
+_NOMINAL_VALENCE = {
+    1: 1, 5: 3, 6: 4, 7: 3, 8: 2, 9: 1,
+    13: 3, 14: 4, 15: 3, 16: 2, 17: 1, 35: 1, 53: 1,
+}
+
+
+def derive_connectors_from_scaffold(
+    pos, atomic_numbers, scale_factor=1.3, valence_map=None,
+):
+    """Heuristically locate open attachment sites on a bare scaffold.
+
+    Builds a covalent-bond graph over the scaffold atoms (radius graph filtered
+    by summed covalent radii) and returns the under-coordinated heavy atoms
+    (nominal valence > current bond degree) as outpaint connectors, with each
+    value being the number of free valences. Falls back to the atom farthest
+    from the centroid when the scaffold is fully saturated, so outpaint growth
+    always has at least one anchor.
+
+    Args:
+        pos: (N, 3) atom coordinates (physical Angstrom units).
+        atomic_numbers: (N,) integer atomic numbers.
+        scale_factor: covalent-radii relaxation factor for bond detection.
+        valence_map: optional {atomic_number: nominal_valence} override.
+
+    Returns:
+        dict ``{atom_index: [n_free_valence]}`` suitable for
+        ``outpaint_cfgs['connector_dicts']``.
+    """
+    valence_map = valence_map or _NOMINAL_VALENCE
+    pos = pos.detach()
+    z = atomic_numbers.detach().long()
+    n = pos.size(0)
+    if n == 0:
+        return {}
+
+    device = pos.device
+    ei = radius_graph(pos, r=5.0)
+    radii = torch.tensor(
+        [covalent_radii[int(zi)] if 0 <= int(zi) < len(covalent_radii) else 0.77
+         for zi in z.tolist()],
+        device=device, dtype=pos.dtype,
+    )
+    src, dst = ei
+    bond_len = (pos[src] - pos[dst]).norm(dim=1)
+    keep = bond_len <= (radii[src] + radii[dst]) * scale_factor
+    src = src[keep]
+    degree = torch.zeros(n, device=device, dtype=torch.long)
+    if src.numel() > 0:
+        degree.scatter_add_(0, src, torch.ones_like(src))
+
+    connectors = {}
+    for i in range(n):
+        zi = int(z[i])
+        if zi <= 1:  # skip hydrogen and padding
+            continue
+        free = valence_map.get(zi, 0) - int(degree[i])
+        if free >= 1:
+            connectors[i] = [int(free)]
+
+    if not connectors:
+        centroid = pos.mean(dim=0)
+        far = int(torch.argmax((pos - centroid).norm(dim=1)))
+        connectors[far] = [1]
+    return connectors
 
 
 def initialize_extra_nodes_seed(xh_cond, connector_indices, n_extra, seed_dist=1.0, min_dist=1.0, spread=0.5, n_bq_atom=0):
@@ -183,6 +252,322 @@ def initialize_extra_nodes_seed(xh_cond, connector_indices, n_extra, seed_dist=1
 
     new_nodes_tensor = torch.stack(new_nodes_list)
     return new_nodes_tensor
+
+
+# ---------------------------------------------------------------------------
+# Clean placeholder ("skeleton") builders for outpaint latent initialization.
+#
+# These return CLEAN, connector-anchored, clash-free coordinates for the
+# to-be-generated atoms. Unlike ``initialize_extra_nodes_seed`` (which emits a
+# tight blob used directly as the start latent), the output here is meant to be
+# *forward-noised* (z = alpha_t * x0 + sigma_t * eps) to a partial t_start so the
+# inference initialization matches the training forward marginal. Only the
+# coordinates matter; node features are randomized (denoised during sampling).
+#
+# Builders are looked up in SKELETON_BUILDERS by a ``skeleton_type`` / family
+# name. The first pass implements the random self-avoiding family
+# ("random_walk", "globular"); other families are registered as TODO stubs so
+# the config surface exists without wiring the geometry yet.
+# ---------------------------------------------------------------------------
+
+
+def _connector_seed_direction(
+    conn_p, curr_mol_pos, conn_idx, seed_dist, device, num_attempts=100
+):
+    """Maximin outward direction from a connector (away from the scaffold).
+
+    Returns a unit direction (3,) that maximizes the minimum distance from a
+    seed placed at ``conn_p + dir * seed_dist`` to every other scaffold atom.
+    """
+    N = curr_mol_pos.shape[0]
+    directions = torch.randn(num_attempts, 3, device=device)
+    directions = directions / torch.norm(directions, dim=1, keepdim=True)
+    candidate_seeds = conn_p.unsqueeze(0) + directions * seed_dist
+    diffs = candidate_seeds.unsqueeze(1) - curr_mol_pos.unsqueeze(0)
+    dists = torch.norm(diffs, dim=2)
+    mask = torch.ones(N, dtype=torch.bool, device=device)
+    if 0 <= int(conn_idx) < N:
+        mask[int(conn_idx)] = False
+    valid = dists[:, mask]
+    if valid.shape[1] > 0:
+        best = int(torch.argmax(torch.min(valid, dim=1).values))
+    else:
+        best = 0
+    return directions[best]
+
+
+def _min_clearance(cand, scaffold_pos, placed):
+    """Minimum distance from ``cand`` (3,) to scaffold atoms and placed atoms."""
+    d_scaf = torch.min(torch.norm(scaffold_pos - cand, dim=1)) \
+        if scaffold_pos.shape[0] > 0 else torch.tensor(float("inf"))
+    if placed:
+        d_plac = torch.min(
+            torch.norm(torch.stack(placed) - cand, dim=1)
+        )
+    else:
+        d_plac = torch.tensor(float("inf"), device=cand.device)
+    return torch.min(d_scaf, d_plac)
+
+
+def _build_random_walk(
+    curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat, device,
+    seed_dist=1.5, min_dist=1.0, bond_len=1.5, max_tries=50,
+):
+    """Connected self-avoiding 3D walk grown outward from the connector(s)."""
+    n_conn = connector_pos.shape[0]
+    heads = [connector_pos[c].clone() for c in range(n_conn)]
+    dirs = [
+        _connector_seed_direction(
+            connector_pos[c], curr_mol_pos, connector_real_idx[c],
+            seed_dist, device,
+        )
+        for c in range(n_conn)
+    ]
+    placed = []
+    for i in range(n_extra):
+        c = i % n_conn
+        prev = heads[c]
+        prev_dir = dirs[c]
+        chosen = None
+        chosen_dir = prev_dir
+        for _ in range(max_tries):
+            rd = torch.randn(3, device=device)
+            rd = rd / torch.norm(rd)
+            new_dir = prev_dir * 0.5 + rd * 0.5
+            new_dir = new_dir / torch.norm(new_dir)
+            cand = prev + new_dir * bond_len
+            if _min_clearance(cand, curr_mol_pos, placed) >= min_dist * 0.9:
+                chosen = cand
+                chosen_dir = new_dir
+                break
+        if chosen is None:
+            chosen = prev + prev_dir * bond_len  # fallback: keep growing
+        placed.append(chosen)
+        heads[c] = chosen
+        dirs[c] = chosen_dir
+    pos = torch.stack(placed)
+    feats = torch.randn(n_extra, n_feat, device=device)
+    return torch.cat([pos, feats], dim=1)
+
+
+def _build_globular(
+    curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat, device,
+    seed_dist=2.0, min_dist=1.0, bond_len=1.5, max_tries=80,
+):
+    """Compact min-distance-packed blob anchored outside the scaffold."""
+    centroid = connector_pos.mean(dim=0)
+    ref_idx = int(connector_real_idx[0]) if len(connector_real_idx) else -1
+    direction = _connector_seed_direction(
+        centroid, curr_mol_pos, ref_idx, seed_dist, device,
+    )
+    # Radius grows with atom count (~sphere packing).
+    radius = bond_len * max(1.0, float(n_extra) ** (1.0 / 3.0))
+    center = centroid + direction * (seed_dist + radius * 0.5)
+    placed = []
+    for _ in range(n_extra):
+        chosen = None
+        for _ in range(max_tries):
+            cand = center + torch.randn(3, device=device) * radius * 0.45
+            if _min_clearance(cand, curr_mol_pos, placed) >= min_dist * 0.9:
+                chosen = cand
+                break
+        if chosen is None:
+            chosen = center + torch.randn(3, device=device) * radius * 0.45
+        placed.append(chosen)
+    pos = torch.stack(placed)
+    feats = torch.randn(n_extra, n_feat, device=device)
+    return torch.cat([pos, feats], dim=1)
+
+
+def _self_avoiding_step(
+    prev, prev_dir, scaffold_pos, placed, device, min_dist, bond_len, max_tries=50
+):
+    """One self-avoiding growth step from ``prev`` along a biased random dir."""
+    for _ in range(max_tries):
+        rd = torch.randn(3, device=device)
+        rd = rd / torch.norm(rd)
+        new_dir = prev_dir * 0.5 + rd * 0.5
+        new_dir = new_dir / torch.norm(new_dir)
+        cand = prev + new_dir * bond_len
+        if _min_clearance(cand, scaffold_pos, placed) >= min_dist * 0.9:
+            return cand, new_dir
+    return prev + prev_dir * bond_len, prev_dir
+
+
+def _build_fragment_family(
+    curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat, device,
+    tags_all=(), seed_dist=1.5, min_dist=1.0, bond_len=1.5,
+):
+    """Place a bundled substituent of a given family at the connector.
+
+    Selects the bundled fragment matching ``tags_all`` closest to ``n_extra``,
+    aligns it so its bond points along the maximin outward direction, then:
+      * if larger than n_extra, keeps the n_extra atoms nearest the attachment
+        (a connected core);
+      * if smaller, extends with a self-avoiding walk (e.g. a ring + tail).
+    Falls back to a random walk when no fragment matches the family. Atom
+    features are randomized.
+    """
+    c0 = connector_pos[0]
+    ref0 = int(connector_real_idx[0]) if len(connector_real_idx) else -1
+    direction = _connector_seed_direction(
+        c0, curr_mol_pos, ref0, max(seed_dist, bond_len), device
+    )
+    _, frag = select_fragment(tags_all, n_extra)
+    if frag is None:
+        return _build_random_walk(
+            curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat,
+            device, seed_dist=seed_dist, min_dist=min_dist, bond_len=bond_len,
+        )
+
+    roll = torch.rand((), device=device) * float(2 * np.pi)
+    placed = place_fragment(frag, c0, direction, roll_angle=roll)  # (M, 3)
+    M = placed.shape[0]
+
+    if M >= n_extra:
+        d_attach = torch.norm(placed - placed[0:1], dim=1)
+        keep = torch.argsort(d_attach)[:n_extra]
+        pos = placed[keep]
+    else:
+        placed_list = [placed[i] for i in range(M)]
+        d_from_conn = torch.norm(placed - c0.unsqueeze(0), dim=1)
+        head = placed[int(torch.argmax(d_from_conn))]
+        head_dir = head - c0
+        head_dir = head_dir / (torch.norm(head_dir) + 1e-8)
+        for _ in range(n_extra - M):
+            head, head_dir = _self_avoiding_step(
+                head, head_dir, curr_mol_pos, placed_list, device,
+                min_dist, bond_len,
+            )
+            placed_list.append(head)
+        pos = torch.stack(placed_list)
+
+    feats = torch.randn(n_extra, n_feat, device=device)
+    return torch.cat([pos, feats], dim=1)
+
+
+def _family_builder(tags_all):
+    """Make a SKELETON_BUILDERS entry that places a fragment of a given family."""
+    def _builder(
+        curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat, device,
+        seed_dist=1.5, min_dist=1.0, bond_len=1.5,
+    ):
+        return _build_fragment_family(
+            curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat,
+            device, tags_all=tags_all, seed_dist=seed_dist, min_dist=min_dist,
+            bond_len=bond_len,
+        )
+    return _builder
+
+
+def _build_auto(
+    curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat, device,
+    seed_dist=1.5, min_dist=1.0, bond_len=1.5,
+):
+    """Size-driven family heuristic: small->chain, mid->ring, large->cage."""
+    if n_extra <= 4:
+        tags = ["aliphatic", "chain"]
+    elif n_extra <= 8:
+        tags = ["aliphatic", "branched"]
+    elif n_extra <= 18:
+        tags = ["aliphatic", "ring"]
+    else:
+        tags = ["aliphatic", "cage"]
+    return _build_fragment_family(
+        curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat,
+        device, tags_all=tags, seed_dist=seed_dist, min_dist=min_dist,
+        bond_len=bond_len,
+    )
+
+
+# Registry of clean-skeleton builders keyed by family name.
+# random_walk/globular are procedural; the rest place a bundled substituent
+# fragment of the matching family (aromatic_fused has no fused fragment bundled,
+# so it extends an aromatic ring).
+SKELETON_BUILDERS = {
+    "random_walk": _build_random_walk,
+    "globular": _build_globular,
+    "aliphatic_chain": _family_builder(["aliphatic", "chain"]),
+    "aliphatic_branched": _family_builder(["aliphatic", "branched"]),
+    "aliphatic_ring": _family_builder(["aliphatic", "ring"]),
+    "aromatic_ring": _family_builder(["aromatic", "ring"]),
+    "aromatic_fused": _family_builder(["aromatic"]),
+    "cage": _family_builder(["aliphatic", "cage"]),
+    "ring_tail": _family_builder(["ring"]),
+    "mixed": _family_builder([]),
+    "auto": _build_auto,
+}
+
+
+def build_extra_node_template(
+    xh_cond,
+    connector_indices,
+    n_extra,
+    method="skeleton",
+    skeleton_type="random_walk",
+    seed_dist=1.5,
+    min_dist=1.0,
+    spread=0.5,
+    n_bq_atom=0,
+    bond_len=1.5,
+):
+    """Build clean extra-node coordinates for outpaint latent initialization.
+
+    Args:
+        xh_cond: (B, N_ref, D) scaffold tensor [coords(3) | features(D-3)].
+        connector_indices: indices of connector atoms in the scaffold.
+        n_extra: number of extra nodes to create per batch item.
+        method: "skeleton" (procedural family) or "fragment" (bundled
+            substituent family) — both dispatch via skeleton_type; "seed"
+            (legacy blob). "data" is handled by the caller (model).
+        skeleton_type: family name when method in {"skeleton", "fragment"} (see
+            SKELETON_BUILDERS). For "fragment", default to an aromatic ring when
+            left at the procedural default.
+        seed_dist, min_dist, spread, n_bq_atom, bond_len: geometry knobs.
+
+    Returns:
+        (B, n_extra, D) clean coordinates + randomized features.
+    """
+    if method == "seed":
+        return initialize_extra_nodes_seed(
+            xh_cond, connector_indices, n_extra,
+            seed_dist=seed_dist, min_dist=min_dist, spread=spread,
+            n_bq_atom=n_bq_atom,
+        )
+    if method == "fragment" and skeleton_type in ("random_walk", "globular"):
+        # 'fragment' implies a substituent family; pick a sensible default.
+        skeleton_type = "aromatic_ring"
+    if method not in ("skeleton", "fragment"):
+        raise ValueError(
+            f"build_extra_node_template got method={method!r}; only 'skeleton', "
+            "'fragment', and 'seed' are dispatched here ('data' is handled by "
+            "the model)."
+        )
+
+    builder = SKELETON_BUILDERS.get(skeleton_type)
+    if builder is None:
+        raise ValueError(
+            f"Unknown skeleton_type={skeleton_type!r}. "
+            f"Choose from {sorted(SKELETON_BUILDERS)}."
+        )
+
+    B, N, D = xh_cond.shape
+    device = xh_cond.device
+    n_feat = D - 3
+    if isinstance(connector_indices, list):
+        connector_indices = torch.tensor(connector_indices, device=device)
+    connector_indices = connector_indices.to(device=device, dtype=torch.long)
+
+    out = []
+    for b in range(B):
+        curr_mol_pos = xh_cond[b, :, :3]
+        connector_pos = curr_mol_pos[connector_indices]
+        node = builder(
+            curr_mol_pos, connector_pos, connector_indices, n_extra, n_feat,
+            device, seed_dist=seed_dist, min_dist=min_dist, bond_len=bond_len,
+        )
+        out.append(node)
+    return torch.stack(out)
 
 
 def initialize_extra_nodes(xh_cond, connector_indices, n_extra, eps=2.0, min_samples=1):
@@ -1147,23 +1532,23 @@ def ensure_intact(
     main_label = max(component_sizes, key=component_sizes.get)
     outlier_subgraphs = [indices for label, indices in subgraphs.items() if label != main_label]
     non_outlier_indices = subgraphs[main_label]
-
+    
     adjusted_indices = []
     if non_outlier_indices.numel() > 0 and len(outlier_subgraphs) > 0:
         for indices in outlier_subgraphs:
             subgraph_points = updated_tgt[indices]
-
+            
             dists = torch.cdist(subgraph_points, updated_tgt[non_outlier_indices])
             closest_idx = dists.argmin(dim=1)
             closest_points = updated_tgt[non_outlier_indices][closest_idx]
-
+            
             direction = closest_points.mean(dim=0) - subgraph_points.mean(dim=0)
             dist_dir = direction.norm()
             if dist_dir < 1e-12:
                 direction = torch.randn_like(direction)
                 dist_dir = direction.norm()
             direction_unit = direction / dist_dir
-
+            
             if d_fixed_move:
                 best_alpha = d_fixed_move
             else:
@@ -1183,10 +1568,10 @@ def ensure_intact(
 
             updated_tgt[indices] += best_alpha * direction_unit
             adjusted_indices.extend(indices.tolist())
-
+            
             if debug:
                 print(f"Moving outlier subgraph {indices.tolist()} toward closest non-outlier subgraph by {best_alpha}")
-
+    
     return torch.tensor(adjusted_indices, device=device), updated_tgt
 
 

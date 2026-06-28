@@ -33,6 +33,7 @@ from .geom_analyzer import (
 from .geom_constraint import (
     initialize_extra_nodes,
     initialize_extra_nodes_seed,
+    build_extra_node_template,
     ensure_intact,
     enforce_min_nodes_per_connector,
     find_close_points_torch_and_push_op2,
@@ -126,6 +127,7 @@ __all__ = [
     
     "initialize_extra_nodes",
     "initialize_extra_nodes_seed",
+    "build_extra_node_template",
     "ensure_intact",
     "enforce_min_nodes_per_connector",
     "find_close_points_torch_and_push_op2",
