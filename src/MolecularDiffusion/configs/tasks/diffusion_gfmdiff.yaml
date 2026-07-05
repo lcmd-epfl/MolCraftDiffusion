@@ -1,0 +1,39 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_gfmdiff.ModelTaskFactory
+task_type: diffusion
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+chkpt_path: null
+
+# GFMDiff Dual-Track Transformer backbone hyperparameters
+# (bundled defaults from GFMDiff/config/model/gfmdiff.yaml)
+num_layers: 5
+hidden_dims:
+  emb_dim: 256
+  hidden_dim: 512
+  num_heads: 8
+dropout: 0.1
+pair_loss_scale: 0.0
+add_time: False
+block_calc: True
+dataset_name: qm9
+
+# specific to diffusion (copied verbatim from diffusion_egt.yaml -- diffusion
+# math is EnVariationalDiffusion's, shared across every §1 backbone)
+diffusion_steps: 400
+diffusion_noise_schedule: polynomial_2 # learned, cosine_x, polynomial_x, issnr_x, smld_x
+diffusion_noise_precision: 1e-5
+diffusion_loss_type: vlb
+normalize_factors: [1, 4, 10]
+extra_norm_values: []
+augment_noise: False
+data_augmentation: False
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10 # [None, "maxmin", "mad"]
+reference_indices: null # indices of core atoms for the outpainting objective
+# evaluator parameters
+use_posebuster: True
+metrics: valid_posebuster # use_posebuster must be true
+n_samples: 24
+generative_analysis: True
+batch_size: 4

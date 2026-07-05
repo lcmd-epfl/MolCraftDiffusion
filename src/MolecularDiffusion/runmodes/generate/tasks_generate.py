@@ -324,7 +324,7 @@ class GenerativeFactory:
             self.unconditional_generation()
         elif self.task_type in ("conditional", "cfg"):
             self.conditional_generation()
-        elif self.task_type in ("gradient_guidance", "cfggg"):
+        elif self.task_type in ("gradient_guidance", "gg", "cfggg"):
             self.property_guidance()
         elif self.task_type in ("inpaint", "outpaint", "outpaintft"):
             self.structural_guidance()

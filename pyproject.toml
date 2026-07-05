@@ -181,3 +181,13 @@ environments = [
 [[tool.mypy.overrides]]
 module = []
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+markers = [
+  "diffusion: diffusion model compatibility tests",
+  "generation: generation config and runtime compatibility tests",
+  "regression: regression model compatibility tests",
+  "tabasco: TABASCO model compatibility tests",
+  "ssl3d: SSL3D model compatibility tests",
+  "pharmacophore: pharmacophore model compatibility tests",
+]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,8 @@ from torch import nn
 SRC_PATH = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/molcraft-mpl")
 
 
 @pytest.fixture(autouse=True)
