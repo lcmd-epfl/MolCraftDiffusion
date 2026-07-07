@@ -32,16 +32,6 @@ from MolecularDiffusion.modules.models.difflinker.linker_size import Distributio
 # index len(atom_vocab) + 0 = linker_mask, len(atom_vocab) + 1 = anchors.
 DIFFLINKER_ROW_DATA_COLUMNS = ("linker_mask", "anchors")
 
-# Fallback linker-size histogram used only if `node_dist_model`/`n_node_dist`
-# is accessed before any training batch has flowed through `forward()`
-# (e.g. `generate` run against a checkpoint from a different process --
-# the lazily-accumulated histogram is plain Python state, not part of the
-# checkpointed state_dict). Loosely shaped like DiffLinker's own
-# ZINC_TRAIN_LINKER_SIZE_WEIGHTS (difflinker/src/const.py), not fit to real
-# data -- good enough to keep sampling from crashing for a smoke test.
-_DEFAULT_LINKER_SIZE_HISTOGRAM = {3: 6, 4: 8, 5: 9, 6: 9, 7: 5, 8: 2}
-
-
 class PointCloudToDiffLinkerBatch:
     """Converts a MolCraftDiffusion PointCloud batch dict into DiffLinker's
     native per-atom field layout.
@@ -303,11 +293,30 @@ class DiffLinkerTask(nn.Module):
         self.prop_dist_model = None
 
         self._adapter: Optional[PointCloudToDiffLinkerBatch] = None
-        # ponytail: lazy linker-size stats instead of a `train_set`-at-build
-        # seam (docs/adding_new_models.md §2.5) -- accumulated in-process
-        # from real forward() batches only, not persisted in checkpoints.
-        self._linker_size_counts: Counter = Counter()
+        # ponytail: lazy total-atom-count stats instead of a
+        # `train_set`-at-build seam (docs/adding_new_models.md §2.5) --
+        # accumulated in-process
+        # from real forward() batches, persisted across checkpoint save/load
+        # via get_extra_state/set_extra_state below (plain engine) and via
+        # the node_dist_model/n_node_dist setters (Lightning engine's
+        # on_load_checkpoint).
+        self._atom_count_counts: Counter = Counter()
         self._node_dist_cache: Optional[DistributionNodes] = None
+        # Set only via the node_dist_model/n_node_dist setters below -- lets
+        # a fresh `generate` process restore the real stats saved into the
+        # checkpoint at end of training (core/engine_lightning.py's
+        # on_load_checkpoint), rather than falling back to a placeholder.
+        self._node_dist_override: Optional[DistributionNodes] = None
+        self._n_node_dist_override: Optional[dict] = None
+
+    def get_extra_state(self) -> dict:
+        return {"atom_count_counts": dict(self._atom_count_counts)}
+
+    def set_extra_state(self, state: dict) -> None:
+        counts = state.get("atom_count_counts") if isinstance(state, dict) else None
+        if counts:
+            self._atom_count_counts = Counter(counts)
+            self._node_dist_cache = None
 
     def _get_adapter(self) -> PointCloudToDiffLinkerBatch:
         if self.atom_vocab is None:
@@ -356,10 +365,19 @@ class DiffLinkerTask(nn.Module):
         vlb_loss = kl_prior + loss_term_t + loss_term_0 - delta_log_px
         loss = l2_loss if self.loss_type == "l2" else vlb_loss
 
-        sizes = linker_mask.sum(dim=1).squeeze(-1).round().long().tolist()
+        # Total atom count (fragment + linker), NOT linker-only -- this must
+        # match what GenerativeFactory's mol_size/max_atom clamp and
+        # DiffLinkerTask.sample()'s own `nodesxsample` mean (see sample()'s
+        # docstring/error message: "nodesxsample (total atom counts)").
+        # Counting linker-only atoms here made max_atom a linker-size cap
+        # (typically far smaller than any real fragment), which forced
+        # nodesxsample to always clamp up to the fragment size -- a
+        # permanent linker_size==0 regardless of mol_size (see
+        # INTEGRATION_PLAN.md's Post-Completion Fix section).
+        sizes = node_mask.sum(dim=1).squeeze(-1).round().long().tolist()
         for size in sizes:
             if size > 0:
-                self._linker_size_counts[size] += 1
+                self._atom_count_counts[size] += 1
         self._node_dist_cache = None
 
         stats = {
@@ -384,20 +402,49 @@ class DiffLinkerTask(nn.Module):
         return {"val_loss": pred.mean()}
 
     @property
-    def linker_size_histogram(self) -> dict:
-        if self._linker_size_counts:
-            return dict(self._linker_size_counts)
-        return dict(_DEFAULT_LINKER_SIZE_HISTOGRAM)
+    def atom_count_histogram(self) -> Optional[dict]:
+        # _atom_count_counts (persisted via get_extra_state/set_extra_state,
+        # see __init__) is always the real, current-checkpoint-format stats
+        # and must win over _n_node_dist_override -- the override exists only
+        # for core/engine_lightning.py's on_load_checkpoint fine-tuning path
+        # (injecting freshly-preprocessed stats before any forward() has run
+        # this process), and checking it first would let a *resume* from an
+        # older checkpoint's stale top-level `n_node_dist` (pre-dating this
+        # histogram's current semantics) permanently shadow the correct,
+        # already-restored _atom_count_counts for the rest of the run.
+        if self._atom_count_counts:
+            return dict(self._atom_count_counts)
+        if self._n_node_dist_override is not None:
+            return dict(self._n_node_dist_override)
+        return None
 
     @property
-    def node_dist_model(self) -> DistributionNodes:
-        if self._node_dist_cache is None:
-            self._node_dist_cache = DistributionNodes(self.linker_size_histogram)
-        return self._node_dist_cache
+    def node_dist_model(self) -> Optional[DistributionNodes]:
+        histogram = self.atom_count_histogram
+        if histogram is not None:
+            if self._node_dist_cache is None:
+                self._node_dist_cache = DistributionNodes(histogram)
+            return self._node_dist_cache
+        return self._node_dist_override
+
+    @node_dist_model.setter
+    def node_dist_model(self, value: DistributionNodes) -> None:
+        # ponytail: settable so core/engine_lightning.py's generic
+        # on_load_checkpoint restore (checkpoint['node_dist_model'] -- the
+        # real linker-size stats saved at the end of training) actually
+        # takes effect, instead of silently no-op'ing because this property
+        # used to never return None ("has_fresh_node_dist" always true).
+        self._node_dist_override = value
+        self._node_dist_cache = None
 
     @property
-    def n_node_dist(self) -> dict:
-        return self.linker_size_histogram
+    def n_node_dist(self) -> Optional[dict]:
+        return self.atom_count_histogram
+
+    @n_node_dist.setter
+    def n_node_dist(self, value: dict) -> None:
+        self._n_node_dist_override = dict(value) if value else None
+        self._node_dist_cache = None
 
     @property
     def model(self):

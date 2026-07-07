@@ -391,6 +391,14 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
         sleep_time=float(OmegaConf.select(engine_cfg, "sleep_time", default=60.0) or 60.0),
     )
 
+    # Resuming from a checkpoint saved before a task added/removed a
+    # get_extra_state()-backed key (or any other state_dict key) would
+    # otherwise hard-fail Lightning's default strict=True checkpoint
+    # restore. Generic escape hatch, not task-specific.
+    pl_module.strict_loading = bool(
+        OmegaConf.select(engine_cfg, "strict_loading", default=True)
+    )
+
     # Inject factory dimension adjustment logic so Lightning can use it natively
     if hasattr(task_module, "adjust_state_dict"):
         pl_module._custom_state_dict_adjuster = task_module.adjust_state_dict

@@ -41,3 +41,8 @@ sleep_time: 60
 num_workers: 2
 pin_memory: false
 persistent_workers: false
+
+# Set to false to resume from a checkpoint saved by an older task state_dict
+# shape (e.g. a task added/removed a get_extra_state() key since that
+# checkpoint was written) without a hard "Missing key(s)" failure.
+strict_loading: true
