@@ -1,0 +1,519 @@
+"""DiffLinker integration with the MolecularDiffusion data pipeline.
+
+DiffLinker (https://github.com/igashov/DiffLinker) is a fragment/linker
+mask-conditioned E(n)-equivariant diffusion model: given a set of fixed
+"fragment" atoms, it diffuses only a "linker" subset of atoms that connects
+them. See docs/model_integrations/difflinker/INTEGRATION_PLAN.md for the
+full integration plan (data adapters, task-contract mapping, scope) this
+module implements.
+
+Ported model code lives under
+``MolecularDiffusion.modules.models.difflinker`` (``edm.py``, ``egnn.py``,
+``noise.py``, ``linker_size.py``).
+"""
+
+import random
+from collections import Counter
+from typing import Optional
+
+import torch
+import torch.nn as nn
+from ase.data import atomic_numbers as ase_atomic_numbers
+
+from MolecularDiffusion.modules.models.difflinker import utils as dl_utils
+from MolecularDiffusion.modules.models.difflinker.edm import EDM
+from MolecularDiffusion.modules.models.difflinker.egnn import Dynamics
+from MolecularDiffusion.modules.models.difflinker.linker_size import DistributionNodes
+
+# Column order the conversion script
+# (docs/model_integrations/difflinker/scripts/convert_zinc_pt_to_asedb.py)
+# packs into `row.data["node_features"]` -- implicit contract, not enforced
+# by shared code (see INTEGRATION_PLAN.md's "Coupling risk" note). Column
+# index len(atom_vocab) + 0 = linker_mask, len(atom_vocab) + 1 = anchors.
+DIFFLINKER_ROW_DATA_COLUMNS = ("linker_mask", "anchors")
+
+# Fallback linker-size histogram used only if `node_dist_model`/`n_node_dist`
+# is accessed before any training batch has flowed through `forward()`
+# (e.g. `generate` run against a checkpoint from a different process --
+# the lazily-accumulated histogram is plain Python state, not part of the
+# checkpointed state_dict). Loosely shaped like DiffLinker's own
+# ZINC_TRAIN_LINKER_SIZE_WEIGHTS (difflinker/src/const.py), not fit to real
+# data -- good enough to keep sampling from crashing for a smoke test.
+_DEFAULT_LINKER_SIZE_HISTOGRAM = {3: 6, 4: 8, 5: 9, 6: 9, 7: 5, 8: 2}
+
+
+class PointCloudToDiffLinkerBatch:
+    """Converts a MolCraftDiffusion PointCloud batch dict into DiffLinker's
+    native per-atom field layout.
+
+    Two data paths share this one adapter (see INTEGRATION_PLAN.md's Data
+    adapters section):
+
+    - **Path A** (real ZINC data, converted via
+      ``convert_zinc_pt_to_asedb.py`` + ``use_row_data_features: true``):
+      ``linker_mask``/``anchors`` are sliced straight out of
+      ``node_feature``'s trailing two columns.
+    - **Path B** (synthetic fallback, any ordinary single-molecule dataset):
+      when those trailing columns aren't present, a random contiguous slice
+      of each molecule is fabricated as the "linker", with the fragment
+      atoms bordering the cut tagged as anchors.
+    """
+
+    def __init__(self, atom_vocab: list):
+        self.atom_vocab = list(atom_vocab)
+        self.n_vocab = len(self.atom_vocab)
+
+    def __call__(self, batch: dict) -> dict:
+        node_feature = batch.get("node_feature")
+        if node_feature is None:
+            node_feature = batch.get("node_features")
+        if node_feature is None:
+            node_feature = batch["x"]
+
+        coords = batch["coords"]
+        device = coords.device
+        node_mask_flat = batch["node_mask"].float().to(device)
+        _bsz, n_atoms = node_mask_flat.shape
+
+        one_hot = node_feature[..., : self.n_vocab].to(device)
+
+        has_row_data = node_feature.shape[-1] >= self.n_vocab + 2
+        if has_row_data:
+            linker_mask = node_feature[..., self.n_vocab : self.n_vocab + 1].to(device)
+            anchors = node_feature[..., self.n_vocab + 1 : self.n_vocab + 2].to(device)
+        else:
+            linker_mask, anchors = self._synthesize_linker_split(node_mask_flat)
+
+        atom_mask = node_mask_flat.unsqueeze(-1)
+        linker_mask = linker_mask * atom_mask
+        fragment_mask = (1.0 - linker_mask) * atom_mask
+
+        am = atom_mask.squeeze(-1)
+        edge_mask_full = am.unsqueeze(2) * am.unsqueeze(1)
+        diag = ~torch.eye(n_atoms, dtype=torch.bool, device=device)
+        edge_mask_full = edge_mask_full * diag.unsqueeze(0)
+        edge_mask = edge_mask_full.reshape(-1, 1)
+
+        return {
+            "positions": coords,
+            "one_hot": one_hot,
+            "charges": batch.get("charges"),
+            "anchors": anchors,
+            "fragment_mask": fragment_mask,
+            "linker_mask": linker_mask,
+            "atom_mask": atom_mask,
+            "edge_mask": edge_mask,
+            "num_atoms": batch.get("natoms"),
+        }
+
+    def _synthesize_linker_split(self, node_mask_flat: torch.Tensor):
+        """Path B: fabricate a fragment/linker split (not chemically
+        meaningful) -- see class docstring."""
+        device = node_mask_flat.device
+        bsz, n_atoms = node_mask_flat.shape
+        linker_mask = torch.zeros(bsz, n_atoms, 1, device=device)
+        anchors = torch.zeros(bsz, n_atoms, 1, device=device)
+
+        for b in range(bsz):
+            n = int(node_mask_flat[b].sum().item())
+            if n < 3:
+                # Too small to carve out a linker; leave the whole molecule
+                # as "fragment" (linker_mask all zero for this sample).
+                continue
+            max_len = max(1, min(4, n - 2))
+            linker_len = random.randint(1, max_len)
+            start = random.randint(1, n - linker_len - 1)
+            linker_mask[b, start : start + linker_len, 0] = 1.0
+            anchors[b, start - 1, 0] = 1.0
+            if start + linker_len < n:
+                anchors[b, start + linker_len, 0] = 1.0
+
+        return linker_mask, anchors
+
+
+class DiffLinkerTaskFactory:
+    """Factory matching ``train.py``'s ``task_module.build()`` /
+    ``task_module.task`` instantiation pattern (see
+    ``diffusion_tabasco.py::ModelTaskFactory`` for the precedent)."""
+
+    def __init__(
+        self,
+        task_type: str,
+        in_node_nf: int,
+        n_dims: int = 3,
+        hidden_nf: int = 128,
+        activation: str = "silu",
+        tanh: bool = False,
+        n_layers: int = 6,
+        attention: bool = False,
+        norm_constant: float = 1e-6,
+        inv_sublayers: int = 2,
+        sin_embedding: bool = False,
+        normalization_factor: float = 100,
+        aggregation_method: str = "sum",
+        model: str = "egnn_dynamics",
+        normalization: Optional[str] = "batch_norm",
+        condition_time: bool = True,
+        anchors_context: bool = True,
+        diffusion_steps: int = 500,
+        diffusion_noise_schedule: str = "polynomial_2",
+        diffusion_noise_precision: float = 1e-5,
+        diffusion_loss_type: str = "l2",
+        normalize_factors: tuple = (1, 4, 10),
+        center_of_mass: str = "fragments",
+        atom_vocab: Optional[list] = None,
+        **kwargs,
+    ):
+        self.task_type = task_type
+        self.in_node_nf = in_node_nf
+        self.n_dims = n_dims
+        self.hidden_nf = hidden_nf
+        self.activation = activation
+        self.tanh = tanh
+        self.n_layers = n_layers
+        self.attention = attention
+        self.norm_constant = norm_constant
+        self.inv_sublayers = inv_sublayers
+        self.sin_embedding = sin_embedding
+        self.normalization_factor = normalization_factor
+        self.aggregation_method = aggregation_method
+        self.model = model
+        self.normalization = normalization
+        self.condition_time = condition_time
+        self.anchors_context = anchors_context
+        self.diffusion_steps = diffusion_steps
+        self.diffusion_noise_schedule = diffusion_noise_schedule
+        self.diffusion_noise_precision = diffusion_noise_precision
+        self.diffusion_loss_type = diffusion_loss_type
+        self.normalize_factors = tuple(normalize_factors)
+        self.center_of_mass = center_of_mass
+        self.atom_vocab = atom_vocab or kwargs.get("atom_vocab")
+        self.kwargs = kwargs
+
+    def build(self) -> "DiffLinkerTask":
+        self.task = DiffLinkerTask(
+            in_node_nf=self.in_node_nf,
+            n_dims=self.n_dims,
+            hidden_nf=self.hidden_nf,
+            activation=self.activation,
+            tanh=self.tanh,
+            n_layers=self.n_layers,
+            attention=self.attention,
+            norm_constant=self.norm_constant,
+            inv_sublayers=self.inv_sublayers,
+            sin_embedding=self.sin_embedding,
+            normalization_factor=self.normalization_factor,
+            aggregation_method=self.aggregation_method,
+            model=self.model,
+            normalization=self.normalization,
+            condition_time=self.condition_time,
+            anchors_context=self.anchors_context,
+            diffusion_steps=self.diffusion_steps,
+            diffusion_noise_schedule=self.diffusion_noise_schedule,
+            diffusion_noise_precision=self.diffusion_noise_precision,
+            diffusion_loss_type=self.diffusion_loss_type,
+            normalize_factors=self.normalize_factors,
+            center_of_mass=self.center_of_mass,
+            atom_vocab=self.atom_vocab,
+        )
+        return self.task
+
+
+class DiffLinkerTask(nn.Module):
+    """Plain ``nn.Module`` task wrapper (TABASCO-style, no ``Task``/
+    ``core.Configurable`` base needed -- see docs/adding_new_models.md §2.6)
+    implementing the §2.1 contract around DiffLinker's ``EDM``."""
+
+    def __init__(
+        self,
+        in_node_nf: int,
+        n_dims: int,
+        hidden_nf: int,
+        activation: str,
+        tanh: bool,
+        n_layers: int,
+        attention: bool,
+        norm_constant: float,
+        inv_sublayers: int,
+        sin_embedding: bool,
+        normalization_factor: float,
+        aggregation_method: str,
+        model: str,
+        normalization: Optional[str],
+        condition_time: bool,
+        anchors_context: bool,
+        diffusion_steps: int,
+        diffusion_noise_schedule: str,
+        diffusion_noise_precision: float,
+        diffusion_loss_type: str,
+        normalize_factors: tuple,
+        center_of_mass: str,
+        atom_vocab: Optional[list] = None,
+    ):
+        super().__init__()
+
+        act = nn.SiLU() if activation == "silu" else nn.SiLU()
+        context_node_nf = 2 if anchors_context else 1
+
+        dynamics = Dynamics(
+            n_dims=n_dims,
+            in_node_nf=in_node_nf,
+            context_node_nf=context_node_nf,
+            hidden_nf=hidden_nf,
+            device="cpu",
+            activation=act,
+            n_layers=n_layers,
+            attention=attention,
+            condition_time=condition_time,
+            tanh=tanh,
+            norm_constant=norm_constant,
+            inv_sublayers=inv_sublayers,
+            sin_embedding=sin_embedding,
+            normalization_factor=normalization_factor,
+            aggregation_method=aggregation_method,
+            model=model,
+            normalization=normalization,
+            centering=False,
+            graph_type="FC",
+        )
+        self.edm = EDM(
+            dynamics=dynamics,
+            in_node_nf=in_node_nf,
+            n_dims=n_dims,
+            timesteps=diffusion_steps,
+            noise_schedule=diffusion_noise_schedule,
+            noise_precision=diffusion_noise_precision,
+            loss_type=diffusion_loss_type,
+            norm_values=tuple(normalize_factors),
+        )
+
+        self.n_dims = n_dims
+        self.in_node_nf = in_node_nf
+        self.anchors_context = anchors_context
+        self.center_of_mass = center_of_mass
+        self.loss_type = diffusion_loss_type
+        self.atom_vocab = atom_vocab
+
+        # tasks_generate.py::preprocess_ref_structure/structural_guidance read
+        # these generically off `task.model` (duck-typed, not
+        # GeomMolecularGenerative-specific -- INTEGRATION_PLAN.md's
+        # Core-Change Requirement section).
+        self.norm_values = tuple(normalize_factors)
+        self.ndim_extra = 0
+        self.prop_dist_model = None
+
+        self._adapter: Optional[PointCloudToDiffLinkerBatch] = None
+        # ponytail: lazy linker-size stats instead of a `train_set`-at-build
+        # seam (docs/adding_new_models.md §2.5) -- accumulated in-process
+        # from real forward() batches only, not persisted in checkpoints.
+        self._linker_size_counts: Counter = Counter()
+        self._node_dist_cache: Optional[DistributionNodes] = None
+
+    def _get_adapter(self) -> PointCloudToDiffLinkerBatch:
+        if self.atom_vocab is None:
+            raise ValueError(
+                "DiffLinkerTask.atom_vocab is not set -- cli/train.py/"
+                "cli/generate.py should set it after build() (see "
+                "docs/adding_new_models.md §2.1)."
+            )
+        if self._adapter is None or self._adapter.atom_vocab != list(self.atom_vocab):
+            self._adapter = PointCloudToDiffLinkerBatch(self.atom_vocab)
+        return self._adapter
+
+    def forward(self, batch: dict):
+        pc = self._get_adapter()(batch)
+        x = pc["positions"]
+        h = pc["one_hot"]
+        node_mask = pc["atom_mask"]
+        edge_mask = pc["edge_mask"]
+        anchors = pc["anchors"]
+        fragment_mask = pc["fragment_mask"]
+        linker_mask = pc["linker_mask"]
+
+        if self.anchors_context:
+            context = torch.cat([anchors, fragment_mask], dim=-1)
+        else:
+            context = fragment_mask
+
+        if self.center_of_mass == "fragments":
+            center_of_mass_mask = fragment_mask
+        elif self.center_of_mass == "anchors":
+            center_of_mass_mask = anchors
+        else:
+            raise NotImplementedError(self.center_of_mass)
+
+        x = dl_utils.remove_partial_mean_with_mask(x, node_mask, center_of_mass_mask)
+
+        delta_log_px, kl_prior, loss_term_t, loss_term_0, l2_loss, noise_t, noise_0 = self.edm.forward(
+            x=x,
+            h=h,
+            node_mask=node_mask,
+            fragment_mask=fragment_mask,
+            linker_mask=linker_mask,
+            edge_mask=edge_mask,
+            context=context,
+        )
+        vlb_loss = kl_prior + loss_term_t + loss_term_0 - delta_log_px
+        loss = l2_loss if self.loss_type == "l2" else vlb_loss
+
+        sizes = linker_mask.sum(dim=1).squeeze(-1).round().long().tolist()
+        for size in sizes:
+            if size > 0:
+                self._linker_size_counts[size] += 1
+        self._node_dist_cache = None
+
+        stats = {
+            "delta_log_px": delta_log_px.detach(),
+            "kl_prior": kl_prior.detach(),
+            "loss_term_t": loss_term_t.detach(),
+            "loss_term_0": loss_term_0.detach() if torch.is_tensor(loss_term_0) else loss_term_0,
+            "l2_loss": l2_loss.detach(),
+            "vlb_loss": vlb_loss.detach(),
+            "noise_t": noise_t.detach() if torch.is_tensor(noise_t) else noise_t,
+            "noise_0": noise_0.detach() if torch.is_tensor(noise_0) else noise_0,
+        }
+        return loss, stats
+
+    def predict_and_target(self, batch: dict):
+        loss, _stats = self.forward(batch)
+        if loss.dim() == 0:
+            loss = loss.unsqueeze(0)
+        return loss, torch.zeros_like(loss)
+
+    def evaluate(self, pred: torch.Tensor, target: torch.Tensor) -> dict:
+        return {"val_loss": pred.mean()}
+
+    @property
+    def linker_size_histogram(self) -> dict:
+        if self._linker_size_counts:
+            return dict(self._linker_size_counts)
+        return dict(_DEFAULT_LINKER_SIZE_HISTOGRAM)
+
+    @property
+    def node_dist_model(self) -> DistributionNodes:
+        if self._node_dist_cache is None:
+            self._node_dist_cache = DistributionNodes(self.linker_size_histogram)
+        return self._node_dist_cache
+
+    @property
+    def n_node_dist(self) -> dict:
+        return self.linker_size_histogram
+
+    @property
+    def model(self):
+        return self
+
+    @property
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
+
+    def sample(
+        self,
+        nodesxsample: Optional[torch.Tensor] = None,
+        batch_size: Optional[int] = None,
+        num_steps: Optional[int] = None,
+        batch: Optional[dict] = None,
+        condition_tensor: Optional[torch.Tensor] = None,
+        condition_mode: Optional[str] = None,
+        outpaint_cfgs: Optional[dict] = None,
+        use_noised_conditioning: bool = False,
+        n_frames: int = 0,
+        n_retrys: int = 0,
+        t_retry: Optional[int] = None,
+        context: Optional[torch.Tensor] = None,
+        **kwargs,
+    ):
+        """Generate molecules by diffusing a linker between fixed fragment
+        atoms. Dispatched via the generic "outpaint" `GenerativeFactory`
+        path (`runmodes/generate/tasks_generate.py::structural_guidance`) --
+        see INTEGRATION_PLAN.md's Task-contract mapping section for the
+        exact kwarg contract this method mirrors.
+
+        Several kwargs accepted here are explicitly out of scope this pass
+        (inert, not implemented with real behavior): `batch`, `num_steps`,
+        `condition_mode`, `outpaint_cfgs`, `use_noised_conditioning`,
+        `n_frames` (no trajectory export), `n_retrys`/`t_retry` (no
+        bond-distance retry loop), `context` (property-conditioning value --
+        DiffLinker has no `prop_dist_model`, so this is always None here).
+        """
+        del batch, num_steps, condition_mode, outpaint_cfgs
+        del use_noised_conditioning, n_retrys, t_retry, context, kwargs
+
+        if condition_tensor is None:
+            raise NotImplementedError(
+                "DiffLinkerTask.sample() requires a fragment reference "
+                "structure (condition_tensor) -- DiffLinker has no "
+                "unconditional generation mode. Use the 'outpaint' "
+                "interference dispatch with reference_structure_path set "
+                "(see configs/interference/gen_outpaint.yaml)."
+            )
+        if nodesxsample is None:
+            raise ValueError("DiffLinkerTask.sample() requires nodesxsample (total atom counts).")
+
+        device = self.device
+        nodesxsample = nodesxsample.to(device).long()
+        batch_size = int(nodesxsample.shape[0])
+
+        n_vocab = len(self.atom_vocab)
+        norm_coords, norm_feats, _norm_charges = self.norm_values
+
+        condition_tensor = condition_tensor.to(device)
+        ref_natoms = condition_tensor.shape[1]
+        ref_positions = condition_tensor[..., :3] * norm_coords
+        ref_onehot = condition_tensor[..., 3 : 3 + n_vocab] * norm_feats
+        if ref_positions.shape[0] != batch_size:
+            ref_positions = ref_positions.expand(batch_size, -1, -1)
+        if ref_onehot.shape[0] != batch_size:
+            ref_onehot = ref_onehot.expand(batch_size, -1, -1)
+
+        max_atoms = max(int(nodesxsample.max().item()), ref_natoms)
+
+        positions = torch.zeros(batch_size, max_atoms, 3, device=device)
+        one_hot = torch.zeros(batch_size, max_atoms, n_vocab, device=device)
+        fragment_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+        linker_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+        anchors = torch.zeros(batch_size, max_atoms, 1, device=device)
+        atom_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+
+        for b in range(batch_size):
+            total_b = max(int(nodesxsample[b].item()), ref_natoms)
+            positions[b, :ref_natoms] = ref_positions[b]
+            one_hot[b, :ref_natoms] = ref_onehot[b]
+            fragment_mask[b, :ref_natoms, 0] = 1.0
+            linker_mask[b, ref_natoms:total_b, 0] = 1.0
+            atom_mask[b, :total_b, 0] = 1.0
+            # anchors default to zero -- a degraded-but-valid fallback, since
+            # anchors are a soft context feature in DiffLinker, not a hard
+            # constraint (INTEGRATION_PLAN.md's Task-contract mapping).
+
+        if self.anchors_context:
+            mask_context = torch.cat([anchors, fragment_mask], dim=-1)
+        else:
+            mask_context = fragment_mask
+
+        am = atom_mask.squeeze(-1)
+        edge_mask_full = am.unsqueeze(2) * am.unsqueeze(1)
+        diag = ~torch.eye(max_atoms, dtype=torch.bool, device=device)
+        edge_mask_full = edge_mask_full * diag.unsqueeze(0)
+        edge_mask = edge_mask_full.reshape(-1, 1)
+
+        chain = self.edm.sample_chain(
+            x=positions,
+            h=one_hot,
+            node_mask=atom_mask,
+            fragment_mask=fragment_mask,
+            linker_mask=linker_mask,
+            edge_mask=edge_mask,
+            context=mask_context,
+            keep_frames=1,
+        )
+        final_xh = chain[0]
+        out_positions = final_xh[..., :3]
+        out_one_hot = final_xh[..., 3:]
+
+        z_lookup = torch.tensor(
+            [ase_atomic_numbers[s] for s in self.atom_vocab], device=device, dtype=torch.long
+        )
+        out_charges = z_lookup[out_one_hot.argmax(dim=-1)] * atom_mask.squeeze(-1).long()
+
+        return out_one_hot, out_charges, out_positions, atom_mask.squeeze(-1)

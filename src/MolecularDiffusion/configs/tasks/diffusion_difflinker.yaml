@@ -1,0 +1,41 @@
+# DiffLinker: fragment/linker mask-conditioned E(n)-equivariant diffusion.
+# See docs/model_integrations/difflinker/INTEGRATION_PLAN.md for the
+# integration plan and docs/adding_new_models.md §2.3 for this file's role.
+_target_: MolecularDiffusion.modules.tasks.diffusion_difflinker.DiffLinkerTaskFactory
+task_type: diffusion_difflinker
+
+# Must equal len(atom_vocab) (ZINC vocab: C,O,N,F,S,Cl,Br,I -> 8). No
+# `include_charges` channel (DiffLinker's own h = one_hot only, charges are
+# not concatenated -- see difflinker/configs/zinc_difflinker.yml,
+# `include_charges: False`).
+in_node_nf: 8
+n_dims: 3
+
+# EGNN backbone (difflinker/src/egnn.py::Dynamics/EGNN), values follow
+# difflinker/configs/zinc_difflinker.yml, scaled down for a smoke test.
+hidden_nf: 128
+n_layers: 6
+activation: silu
+attention: false
+tanh: false
+norm_constant: 1.0e-6
+inv_sublayers: 2
+sin_embedding: false
+normalization_factor: 100
+aggregation_method: sum
+model: egnn_dynamics
+normalization: batch_norm
+condition_time: true
+
+# Context conditioning (difflinker/src/lightning.py forward()): context =
+# concat(anchors, fragment_mask) when true, else fragment_mask alone.
+anchors_context: true
+center_of_mass: fragments
+
+# Diffusion (difflinker/src/edm.py::EDM), normalize_factors from
+# difflinker/configs/zinc_difflinker.yml (`normalize_factors: [1, 4, 10]`).
+diffusion_steps: 500
+diffusion_noise_schedule: polynomial_2
+diffusion_noise_precision: 1.0e-5
+diffusion_loss_type: l2
+normalize_factors: [1, 4, 10]
