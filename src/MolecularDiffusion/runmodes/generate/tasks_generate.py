@@ -198,6 +198,20 @@ class GenerativeFactory:
                 logger.info(
                     "Specified molecular size is larger than the largest molecules in the training data, reset...")
                 self.mol_size[-1] = self.max_atom
+            if self.mol_size[0] > self.max_atom:
+                logger.info(
+                    "Specified molecular size is larger than the largest molecules in the training data, reset...")
+                self.mol_size[0] = self.max_atom
+            if len(self.mol_size) > 1 and self.mol_size[0] > self.mol_size[-1]:
+                raise ValueError(
+                    f"Invalid mol_size range after clamping to the model's "
+                    f"training distribution (max={self.max_atom}): "
+                    f"mol_size[0]={self.mol_size[0]} > mol_size[-1]="
+                    f"{self.mol_size[-1]}. The model's n_node_dist may "
+                    f"represent a smaller quantity than a full molecule "
+                    f"(e.g. a linker-size histogram) — configure mol_size "
+                    f"within that model's actual range."
+                )
 
         self.target_values = target_values
         self.property_names = property_names

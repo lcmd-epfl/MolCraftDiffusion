@@ -418,7 +418,7 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
         else:
             monitor_metric_key = str(monitor_metric)
         mode = monitor_mode or ("min" if "loss" in monitor_metric_key else "max")
-    elif hasattr(task_module.task, "sample"):
+    elif hasattr(task_module.task, "sample") and kwargs.get("generative_analysis"):
         monitor_metric_key = f"gen/{kwargs.get('metric', 'Validity Relax and connected')}"
         mode = "max"
     else:

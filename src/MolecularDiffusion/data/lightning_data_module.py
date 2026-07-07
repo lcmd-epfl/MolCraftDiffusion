@@ -27,6 +27,7 @@ class MolecularDiffusionDataModule(pl.LightningDataModule):
         batch_size (int): Batch size for dataloaders
         num_workers (int): Number of workers for data loading
         pin_memory (bool): Whether to pin memory for faster GPU transfer
+        prefetch_factor (int): Batches preloaded per worker (only valid when num_workers > 0)
     """
 
     def __init__(
@@ -36,14 +37,16 @@ class MolecularDiffusionDataModule(pl.LightningDataModule):
         num_workers: int = 0,
         pin_memory: bool = True,
         persistent_workers: bool = False,
+        prefetch_factor: int = 2,
     ):
         super().__init__()
         self.data_module = data_module
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
-        # persistent_workers only valid when num_workers > 0
+        # persistent_workers/prefetch_factor only valid when num_workers > 0
         self.persistent_workers = persistent_workers and num_workers > 0
+        self.prefetch_factor = prefetch_factor if num_workers > 0 else None
         self._loaded = False
 
     def setup(self, stage: Optional[str] = None):
@@ -83,6 +86,7 @@ class MolecularDiffusionDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefetch_factor,
             shuffle=False,  # Lightning handles shuffling with DDP via DistributedSampler
         )
 
@@ -106,6 +110,7 @@ class MolecularDiffusionDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefetch_factor,
             shuffle=False,
         )
 
@@ -125,5 +130,6 @@ class MolecularDiffusionDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefetch_factor,
             shuffle=False,
         )
