@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/molcraftdiffusion/"><img src="https://img.shields.io/pypi/v/molcraftdiffusion" alt="PyPI"/></a>
-  <a href="https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237"><img src="https://img.shields.io/badge/Paper-ChemRxiv-blue" alt="Paper"/></a>
+  <a href="https://pubs.acs.org/doi/10.1021/jacs.5c19960"><img src="https://img.shields.io/badge/DOI-10.1021/jacs.5c19960-red" alt="DOI"/></a>
   <a href="https://doi.org/10.5281/zenodo.19511401"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.19511401.svg" alt="DOI"/></a>
   <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Weights-HuggingFace-yellow" alt="Weights"/></a>
   <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Dataset-HuggingFace-yellow" alt="Dataset"/></a>
@@ -172,7 +172,11 @@ MIT
 
 If you use MolCraftDiffusion in your research, please cite:
 
-[MolecularDiffusion: A Unified Generative-AI Framework for 3D Molecular Design](https://chemrxiv.org/engage/chemrxiv/article-details/6909e50fef936fb4a23df237) (ChemRxiv)
+### MolCraftDiffusion
+
+[![DOI](https://img.shields.io/badge/DOI-10.1021/jacs.5c19960-red)](https://pubs.acs.org/doi/10.1021/jacs.5c19960)
+
+[Modular Framework for 3D Molecular Generation in Computational Chemistry Applications](https://pubs.acs.org/doi/10.1021/jacs.5c19960)
 
 ```bibtex
 @article{worakul_modular_2026,
@@ -188,5 +192,23 @@ If you use MolCraftDiffusion in your research, please cite:
 	month = jun,
 	year = {2026},
 	pages = {jacs.5c19960},
+}
+```
+
+### Related Paper
+
+[![DOI](https://img.shields.io/badge/DOI-10.26434/chemrxiv.15005231/v1-red)](https://chemrxiv.org/doi/full/10.26434/chemrxiv.15005231/v1)
+
+[A Diffusion Framework for Geometrically Valid and Practically Viable 3D Molecular Generation](https://chemrxiv.org/doi/full/10.26434/chemrxiv.15005231/v1)
+
+```bibtex
+@article{worakul_diffusion_2026,
+	title = {A {Diffusion} {Framework} for {Geometrically} {Valid} and {Practically} {Viable} {3D} {Molecular} {Generation}},
+	url = {https://chemrxiv.org/doi/full/10.26434/chemrxiv.15005231/v1},
+	doi = {10.26434/chemrxiv.15005231/v1},
+	publisher = {American Chemical Society (ACS)},
+	author = {Worakul, Thanapat and Corminboeuf, Clémence},
+	month = jun,
+	year = {2026},
 }
 ```
