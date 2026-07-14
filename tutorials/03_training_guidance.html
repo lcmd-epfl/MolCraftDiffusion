@@ -209,6 +209,7 @@
   <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architectures.html">Model Architectures</a></li>
 </ul>
 <p class="caption" role="heading"><span class="caption-text">Tutorials</span></p>
 <ul class="current">
@@ -254,6 +255,10 @@
 <li class="toctree-l1"><a class="reference internal" href="../workflows/conditioned_generation.html">Workflow Example: Conditioned Generation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../workflows/end_to_end.html">Workflow Example: End-to-End Design Loop</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../workflows/visualization.html">Workflow: Visualize the Generated Chemical Space</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Configuration Templates</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../config_templates.html">Configuration Templates</a></li>
 </ul>
 <p class="caption" role="heading"><span class="caption-text">API Reference</span></p>
 <ul>
@@ -552,9 +557,9 @@
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">tasks:</span> <span class="pre">{diffusion_steps:</span> <span class="pre">900}</span></code></p></td>
 <td class="text-left"><p>The number of steps in the diffusion process. <strong>Should match your generative diffusion model.</strong></p></td>
 </tr>
-<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">tasks.diffusion_noise_schedule</span></code></p></td>
-<td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">tasks:</span> <span class="pre">{diffusion_noise_schedule:</span> <span class="pre">'polynomial_2'}</span></code></p></td>
-<td class="text-left"><p>The noise schedule. <strong>Should match your generative diffusion model.</strong></p></td>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">tasks.nu_arr</span></code></p></td>
+<td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">tasks:</span> <span class="pre">{nu_arr:</span> <span class="pre">[2,</span> <span class="pre">2,</span> <span class="pre">2]}</span></code></p></td>
+<td class="text-left"><p>Powers of the polynomial noise schedule for <code class="docutils literal notranslate"><span class="pre">[coords,</span> <span class="pre">atom</span> <span class="pre">types,</span> <span class="pre">charges]</span></code>. The guidance task builds its noise model from these (there is no named-schedule key here — <code class="docutils literal notranslate"><span class="pre">diffusion_noise_schedule</span></code> is ignored).</p></td>
 </tr>
 <tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">tasks.t_max</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">tasks:</span> <span class="pre">{t_max:</span> <span class="pre">0.7}</span></code></p></td>
