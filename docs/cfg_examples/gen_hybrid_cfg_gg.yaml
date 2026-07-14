@@ -6,6 +6,7 @@
 # property-directed generation.
 
 defaults:
+  - data: mol_dataset
   - tasks: diffusion
   - interference: gen_cfggg
   - _self_

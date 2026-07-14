@@ -6,6 +6,7 @@
 # need to be conditioned.
 
 defaults:
+  - data: mol_dataset
   - tasks: diffusion
   - interference: gen_gg
   - _self_

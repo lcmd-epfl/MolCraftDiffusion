@@ -4,6 +4,7 @@
 # Samples molecules from a trained diffusion model with no constraints.
 
 defaults:
+  - data: mol_dataset
   - tasks: diffusion
   - interference: gen_unconditional
   - _self_
