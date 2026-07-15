@@ -1,0 +1,35 @@
+_target_: MolecularDiffusion.runmodes.train.ModelTaskFactory_ESEN
+task_type: regression
+atom_vocab: ${data.atom_vocab}
+# condition_names: []
+hidden_size: 256
+hidden_channels: 256
+num_layers: 4
+lmax: 2
+mmax: 2
+grid_resolution: null
+cutoff: 5.0
+edge_channels: 128
+distance_function: "gaussian"
+num_distance_basis: 512
+norm_type: "rms_norm_sh"
+act_type: "s2"
+mlp_type: "grid"
+use_envelope: False
+activation_checkpointing: False
+global_attributes: False
+sphere_embedding_type: "mixed"
+aggregation_method: mean
+chkpt_path: null
+
+# specific to regression
+task_learn: [S1_exc,T1_exc]
+criterion: mse
+metric: [mae]
+num_mlp_layer: 3
+mlp_hidden_dim: null  # null = use d_model; set e.g. 512 to decouple head size from backbone
+mlp_dropout: 0.2
+mlp_batch_norm: batchnorm  # Options: null, layernorm, batchnorm
+target_normalization: True  # Normalize targets by mean/std in loss
+prediction_mlp_type: "pernode"
+prediction_activation: "relu"

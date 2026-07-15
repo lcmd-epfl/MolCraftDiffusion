@@ -1,0 +1,43 @@
+# Uses the existing ModelTaskFactory from tasks_esen.py with task_type: guidance
+_target_: MolecularDiffusion.runmodes.train.tasks_esen.ModelTaskFactory
+task_type: guidance
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+
+# eSEN Backbone parameters
+sphere_channels: 128
+hidden_channels: 128
+lmax: 2
+mmax: 2
+num_layers: 4
+edge_channels: 128
+distance_function: "gaussian"
+num_distance_basis: 512
+cutoff: 5.0
+max_neighbors: 300
+norm_type: "rms_norm_sh"
+act_type: "s2"
+mlp_type: "grid"
+
+# CRITICAL: Use "mlp" or "gaussian" for differentiable gradients
+sphere_embedding_type: "mlp"
+# in_node_channels is computed by factory: len(atom_vocab) + n_extra + 1 (charge) + 1 (time)
+
+# Guidance-specific parameters
+task_learn: [S1_exc, T1_exc]
+criterion: mse
+metric: [mae]
+num_mlp_layer: 3
+mlp_dropout: 0.2
+mlp_batch_norm: True  # True/False for legacy mode, null/'layernorm'/'batchnorm' for new mode
+prediction_mlp_type: legacy  # 'legacy' (backward compat), 'pernode', or 'padded'
+prediction_activation: relu  # 'relu' or 'silu'
+diffusion_steps: 600
+diffusion_noise_precision: 1e-5
+nu_arr: [2, 2, 2]
+mapping: ["pos", "categorical", "integer"]
+weight_classes: null
+norm_values: [1, 4, 10]
+t_max: 0.7
+loss_weighting: linear
+normalization: False

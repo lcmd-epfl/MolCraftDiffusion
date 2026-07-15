@@ -391,8 +391,11 @@ class ProperyPrediction(Task, core.Configurable):
                  batch["graph"].token_idx = torch.zeros(batch["graph"].num_nodes, device=self.device).long()
                  output = self.model(batch["graph"])
                  h_final = output["x"]
+            elif self.model.__class__.__name__ == "EquiformerV2Backbone":
+                 output = self.model(batch["graph"])
+                 h_final = output["x"]
             else:
-                h_final, _ = self.model(batch["graph"], use_embed=True)    
+                h_final, _ = self.model(batch["graph"], use_embed=True)
             
 
         # if self.architecture == "egt":

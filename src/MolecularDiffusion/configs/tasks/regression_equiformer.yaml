@@ -1,0 +1,46 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_equiformer.ModelTaskFactory
+task_type: regression
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+
+# EquiformerV2 architecture (sphere_channels must equal input_sphere_channels)
+sphere_channels: 128
+input_sphere_channels: 128
+num_layers: 6
+lmax_list: [4]
+mmax_list: [2]
+attn_hidden_channels: 128
+attn_alpha_channels: 32
+attn_value_channels: 16
+ffn_hidden_channels: 512
+num_heads: 8
+norm_type: "rms_norm_sh"
+edge_channels: 128
+use_atom_edge_embedding: True
+share_atom_edge_embedding: False
+distance_function: "gaussian"
+num_distance_basis: 512
+attn_activation: "scaled_silu"
+ffn_activation: "scaled_silu"
+use_gate_act: False
+use_grid_mlp: False
+use_sep_s2_act: True
+alpha_drop: 0.0
+drop_path_rate: 0.0
+proj_drop: 0.0
+cutoff: 5.0
+weight_init: "normal"
+chkpt_path: null
+
+# specific to regression
+task_learn: [S1_exc,T1_exc]
+criterion: mse
+metric: [mae]
+num_mlp_layer: 3
+mlp_hidden_dim: null  # null = use d_model; set e.g. 512 to decouple head size from backbone
+mlp_dropout: 0.2
+mlp_batch_norm: batchnorm  # Options: null, layernorm, batchnorm
+target_normalization: True  # Normalize targets by mean/std in loss
+prediction_mlp_type: "pernode"
+prediction_activation: "relu"
+aggregation_method: sum
