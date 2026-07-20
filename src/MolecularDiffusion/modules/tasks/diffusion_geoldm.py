@@ -116,7 +116,7 @@ class GeoLDMTaskFactory:
         self,
         task_type: str,
         vae_ckpt: str,
-        vae_config: Dict,
+        vae_config: Optional[Dict] = None,
         n_dims: int = 3,
         hidden_nf: int = 64,
         n_layers: int = 4,
@@ -143,7 +143,7 @@ class GeoLDMTaskFactory:
     ):
         self.task_type = task_type
         self.vae_ckpt = vae_ckpt
-        self.vae_config = dict(vae_config)
+        self.vae_config = dict(vae_config) if vae_config else None
         self.n_dims = n_dims
         self.hidden_nf = hidden_nf
         self.n_layers = n_layers
@@ -169,15 +169,55 @@ class GeoLDMTaskFactory:
         self.kwargs = kwargs
 
     def _load_frozen_vae(self):
-        """Rebuild the VAE architecture from `vae_config` (same fields as
-        `configs/tasks/vae_geoldm.yaml`) and load the weights trained by a
-        prior `MolCraftDiff train` run on that config, then freeze it."""
-        vae_config = dict(self.vae_config)
+        """Load the frozen VAE from `vae_ckpt`, inferring its architecture
+        from the checkpoint itself rather than requiring the caller to
+        hand-duplicate `vae_config` (error-prone -- a mismatch silently
+        produces wrong-shaped weights or a confusing size-mismatch error).
+
+        The two engines this platform supports store checkpoints
+        differently, and conveniently use different file extensions too
+        (`.pkl` for the legacy `original` engine, `.ckpt` for `lightning`):
+          - `original` engine (`core/engine.py::Engine.save()`): pickles the
+            fully-built `GeoLDMVAETask` instance directly under
+            `checkpoint["hyperparameters"]["task"]["diffusion_model"]` -- no
+            architecture needs to be rebuilt at all, just use it as-is.
+          - `lightning` engine: stores only tensors under `state_dict`, but
+            also stores the exact factory kwargs used to build the task
+            under `checkpoint["hyper_parameters"]["model_config"]` --
+            rebuild the architecture from that, then load `state_dict`.
+
+        `self.vae_config` (if the caller supplied one) is only used as a
+        last-resort fallback, for checkpoints predating this inference
+        (or any other format this doesn't recognize).
+        """
+        checkpoint = torch.load(self.vae_ckpt, map_location="cpu", weights_only=False)
+
+        task_hp = checkpoint.get("hyperparameters", {}).get("task")
+        if isinstance(task_hp, dict) and isinstance(task_hp.get("diffusion_model"), torch.nn.Module):
+            vae = task_hp["diffusion_model"]
+            vae.eval()
+            vae.requires_grad_(False)
+            return vae
+
+        model_config = checkpoint.get("hyper_parameters", {}).get("model_config")
+        if model_config:
+            vae_config = dict(model_config)
+        elif self.vae_config:
+            vae_config = dict(self.vae_config)
+        else:
+            raise ValueError(
+                f"Could not infer the VAE's architecture from checkpoint "
+                f"{self.vae_ckpt!r} (unrecognized format, no "
+                f"hyperparameters.task.diffusion_model or "
+                f"hyper_parameters.model_config found) and no vae_config "
+                f"override was provided as a fallback."
+            )
+        for key in ("_target_", "atom_vocab", "train_set", "valid_set", "test_set"):
+            vae_config.pop(key, None)
         vae_config.setdefault("task_type", "vae_geoldm")
         vae_factory = GeoLDMVAETaskFactory(atom_vocab=self.atom_vocab, **vae_config)
         vae_task = vae_factory.build()
 
-        checkpoint = torch.load(self.vae_ckpt, map_location="cpu", weights_only=False)
         # Legacy Engine checkpoints store the task's state dict under "model";
         # Lightning checkpoints use "state_dict" with a "task." prefix.
         if "state_dict" in checkpoint:

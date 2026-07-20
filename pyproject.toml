@@ -66,6 +66,14 @@ analyze = [
     "openbabel>=3.2.0",
     "posecheck",
 ]
+# FlowMol backbone (coordinate-only GVP flow matching) needs DGL for its
+# batched-graph message passing. Install the CUDA build manually from the DGL
+# wheel index matching the environment's torch+CUDA (project convention is
+# --no-deps, manual CUDA deps), e.g. for torch 2.4 + cu124:
+#   pip install dgl -f https://data.dgl.ai/wheels/torch-2.4/cu124/repo.html
+flowmol = [
+    "dgl",
+]
 # GPU install (CUDA-capable torch wheels, auto-detected by pip on Linux/Windows):
 #   pip install molcraftdiffusion[gpu]
 gpu = [

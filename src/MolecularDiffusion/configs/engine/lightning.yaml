@@ -32,6 +32,11 @@ trainer_config:
   enable_progress_bar: true
   enable_model_summary: true
 
+# Model summary table depth: PL's default (1) only shows the top-level
+# LightningModule attribute ("task"), not its submodules (e.g. a GeoLDM
+# task's frozen vae vs trainable dynamics network). Bump this to see deeper.
+model_summary_max_depth: 3
+
 # Periodic sleep (e.g., to relieve GPU thermal throttling)
 # sleep_every_N: 0 disables the feature
 sleep_every_N: 0

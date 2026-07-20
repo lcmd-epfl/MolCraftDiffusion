@@ -200,6 +200,7 @@ try:
     import pytorch_lightning as pl
     from pytorch_lightning.callbacks import ModelCheckpoint
     from pytorch_lightning.callbacks import LearningRateMonitor
+    from pytorch_lightning.callbacks import ModelSummary
     from MolecularDiffusion.core.engine_lightning import EngineLightning
     from MolecularDiffusion.data.lightning_data_module import MolecularDiffusionDataModule
     from MolecularDiffusion.core.lightning_callbacks import GenerativeEvalCallback
@@ -449,6 +450,14 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
     
     # Learning rate monitor for wandb logging
     callbacks.append(LearningRateMonitor(logging_interval='step'))
+
+    # PL's default ModelSummary (max_depth=1) only shows the top-level
+    # LightningModule attribute ("task"), not its submodules (e.g. a frozen
+    # vae vs a trainable dynamics network) -- passing our own callback here
+    # overrides that default without needing to touch enable_model_summary.
+    callbacks.append(ModelSummary(
+        max_depth=int(OmegaConf.select(engine_cfg, "model_summary_max_depth", default=1) or 1)
+    ))
     
     trainer_config = OmegaConf.to_container(engine_cfg.trainer_config, resolve=True)
     if trainer_module.num_steps is not None:
@@ -609,7 +618,16 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     overrides = {}
     data_atom_vocab = None
     
-    if "tasks_egt" in factory_cfg._target_ or "tasks_esen" in factory_cfg._target_ or "diffusion_tabasco" in factory_cfg._target_:
+    # Declarative seam: inject the actual train_set only into factories that
+    # explicitly declare a `train_set` __init__ parameter (e.g. for building an
+    # atom-count histogram at construction time). Keyed off the signature, not
+    # a hardcoded _target_ substring list, so new factories opt in by declaring
+    # the parameter rather than requiring a core edit. Factories that only
+    # swallow **kwargs (which never names train_set) are deliberately excluded.
+    factory_params = inspect.signature(
+        hydra.utils.get_class(factory_cfg._target_).__init__
+    ).parameters
+    if "train_set" in factory_params:
         overrides["train_set"] = data_module.train_set
         if "condition_names" in factory_cfg:
             overrides["task_names"] = factory_cfg.condition_names
