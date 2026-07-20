@@ -490,47 +490,52 @@ architecture never touches the core engine.</p>
 <td class="text-left"><p>TABASCO</p></td>
 <td class="text-left"><p>Flow-matching architecture.</p></td>
 </tr>
-<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_adit.yaml</span></code></p></td>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_flowmol.yaml</span></code></p></td>
+<td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_flowmol</span></code></p></td>
+<td class="text-left"><p>FlowMol (SE(3)-equivariant GVP)</p></td>
+<td class="text-left"><p>Flow matching for coordinates, atom types, and formal charges. <strong>This integration considers the bond-free variant only:</strong> bonds are not modeled or generated; graph edges are used only for geometric message passing.</p></td>
+</tr>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_adit.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_adit</span></code></p></td>
 <td class="text-left"><p>ADiT / DiT-based LDM</p></td>
 <td class="text-left"><p>Latent diffusion with a DiT denoiser.</p></td>
 </tr>
-<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_difflinker.yaml</span></code></p></td>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_difflinker.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_difflinker</span></code></p></td>
 <td class="text-left"><p>DiffLinker</p></td>
 <td class="text-left"><p>Fragment linking / linker design.</p></td>
 </tr>
-<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">vae_transformer.yaml</span></code></p></td>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">vae_transformer.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">vae_transformer</span></code></p></td>
 <td class="text-left"><p>GeoLDM VAE (transformer enc/dec)</p></td>
 <td class="text-left"><p>Trains the autoencoder for latent diffusion.</p></td>
 </tr>
-<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">vae_equiformer.yaml</span></code></p></td>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">vae_equiformer.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">vae_equiformer</span></code></p></td>
 <td class="text-left"><p>GeoLDM VAE (Equiformer enc/dec)</p></td>
 <td class="text-left"><p>Equivariant autoencoder variant.</p></td>
 </tr>
-<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">pharmacophore.yaml</span></code></p></td>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">pharmacophore.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">pharmacophore</span></code></p></td>
 <td class="text-left"><p>Pharmacophore-conditioned dynamics</p></td>
 <td class="text-left"><p>Requires <code class="docutils literal notranslate"><span class="pre">open3d</span></code>.</p></td>
 </tr>
-<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">ssl3d_egcl.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">ssl3d_egt.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">ssl3d_equiformer.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">ssl3d_esen.yaml</span></code></p></td>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">ssl3d_egcl.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">ssl3d_egt.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">ssl3d_equiformer.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">ssl3d_esen.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">ssl3d_*</span></code></p></td>
 <td class="text-left"><p>Self-supervised 3D pretraining</p></td>
 <td class="text-left"><p>Prefix-matched to the <code class="docutils literal notranslate"><span class="pre">ssl3d</span></code> task family.</p></td>
 </tr>
-<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">guidance.yaml</span></code></p></td>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">guidance.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression</span></code> / <code class="docutils literal notranslate"><span class="pre">guidance</span></code></p></td>
 <td class="text-left"><p>Property predictor / guidance head (EGCL backbone)</p></td>
 <td class="text-left"><p><strong>Default.</strong> Used for property prediction and gradient guidance.</p></td>
 </tr>
-<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression_esen.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">guidance_esen.yaml</span></code></p></td>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression_esen.yaml</span></code> / <code class="docutils literal notranslate"><span class="pre">guidance_esen.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression</span></code> / <code class="docutils literal notranslate"><span class="pre">guidance</span></code></p></td>
 <td class="text-left"><p>Property predictor / guidance head (eSEN backbone)</p></td>
 <td class="text-left"><p>Same task classes as above, eSEN backbone.</p></td>
 </tr>
-<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression_equiformer.yaml</span></code></p></td>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression_equiformer.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">regression</span></code></p></td>
 <td class="text-left"><p>Property predictor (EquiformerV2 backbone)</p></td>
 <td class="text-left"><p>No <code class="docutils literal notranslate"><span class="pre">guidance</span></code>/diffusion config exists yet for this backbone — only <code class="docutils literal notranslate"><span class="pre">regression</span></code> and <code class="docutils literal notranslate"><span class="pre">ssl3d_equiformer</span></code>.</p></td>
@@ -542,26 +547,38 @@ architecture never touches the core engine.</p>
 <code class="docutils literal notranslate"><span class="pre">utils/shepherd_score/</span></code>) used by the guidance and <code class="docutils literal notranslate"><span class="pre">analyze</span> <span class="pre">metrics</span> <span class="pre">--metrics</span> <span class="pre">shepherd</span></code>
 paths rather than as a standalone training config.</p>
 </section>
-<section id="how-the-wiring-works">
-<h2>How the wiring works<a class="headerlink" href="#how-the-wiring-works" title="Link to this heading">¶</a></h2>
-<p>Each task config declares a <code class="docutils literal notranslate"><span class="pre">_target_</span></code> factory and a <code class="docutils literal notranslate"><span class="pre">task_type</span></code>. Hydra
-instantiates the factory, which builds the model plus its Lightning task; the
-engine trains it. <code class="docutils literal notranslate"><span class="pre">task_type</span></code> is dispatched (exact match, then prefix) by
-<code class="docutils literal notranslate"><span class="pre">runmodes/train/eval.py</span></code>’s <code class="docutils literal notranslate"><span class="pre">TASK_REGISTRY</span></code> to pick the right validation metric
-and whether generative sampling runs during evaluation.</p>
-</section>
-<section id="adding-a-new-architecture">
-<h2>Adding a new architecture<a class="headerlink" href="#adding-a-new-architecture" title="Link to this heading">¶</a></h2>
-<ol class="arabic simple">
-<li><p>Drop a sub-package under <code class="docutils literal notranslate"><span class="pre">src/MolecularDiffusion/modules/models/&lt;arch&gt;/</span></code>.</p></li>
-<li><p>Add a task module under <code class="docutils literal notranslate"><span class="pre">modules/tasks/</span></code> if it needs a new training objective.</p></li>
-<li><p>Add a <code class="docutils literal notranslate"><span class="pre">configs/tasks/&lt;arch&gt;.yaml</span></code> pointing <code class="docutils literal notranslate"><span class="pre">_target_</span></code> at your factory.</p></li>
-<li><p>Register a <code class="docutils literal notranslate"><span class="pre">task_type</span></code> entry in <code class="docutils literal notranslate"><span class="pre">runmodes/train/eval.py</span></code> (or reuse a prefix
-family like <code class="docutils literal notranslate"><span class="pre">diffusion</span></code>, <code class="docutils literal notranslate"><span class="pre">vae</span></code>, <code class="docutils literal notranslate"><span class="pre">ssl3d</span></code>).</p></li>
-<li><p>Add a <code class="docutils literal notranslate"><span class="pre">tests/models/test_&lt;arch&gt;_compat.py</span></code> compatibility test.</p></li>
-</ol>
-<p>No change to <code class="docutils literal notranslate"><span class="pre">core/</span></code> is required — that separation is the point of the layered
-design.</p>
+<section id="references">
+<h2>References<a class="headerlink" href="#references" title="Link to this heading">¶</a></h2>
+<p>Backbones and objectives integrated here are based on the following work.</p>
+<ul class="simple">
+<li><p><strong>EDM</strong> — Hoogeboom, Satorras, Vignac &amp; Welling. <em>Equivariant Diffusion for
+Molecule Generation in 3D.</em> ICML 2022. <a class="reference external" href="https://arxiv.org/abs/2203.17003">arXiv:2203.17003</a></p></li>
+<li><p><strong>EGT</strong> — Vignac et al. <em>MiDi: Mixed Graph and 3D Denoising Diffusion for
+Molecule Generation.</em> ECML PKDD 2023. <a class="reference external" href="https://arxiv.org/abs/2302.09048">arXiv:2302.09048</a></p></li>
+<li><p><strong>GFMDiff</strong> — Xu et al. <em>Geometric-Facilitated Denoising Diffusion Model for
+3D Molecule Generation.</em> AAAI 2024. <a class="reference external" href="https://arxiv.org/abs/2401.02683">arXiv:2401.02683</a></p></li>
+<li><p><strong>TABASCO</strong> — Vonessen, Harris, Cretu &amp; Liò. <em>TABASCO: A Fast, Simplified
+Model for Molecular Generation with Improved Physical Quality.</em> 2025.
+<a class="reference external" href="https://arxiv.org/abs/2507.00899">arXiv:2507.00899</a></p></li>
+<li><p><strong>FlowMol</strong> — Dunn &amp; Koes. <em>Mixed Continuous and Categorical Flow Matching
+for 3D De Novo Molecule Generation.</em> 2024.
+<a class="reference external" href="https://arxiv.org/abs/2404.19739">arXiv:2404.19739</a></p></li>
+<li><p><strong>ADiT</strong> — Joshi et al. <em>All-atom Diffusion Transformers: Unified generative
+modelling of molecules and materials.</em> 2025. <a class="reference external" href="https://arxiv.org/abs/2503.03965">arXiv:2503.03965</a> —
+built on the <strong>DiT</strong> backbone of Peebles &amp; Xie, <em>Scalable Diffusion Models with
+Transformers</em>, ICCV 2023 (<a class="reference external" href="https://arxiv.org/abs/2212.09748">arXiv:2212.09748</a>).</p></li>
+<li><p><strong>DiffLinker</strong> — Igashov et al. <em>Equivariant 3D-Conditional Diffusion Model
+for Molecular Linker Design.</em> Nature Machine Intelligence 2024. <a class="reference external" href="https://arxiv.org/abs/2210.05274">arXiv:2210.05274</a></p></li>
+<li><p><strong>GeoLDM</strong> — Xu, Powers, Dror, Ermon &amp; Leskovec. <em>Geometric Latent
+Diffusion Models for 3D Molecule Generation.</em> ICML 2023. <a class="reference external" href="https://arxiv.org/abs/2305.01140">arXiv:2305.01140</a></p></li>
+<li><p><strong>eSEN</strong> — Fu et al. <em>Learning Smooth and Expressive Interatomic Potentials
+for Physical Property Prediction.</em> 2025. <a class="reference external" href="https://arxiv.org/abs/2502.12147">arXiv:2502.12147</a></p></li>
+<li><p><strong>EquiformerV2</strong> — Liao, Wood, Das &amp; Smidt. <em>EquiformerV2: Improved Equivariant
+Transformer for Scaling to Higher-Degree Representations.</em> ICLR 2024. <a class="reference external" href="https://arxiv.org/abs/2306.12059">arXiv:2306.12059</a></p></li>
+<li><p><strong>ShEPhERD</strong> — Adams, Abeywardane, Fromer &amp; Coley. <em>ShEPhERD: Diffusing shape,
+electrostatics, and pharmacophores for bioisosteric drug design.</em> ICLR 2025.
+<a class="reference external" href="https://arxiv.org/abs/2411.04130">arXiv:2411.04130</a></p></li>
+</ul>
 </section>
 </section>
 
@@ -639,8 +656,7 @@ design.</p>
             <ul>
 <li><a class="reference internal" href="#">Model Architectures</a><ul>
 <li><a class="reference internal" href="#available-architectures">Available architectures</a></li>
-<li><a class="reference internal" href="#how-the-wiring-works">How the wiring works</a></li>
-<li><a class="reference internal" href="#adding-a-new-architecture">Adding a new architecture</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
 </ul>
 </li>
 </ul>
