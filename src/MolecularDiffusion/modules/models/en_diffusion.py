@@ -3459,8 +3459,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 connector_degrees = torch.tensor(connector_n_bonds, device=z.device, dtype=torch.long)      
                 connector_dicts = {j.item(): [connector_degrees[i].item()] for i, j in enumerate(connector_indices)}   
                 
-                node_mask_m = torch.ones_like(mask_node_index, device=z.device)
-                node_mask_m = node_mask_m.unsqueeze(-1)
+                node_mask_m = torch.ones((n_samples, mask_node_index.size(1), 1), device=z.device)
                 
                 node_mask_um = torch.ones((n_samples, n_node_cond-mask_node_index.size(1)), device=z.device)  
                 node_mask_um = node_mask_um.unsqueeze(-1)
@@ -3476,7 +3475,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 # noise the masked nodes
                 if noise_initial_mask:
                     eps_s_ref = self.sample_combined_position_feature_noise(
-                        n_samples=mask_node_index.size(0), n_nodes=mask_node_index.size(1), node_mask=node_mask_m)
+                        n_samples=n_samples, n_nodes=mask_node_index.size(1), node_mask=node_mask_m)
                     z = alpha_d * condition_tensor[:, mask_node_bool_corr, :] + sigma_d * eps_s_ref # to be denoised
                     
                     z = torch.cat([xh_unmasked, z], dim=1)
@@ -4423,8 +4422,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     connector_degrees = torch.tensor(connector_n_bonds, device=z.device, dtype=torch.long)      
                     connector_dicts = {j.item(): [connector_degrees[i].item()] for i, j in enumerate(connector_indices)}   
                     
-                    node_mask_m = torch.ones_like(mask_node_index, device=z.device)
-                    node_mask_m = node_mask_m.unsqueeze(-1)
+                    node_mask_m = torch.ones((n_samples, mask_node_index.size(1), 1), device=z.device)
                     
                     node_mask_um = torch.ones((n_samples, n_node_cond-mask_node_index.size(1)), device=z.device)  
                     node_mask_um = node_mask_um.unsqueeze(-1)
@@ -4440,7 +4438,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                     # noise the masked nodes
                     if noise_initial_mask:
                         eps_s_ref = self.sample_combined_position_feature_noise(
-                            n_samples=mask_node_index.size(0), n_nodes=mask_node_index.size(1), node_mask=node_mask_m)
+                            n_samples=n_samples, n_nodes=mask_node_index.size(1), node_mask=node_mask_m)
                         z = alpha_d * condition_tensor[:, mask_node_bool_corr, :] + sigma_d * eps_s_ref # to be denoised
                         
                         z = torch.cat([xh_unmasked, z], dim=1)
