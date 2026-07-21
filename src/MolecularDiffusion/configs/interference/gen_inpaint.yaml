@@ -2,18 +2,24 @@ _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
 task_type: inpaint
 sampling_mode: "ddpm"
 num_generate: 100
-mol_size:  [0,0]
-target_values: [] 
+mol_size:  [0,0]              # [0,0] = draw size from node distribution; < scaffold is snapped up to scaffold size
+target_values: []
 property_names: []
+negative_target_values: []   # code default
 batch_size: 1
 seed: 86
 n_frames: 0
+max_mol_size: 0              # code default; 0 = no cap
+save_xyzrender_figures: false # code default
 output_path: generated_mol
 condition_configs:
   reference_structure_path: "data/template_structures/BINOLCpHHH.xyz"
-  condition_component: xh
+  condition_component: xh            # code default
+  use_noised_conditioning: false     # code default
+  n_retrys: 0
+  t_retry: 180
   inpaint_cfgs:
-    mask_node_index: 
+    mask_node_index:
     - 5
     - 30
     - 31
@@ -23,16 +29,16 @@ condition_configs:
     - 8
     - 32
     - 9
-    - 10 
+    - 10
     - 33
     - 11
     - 34
     - 12
-    - 35 
+    - 35
     - 13
     - 36
     - 14
-    - 15 
+    - 15
     - 16
     - 17
     - 18
@@ -52,12 +58,18 @@ condition_configs:
     - 26
     - 43
     - 42
-    denoising_strength: 0.75
+    denoising_strength: 0.75   # code default None; fraction of steps over which masked atoms are denoised
     t_start: 0.8
-    constraint_strength: 0.8  # Apply overlap-push constraints for s < this value (0–1).
-    scale_factor: 1.2          # Multiplier on covalent radii for bond-distance tolerance.
-    noise_initial_mask: False
-  n_frames: 0
-  n_retrys: 0
-  t_retry: 180
-
+    constraint_strength: 0.8   # code default; overlap-push constraints for s < this value (0-1)
+    scale_factor: 1.2          # code default 1.1; covalent-radius multiplier for bond-distance tolerance
+    noise_initial_mask: False  # code default
+    # --- extended-inpaint node placement (used only when target size > scaffold; code defaults) ---
+    init_method: skeleton      # "skeleton" | "seed" | "fragment"
+    skeleton_type: random_walk
+    seed_dist: 2.0
+    min_dist: 1.0
+    spread: 1.0
+    bond_len: 1.5
+    forward_noise: jitter
+    n_bq_atom: 0
+    # jitter_scale:            # defaults to `spread` when unset

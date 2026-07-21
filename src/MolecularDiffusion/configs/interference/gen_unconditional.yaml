@@ -5,7 +5,10 @@ num_generate: 100
 mol_size:  [16]
 target_values: []
 property_names: []
+negative_target_values: []   # code default
 batch_size: 1
 seed: 86
 n_frames: 0
+max_mol_size: 0              # code default; 0 = no cap (used when mol_size is [0,0])
+save_xyzrender_figures: false # code default
 output_path: generated_mol

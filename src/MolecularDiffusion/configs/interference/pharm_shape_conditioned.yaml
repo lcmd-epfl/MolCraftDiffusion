@@ -4,6 +4,7 @@ num_generate: 100
 batch_size: 1
 N_x1: 23         # atoms to generate
 N_x4: 5          # pharmacophores to generate (not conditioned — sampled from prior)
+N_x1_sampling: uniform          # code default; "uniform" | "normal"
 num_steps: 400
 prior_noise_scale: 1.0
 denoising_noise_scale: 1.0
@@ -14,6 +15,9 @@ output_path: generated_pharm_shape
 # Surface and electrostatics are extracted automatically from this molecule.
 reference_mol: data/shepherd_data/gdb/molblock_charges_9_test100.pkl
 mol_idx: 0
+save_xyzrender_figures: false   # code default
+save_modalities: false          # code default
+use_noised_conditioning: false  # code default
 
 # --- Modality Generation Toggles ---
 compute_x1: true

@@ -3,6 +3,8 @@ task_type: pharmacophore_inpaint
 num_generate: 10
 batch_size: 1
 N_x1: 23         # total atoms (>= scaffold atoms)
+N_x4: 5          # code default; pharmacophores to generate
+N_x1_sampling: uniform          # code default; "uniform" | "normal"
 num_steps: 400
 prior_noise_scale: 1.0
 denoising_noise_scale: 1.0
@@ -25,6 +27,9 @@ stop_inpainting_at_time_x1_pos: 0.0
 stop_inpainting_at_time_x1_x: 0.0
 stop_inpainting_at_time_x1_bonds: 0.0
 stop_inpainting_at_time_x4: 0.0
+save_xyzrender_figures: false   # code default
+save_modalities: false          # code default
+use_noised_conditioning: false  # code default
 
 # --- Modality Generation Toggles ---
 compute_x1: true

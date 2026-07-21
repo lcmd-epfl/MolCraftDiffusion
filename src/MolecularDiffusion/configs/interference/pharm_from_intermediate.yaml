@@ -3,6 +3,8 @@ task_type: from_intermediate_time
 num_generate: 10
 batch_size: 1
 N_x1: 23         # must be >= number of atoms in reference mol
+N_x4: 5          # code default; pharmacophores to generate
+N_x1_sampling: uniform          # code default; "uniform" | "normal"
 num_steps: 400
 prior_noise_scale: 1.0
 denoising_noise_scale: 1.0
@@ -18,10 +20,16 @@ scaffold_smarts: null
 # Fraction of diffusion to start from:
 #   0.3 = subtle analog generation, 0.5 = scaffold hopping, 0.7 = large changes
 start_time: 0.5
+inpaint_x1_pos: true            # code default
+inpaint_x1_x: true             # code default
 inpaint_x1_bonds: false
 stop_inpainting_at_time_x1_pos: 0.0
 stop_inpainting_at_time_x1_x: 0.0
 stop_inpainting_at_time_x1_bonds: 0.0
+stop_inpainting_at_time_x4: 0.0 # code default
+save_xyzrender_figures: false   # code default
+save_modalities: false          # code default
+use_noised_conditioning: false  # code default
 
 # --- Modality Generation Toggles ---
 compute_x1: true

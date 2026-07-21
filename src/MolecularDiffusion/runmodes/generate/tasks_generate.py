@@ -736,10 +736,114 @@ class GenerativeFactory:
             self.df = pd.DataFrame(df_dict)
     
 
+    # Max node-distribution redraws before giving up on an outpaint [0,0] batch.
+    _SIZE_RESAMPLE_TRIES = 20
+
+    def _warn_size_once(self, msg):
+        """Emit a size-guardrail warning once per run, visibly (tqdm.write goes to
+        stdout so it surfaces in the MCP job log, not just the logger)."""
+        if not getattr(self, "_size_warned", False):
+            self._size_warned = True
+            logger.warning(msg)
+            tqdm.write(msg)
+
+    def _validate_size_config(self, ref_natoms):
+        """Fail fast, before the sampling loop, when outpaint can never fit the
+        scaffold. Inpaint is never fatal here — it recovers by clamping per-sample.
+
+        Outpaint needs a target strictly larger than the scaffold (>=1 atom to
+        grow), so a target <= scaffold is meaningless:
+          - explicit mol_size whose maximum is <= scaffold -> config error, raise;
+          - mol_size=[0,0] (randomized) -> only fatal if the node distribution's
+            largest molecule still can't exceed the scaffold (otherwise low draws
+            are resampled per-batch by _enforce_scaffold_size).
+        """
+        if "outpaint" not in self.task_type:
+            return
+        floor = ref_natoms + 1
+        ms = self.mol_size
+        randomized = len(ms) == 2 and ms[0] == 0 and ms[1] == 0
+        if randomized:
+            if self.max_atom < floor:
+                raise ValueError(
+                    f"Outpaint with mol_size=[0,0]: the model's node-size "
+                    f"distribution tops out at {self.max_atom} atoms, which cannot "
+                    f"exceed the {ref_natoms}-atom scaffold — nothing can be grown. "
+                    f"Set an explicit mol_size:[lo,hi] with lo > {ref_natoms}, or "
+                    f"use a smaller scaffold."
+                )
+            return
+        if ms and ms[-1] < floor:
+            raise ValueError(
+                f"Outpaint: mol_size {list(ms)} is <= the scaffold "
+                f"({ref_natoms} atoms), so there is nothing to grow. Set mol_size "
+                f"with a maximum > {ref_natoms}."
+            )
+
+    def _enforce_scaffold_size(self, nodesxsample, ref_natoms):
+        """Per-sample size guardrail for structure-guided generation.
+
+        - inpaint: a target below the scaffold is snapped up to the scaffold size
+          (inpaint regenerates masked atoms in place, size is derived), with a warning.
+        - outpaint: the target must exceed the scaffold. Randomized [0,0] draws that
+          land <= scaffold are resampled from the node distribution (up to
+          _SIZE_RESAMPLE_TRIES) rather than killing the run or clamping to a
+          degenerate 1-atom growth; explicit too-small sizes are already killed
+          upfront by _validate_size_config.
+        """
+        if "outpaint" not in self.task_type:
+            floor = ref_natoms
+            n_below = int((nodesxsample < floor).sum())
+            if n_below:
+                nodesxsample = torch.clamp(nodesxsample, min=floor)
+                self._warn_size_once(
+                    f"[size guardrail] {n_below}/{nodesxsample.numel()} inpaint "
+                    f"size(s) were below the scaffold ({floor} atoms) and were "
+                    f"snapped up to the scaffold size."
+                )
+            return nodesxsample
+
+        floor = ref_natoms + 1
+        bad = nodesxsample < floor
+        if not bool(bad.any()):
+            return nodesxsample
+
+        randomized = len(self.mol_size) == 2 and self.mol_size[0] == 0 and self.mol_size[1] == 0
+        if not randomized:
+            # Should have been caught upfront; belt-and-suspenders.
+            raise ValueError(
+                f"Outpaint: target size {nodesxsample.tolist()} is <= the scaffold "
+                f"({ref_natoms} atoms), so there is nothing to grow. Set mol_size "
+                f"with a maximum > {ref_natoms}."
+            )
+
+        n_below = int(bad.sum())
+        for _ in range(self._SIZE_RESAMPLE_TRIES):
+            redraw = self.task.node_dist_model.sample(int(bad.sum()))
+            if self.max_mol_size > 0:
+                redraw = torch.clamp(redraw, max=self.max_mol_size)
+            nodesxsample[bad] = redraw.to(dtype=nodesxsample.dtype, device=nodesxsample.device)
+            bad = nodesxsample < floor
+            if not bool(bad.any()):
+                break
+        if bool(bad.any()):
+            raise ValueError(
+                f"Outpaint: could not draw a size above the {ref_natoms}-atom "
+                f"scaffold in {self._SIZE_RESAMPLE_TRIES} tries "
+                f"(max_mol_size={self.max_mol_size}). Set an explicit "
+                f"mol_size:[lo,hi] with lo > {ref_natoms}."
+            )
+        self._warn_size_once(
+            f"[size guardrail] {n_below} randomized outpaint size(s) landed <= the "
+            f"{ref_natoms}-atom scaffold and were resampled to grow the scaffold."
+        )
+        return nodesxsample
+
     def structural_guidance(self):
 
         # get condition structure
         xh_ref = self.preprocess_ref_structure(self.task.device)
+        self._validate_size_config(xh_ref.shape[1])
 
         n_retrys = self.condition_configs.get("n_retrys")
         if n_retrys > 0 and self.n_frames:
@@ -815,13 +919,7 @@ class GenerativeFactory:
                         nodesxsample = torch.clamp(nodesxsample, min=self.mol_size[0], max=self.mol_size[1])
                         nodesxsample = nodesxsample.repeat(current_batch_size)
 
-                ref_natoms = xh_ref.shape[1]
-                if torch.any(nodesxsample < ref_natoms):
-                    nodesxsample = torch.clamp(nodesxsample, min=ref_natoms)
-                    logger.warning(
-                        "Specified molecular size is smaller than the reference structure "
-                        "for at least one sample; clamped to the reference structure size."
-                    )
+                nodesxsample = self._enforce_scaffold_size(nodesxsample, xh_ref.shape[1])
 
                 xh_tensor = xh_ref.repeat(current_batch_size, 1, 1)
 
@@ -917,8 +1015,9 @@ class GenerativeFactory:
             })
 
     def hybrid_guidance(self):
-        
+
         xh_ref = self.preprocess_ref_structure(self.task.device)
+        self._validate_size_config(xh_ref.shape[1])
         condition_mode = self.task_type.split("_")[0] + "_" + self.condition_configs.get("condition_component",  "xh")
         
         # Map task_type suffix to guidance_ver if not explicitly set in config
@@ -987,15 +1086,8 @@ class GenerativeFactory:
                         nodesxsample = nodesxsample.repeat(current_batch_size) 
 
                 if "inpaint" in self.task_type or "outpaint" in self.task_type:
-                    ref_natoms = xh_ref.shape[1]
-                    if torch.any(nodesxsample < ref_natoms):
-                        nodesxsample = torch.clamp(nodesxsample, min=ref_natoms)
-                        logging.warning(
-                            "Specified molecular size is smaller than the reference "
-                            "structure for at least one sample; clamped to the "
-                            "reference structure size."
-                        )
-                        
+                    nodesxsample = self._enforce_scaffold_size(nodesxsample, xh_ref.shape[1])
+
                 xh_tensor = xh_ref.repeat(current_batch_size, 1, 1)
                 inpaint_cfgs = self.condition_configs.get("inpaint_cfgs", {})
                 outpaint_cfgs = self.condition_configs.get("outpaint_cfgs", {})

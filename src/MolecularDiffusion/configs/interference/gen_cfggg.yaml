@@ -3,26 +3,30 @@ task_type: gradient_guidance # cfggg
 sampling_mode: "ddpm"
 num_generate: 100
 mol_size:  [0,0]
-target_values: [3,1.5] 
+target_values: [3,1.5]
 property_names: ["S1_exc", "T1_exc"]
+negative_target_values: []   # code default; per-property negative targets for CFG
 batch_size: 1
 seed: 86
 n_frames: 0
+max_mol_size: 0              # code default; 0 = no cap
+save_xyzrender_figures: false # code default
 output_path: generated_mol
 condition_configs:
   cfg_scale: 1
+  cfg_scale_schedule: null   # code default 1
   target_function:
     _target_: scripts.gradient_guidance.sf_energy_score.SFEnergyScore
     _partial_: true
     chkpt_directory: trained_models/egcl_guidance_s1t1.ckpt
-  gg_scale: 1e-3
-  max_norm: 1e-3
+  gg_scale: 1e-3             # code default 1
+  max_norm: 1e-3            # code default 1
   scheduler:
     _target_: scripts.gradient_guidance.scheduler.CosineAnnealing
     _partial_: true
     T_max: 1000
     eta_min: 0
-  guidance_ver: 2
-  guidance_at: 1
-  guidance_stop: 0
-  n_backwards: 3
+  guidance_ver: 2           # code default 1
+  guidance_at: 1            # code default
+  guidance_stop: 0          # code default
+  n_backwards: 3            # code default 1

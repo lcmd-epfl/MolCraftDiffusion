@@ -3,25 +3,36 @@ task_type: inpaint_cfg
 sampling_mode: "ddpm"
 num_generate: 100
 mol_size:  [0,0]
-target_values: [3,1.5] 
+target_values: [3,1.5]
 property_names: ["S1_exc", "T1_exc"]
+negative_target_values: []   # code default
 batch_size: 1
 seed: 86
 n_frames: 0
+max_mol_size: 0              # code default; 0 = no cap
+save_xyzrender_figures: false # code default
 output_path: generated_mol
 condition_configs:
-  cfg_scale: 1
   reference_structure_path: "data/template_structures/INT2_0.xyz"
+  condition_component: xh            # code default
+  use_noised_conditioning: false     # code default
+  n_retrys: 0
+  t_retry: 180
+  # --- classifier-free / gradient guidance (code defaults) ---
+  cfg_scale: 1
+  cfg_scale_schedule: null   # code default 1
+  gg_scale: 1               # code default (unused for *_cfg; needed for *_gg / *_cfggg)
+  max_norm: 1               # code default
+  guidance_at: 1            # code default
+  guidance_stop: 0          # code default
+  n_backwards: 1            # code default
+  target_function: null      # code default (required for gradient-guidance variants)
+  scheduler: null            # code default
   inpaint_cfgs:
+    # mask_node_index:        # REQUIRED for inpaint: 0-indexed atoms to regenerate
+    denoising_strength: 0.7   # code default None
     t_start: 0.8
     t_critical: 0.05
-
-  # inpaint
-  #   denoising_strength: 0.7
-  #   noise_initial_mask: False
-  #   mask_node_index: 
-  #   - 5
-  #   - 30
-  #   - 31
-
-
+    noise_initial_mask: False # code default
+    # NOTE: geometric-constraint keys (constraint_strength, scale_factor) are
+    # stripped for *_cfg task types, so they are omitted here.

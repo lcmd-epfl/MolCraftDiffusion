@@ -3,16 +3,33 @@ task_type: outpaintft
 sampling_mode: "ddpm"
 num_generate: 100
 mol_size:  [76,76]
-target_values: [] 
+target_values: []
 property_names: []
+negative_target_values: []   # code default
 batch_size: 1
 seed: 86
 n_frames: 0
+max_mol_size: 0              # code default; 0 = no cap
+save_xyzrender_figures: false # code default
 output_path: generated_mol
 condition_configs:
   reference_structure_path: "data/template_structures/INT2_0.xyz"
-  outpaint_cfgs:
-    t_start: 1
+  condition_component: xh            # code default
+  use_noised_conditioning: false     # code default
   n_retrys: 0
   t_retry: 180
-
+  outpaint_cfgs:
+    t_start: 1
+    constraint_strength: 0.8   # code default
+    scale_factor: 1.1          # code default
+    # connector_dicts:         # optional for outpaintft (prefix-freeze growth); required only for plain outpaint
+    # --- extra-node placement (code defaults) ---
+    init_method: skeleton      # "skeleton" | "seed" | "fragment"
+    skeleton_type: random_walk
+    seed_dist: 2.0
+    min_dist: 1.0
+    spread: 1.0
+    bond_len: 1.5
+    forward_noise: jitter
+    n_bq_atom: 0
+    # jitter_scale:            # defaults to `spread` when unset

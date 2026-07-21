@@ -10,6 +10,10 @@ denoising_noise_scale: 1.0
 seed: 42
 verbose: true
 output_path: generated_pharm_unconditional
+N_x1_sampling: uniform          # code default; "uniform" | "normal" (how N_x1 is drawn if a range)
+save_xyzrender_figures: false   # code default
+save_modalities: false          # code default
+use_noised_conditioning: false  # code default
 
 # --- Modality Generation Toggles ---
 compute_x1: true

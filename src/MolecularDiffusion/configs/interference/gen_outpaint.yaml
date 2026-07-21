@@ -2,23 +2,34 @@ _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
 task_type: outpaint
 sampling_mode: "ddpm"
 num_generate: 100
-mol_size:  [0,0]
+mol_size:  [0,0]              # [0,0] = draw size from node distribution; for outpaint it MUST exceed the scaffold
 target_values: []
 property_names: []
+negative_target_values: []   # code default
 batch_size: 1
 seed: 86
 n_frames: 0
+max_mol_size: 0              # code default; 0 = no cap. Caps randomized ([0,0]) draws when > 0
+save_xyzrender_figures: false # code default
 output_path: generated_mol
 condition_configs:
   reference_structure_path: "data/template_structures/BINOLCp.xyz"
-  condition_component: xh
-  outpaint_cfgs:
-    t_start: 0.8
-    constraint_strength: 0.7  # Apply constraints for s < this value (0–1). Bonding
-                               # constraints (enforce + intact) active for s > value/2.
-    scale_factor: 1.1          # Multiplier on covalent radii for bond-distance tolerance.
-    noise_initial_mask: False
-    connector_dicts:
+  condition_component: xh            # code default
+  use_noised_conditioning: false     # code default
   n_retrys: 3
   t_retry: 180
-
+  outpaint_cfgs:
+    connector_dicts:           # REQUIRED (no default): {scaffold_atom_idx: [degree]}, 0-indexed into the reference
+    t_start: 0.8               # code default 1.0
+    constraint_strength: 0.7   # code default 0.8; geometric constraints applied for s < this (0-1)
+    scale_factor: 1.1          # code default; covalent-radius multiplier for bond-distance tolerance
+    # --- extra-node placement (code defaults) ---
+    init_method: skeleton      # "skeleton" | "seed" | "fragment"
+    skeleton_type: random_walk
+    seed_dist: 2.0
+    min_dist: 1.0
+    spread: 1.0
+    bond_len: 1.5
+    forward_noise: jitter
+    n_bq_atom: 0
+    # jitter_scale:            # defaults to `spread` when unset
