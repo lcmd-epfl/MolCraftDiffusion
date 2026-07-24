@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import torch.nn as nn
 from MolecularDiffusion.modules.layers.conv import XEyTransformerLayer, PositionsMLP
@@ -421,7 +423,7 @@ class EGT_dynamics(nn.Module):
         vel = vel.view(bs, n_nodes, -1)
 
         if torch.any(torch.isnan(vel)):
-            print("Warning: detected nan, resetting EGNN output to zero.")
+            warnings.warn("detected nan, resetting EGNN output to zero.", RuntimeWarning, stacklevel=2)
             vel = torch.zeros_like(vel)
 
         if node_mask is None:

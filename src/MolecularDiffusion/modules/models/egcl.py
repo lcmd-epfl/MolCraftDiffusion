@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import torch.nn as nn
 from MolecularDiffusion import core
@@ -450,7 +452,7 @@ class EGNN_dynamics(nn.Module, core.Configurable):
         vel = vel.view(bs, n_nodes, -1)
 
         if torch.any(torch.isnan(vel)):
-            print("Warning: detected nan, resetting EGNN output to zero.")
+            warnings.warn("detected nan, resetting EGNN output to zero.", RuntimeWarning, stacklevel=2)
             vel = torch.zeros_like(vel)
             h_final = torch.zeros_like(h_final)
         else:
@@ -530,7 +532,7 @@ class EGNN_dynamics(nn.Module, core.Configurable):
             # Slice off last dimension which represented time.
             h_final = h_final[:, :-1]
         if torch.any(torch.isnan(vel)):
-            print("Warning: detected nan, resetting EGNN output to zero.")
+            warnings.warn("detected nan, resetting EGNN output to zero.", RuntimeWarning, stacklevel=2)
             vel = torch.zeros_like(vel)
             h_final = torch.zeros_like(h_final)
         else:

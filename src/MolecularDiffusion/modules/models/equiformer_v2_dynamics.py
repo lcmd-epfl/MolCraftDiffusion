@@ -4,6 +4,8 @@ for EnVariationalDiffusion and EnVariationalDiffusionPyG in en_diffusion.py.
 
 The EquiformerV2 encoder and all layer files are NOT modified.
 """
+import warnings
+
 import torch
 import torch.nn as nn
 from MolecularDiffusion import core
@@ -245,7 +247,7 @@ class EquiformerV2_dynamics(nn.Module, core.Configurable):
         vel = remove_mean_pyG(vel, batch)
 
         if torch.any(torch.isnan(vel)):
-            print("Warning: EquiformerV2_dynamics detected nan, resetting to zero.")
+            warnings.warn("EquiformerV2_dynamics detected nan, resetting to zero.", RuntimeWarning, stacklevel=2)
             vel = torch.zeros_like(vel)
             h_final = torch.zeros_like(h_final)
 
