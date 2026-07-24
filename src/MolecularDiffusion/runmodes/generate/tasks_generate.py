@@ -845,16 +845,12 @@ class GenerativeFactory:
         xh_ref = self.preprocess_ref_structure(self.task.device)
         self._validate_size_config(xh_ref.shape[1])
 
-        n_retrys = self.condition_configs.get("n_retrys")
-        if n_retrys > 0 and self.n_frames:
-            logger.info("No frames saved, set n_retrys = 0")
-            n_retrys = 0
-
-        # retry path requires one sample at a time
-        if n_retrys > 0 and self.batch_size > 1:
-            self.batch_size = 1
+        requested_n_retrys = self.condition_configs.get("n_retrys", 0) or 0
+        n_retrys = 0
+        if requested_n_retrys != 0:
             logger.warning(
-                "n_retrys > 0: batch_size forced to 1 for structure-guided generation."
+                "Structure-guided retries are disabled; forcing n_retrys=0 "
+                f"(requested {requested_n_retrys})."
             )
 
         # process condition values
@@ -931,7 +927,7 @@ class GenerativeFactory:
                         inpaint_cfgs=self.condition_configs.get("inpaint_cfgs", {}),
                         use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                         n_frames=self.n_frames,
-                        n_retrys=self.condition_configs.get("n_retrys"),
+                        n_retrys=n_retrys,
                         t_retry=self.condition_configs.get("t_retry"),
                         context=context,
                     )
@@ -944,7 +940,7 @@ class GenerativeFactory:
                         outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
                         use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                         n_frames=self.n_frames,
-                        n_retrys=self.condition_configs.get("n_retrys"),
+                        n_retrys=n_retrys,
                         t_retry=self.condition_configs.get("t_retry"),
                         context=context,
                     )
@@ -956,7 +952,7 @@ class GenerativeFactory:
                         outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
                         use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
                         n_frames=self.n_frames,
-                        n_retrys=self.condition_configs.get("n_retrys"),
+                        n_retrys=n_retrys,
                         t_retry=self.condition_configs.get("t_retry"),
                         context=context,
                     )

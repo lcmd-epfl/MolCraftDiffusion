@@ -291,6 +291,182 @@ def test_structural_guidance_clamps_to_reference_size_and_passes_outpaint_config
     assert kwargs["outpaint_cfgs"] == {"t_start": 0.75, "connector_dicts": {0: [1]}}
 
 
+@pytest.mark.parametrize("task_type", ["inpaint", "outpaint", "outpaintft"])
+def test_structural_guidance_always_disables_retries(
+    task_type, monkeypatch, tmp_path, fake_xyz_io
+):
+    from MolecularDiffusion.runmodes.generate.tasks_generate import GenerativeFactory
+
+    task = FakeGenerationTask()
+    factory = GenerativeFactory(
+        task=task,
+        task_type=task_type,
+        num_generate=2,
+        batch_size=2,
+        mol_size=[5],
+        condition_configs={"n_retrys": 3},
+        output_path=os.fspath(tmp_path),
+    )
+    monkeypatch.setattr(
+        factory,
+        "preprocess_ref_structure",
+        lambda device: torch.zeros(1, 4, 6, device=device),
+    )
+
+    factory.structural_guidance()
+
+    _, _, kwargs = task.calls[0]
+    assert kwargs["n_retrys"] == 0
+    assert factory.batch_size == 2
+
+
+def test_diffusion_retry_with_frames_returns_original_chain(monkeypatch):
+    import MolecularDiffusion.modules.models.en_diffusion as en_diffusion
+
+    class MinimalRetryDiffusion:
+        T = 2
+        COV_R = None
+        condition_tensor = None
+        device = torch.device("cpu")
+        extra_norm_values = []
+        n_dims = 3
+        ndim_extra = 0
+        norm_values = [1.0, 1.0, 1.0]
+        num_classes = 2
+
+        def sample_combined_position_feature_noise(
+            self, n_samples, n_nodes, node_mask
+        ):
+            del node_mask
+            return torch.zeros(n_samples, n_nodes, 6)
+
+        def _build_outpaint_extras(
+            self,
+            condition_tensor,
+            connector_indices,
+            natom_extra,
+            init_method,
+            skeleton_type,
+            seed_dist,
+            min_dist,
+            spread,
+            n_bq_atom,
+            bond_len,
+        ):
+            del (
+                connector_indices,
+                init_method,
+                skeleton_type,
+                seed_dist,
+                min_dist,
+                spread,
+                n_bq_atom,
+                bond_len,
+            )
+            return torch.zeros(condition_tensor.size(0), natom_extra, 6)
+
+        def sample_p_zs_given_zt_op(
+            self, s_array, t_array, z, node_mask, edge_mask, context, *args, **kwargs
+        ):
+            del s_array, t_array, node_mask, edge_mask, context, args, kwargs
+            return z
+
+        def unnormalize_z(self, z, node_mask):
+            del node_mask
+            return z
+
+        def sample_p_xh_given_z0(
+            self, z, node_mask, edge_mask, context, **kwargs
+        ):
+            del node_mask, edge_mask, context, kwargs
+            x = z[:, :, :3]
+            h = {
+                "categorical": z[:, :, 3:5],
+                "integer": z[:, :, 5:6].long(),
+            }
+            return x, h
+
+    quality_results = iter(
+        [
+            (False, 2, [0, 0]),
+            (True, 1, [0, 0]),
+        ]
+    )
+    monkeypatch.setattr(en_diffusion, "check_quality", lambda *args: next(quality_results))
+
+    node_mask = torch.ones(1, 2, 1)
+    edge_mask = torch.ones(4, 1)
+    x, h, chain = en_diffusion.EnVariationalDiffusion.sample(
+        MinimalRetryDiffusion(),
+        n_samples=1,
+        n_nodes=2,
+        node_mask=node_mask,
+        edge_mask=edge_mask,
+        context=None,
+        condition_tensor=torch.zeros(1, 1, 6),
+        condition_mode="outpaint_xh",
+        outpaint_cfgs={
+            "connector_dicts": {0: [0]},
+            "init_method": "seed",
+        },
+        n_frames=2,
+        t_retry=1,
+        n_retrys=1,
+    )
+
+    assert x.shape == (2, 2, 3)
+    assert h["categorical"].shape == (2, 2, 2)
+    assert chain.shape == (2, 1, 2, 6)
+
+
+def test_random_walk_spread_controls_skeleton_geometry():
+    from MolecularDiffusion.utils.geom_constraint import build_extra_node_template
+
+    scaffold = torch.zeros(1, 1, 6)
+    connector_indices = torch.tensor([0])
+
+    torch.manual_seed(11)
+    straight = build_extra_node_template(
+        scaffold,
+        connector_indices,
+        n_extra=4,
+        skeleton_type="random_walk",
+        min_dist=0,
+        spread=0,
+    )
+    torch.manual_seed(11)
+    dispersed = build_extra_node_template(
+        scaffold,
+        connector_indices,
+        n_extra=4,
+        skeleton_type="random_walk",
+        min_dist=0,
+        spread=1,
+    )
+
+    straight_steps = torch.diff(straight[0, :, :3], dim=0)
+    assert torch.allclose(straight_steps, straight_steps[:1].expand_as(straight_steps))
+    assert not torch.allclose(straight[:, :, :3], dispersed[:, :, :3])
+
+
+def test_jitter_scale_must_not_fall_back_to_spread():
+    from MolecularDiffusion.modules.models.en_diffusion import _resolve_jitter_scale
+
+    with pytest.raises(ValueError, match="jitter_scale must be set explicitly"):
+        _resolve_jitter_scale(
+            {"spread": 9.0}, init_method="skeleton", forward_noise="jitter"
+        )
+
+    assert (
+        _resolve_jitter_scale(
+            {"spread": 9.0, "jitter_scale": 0.4},
+            init_method="skeleton",
+            forward_noise="jitter",
+        )
+        == 0.4
+    )
+
+
 def test_hybrid_cfg_filters_geometric_constraint_keys_before_sampling(
     monkeypatch, tmp_path, fake_xyz_io
 ):

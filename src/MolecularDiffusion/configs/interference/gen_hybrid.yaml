@@ -34,5 +34,6 @@ condition_configs:
     t_start: 0.8
     t_critical: 0.05
     noise_initial_mask: False # code default
+    jitter_scale: 1.0         # explicit; forward_noise defaults to jitter
     # NOTE: geometric-constraint keys (constraint_strength, scale_factor) are
     # stripped for *_cfg task types, so they are omitted here.

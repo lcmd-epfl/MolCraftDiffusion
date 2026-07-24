@@ -36,7 +36,7 @@ augment_noise: False
 data_augmentation: False
 context_mask_rate: 0.2
 mask_value: 5
-normalize_condition: value_10 # [None, "maxmin", "mad"]
+normalize_condition: value_10 # None | "maxmin" | "mad" | "value_N" (divide condition by N; value_10 = default). NOT a boolean.
 sp_regularizer_deploy: False
 sp_regularizer_regularizer: hard
 sp_regularizer_lambda_: 0

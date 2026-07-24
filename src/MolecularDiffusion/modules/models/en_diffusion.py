@@ -1,3 +1,4 @@
+import logging
 import math
 from copy import deepcopy
 
@@ -28,7 +29,22 @@ from MolecularDiffusion.utils import (
     sample_center_gravity_zero_gaussian_with_mask,
     sample_gaussian_with_mask
 )
-import logging
+
+
+def _resolve_jitter_scale(config, init_method, forward_noise):
+    """Return an explicit jitter scale without falling back to ``spread``."""
+    jitter_scale = config.get("jitter_scale")
+    uses_jitter = (
+        init_method != "seed" and str(forward_noise).strip().lower() == "jitter"
+    )
+    if uses_jitter and jitter_scale is None:
+        raise ValueError(
+            "jitter_scale must be set explicitly when forward_noise='jitter'; "
+            "it no longer falls back to spread."
+        )
+    return 0.75 if jitter_scale is None else float(jitter_scale)
+
+
 logger = logging.getLogger(__name__)
 
 class EnVariationalDiffusion(torch.nn.Module):
@@ -3285,7 +3301,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         Places a clean skeleton/fragment for the ``n_extend`` new atoms, anchored
         at the connectors in the current latent ``z``, then injects noise per
         ``forward_noise``: "schedule" uses the inpaint denoising_strength
-        alpha_d/sigma_d, "jitter" a small fixed scatter (~jitter_scale or spread),
+        alpha_d/sigma_d, "jitter" a fixed scatter set by jitter_scale,
         "off"/"seed" none. ``init_method="seed"`` is the outpaint seed-blob (no
         noise). Returns ``(B, n_extend, D)``.
         """
@@ -3295,7 +3311,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             spread=spread, n_bq_atom=n_bq_atom, bond_len=bond_len,
         )
         mode = "off" if init_method == "seed" else str(forward_noise).strip().lower()
-        jit = float(spread if jitter_scale is None else jitter_scale)
+        if mode == "jitter" and jitter_scale is None:
+            raise ValueError("jitter_scale must be set explicitly for jitter noise")
+        jit = 0.75 if jitter_scale is None else float(jitter_scale)
         nm = torch.ones((new.size(0), n_extend, 1), device=new.device)
         if mode in ("schedule", "true", "True") and alpha_d is not None:
             eps = self.sample_combined_position_feature_noise(new.size(0), n_extend, nm)
@@ -3410,7 +3428,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             ext_min_dist = float(inpaint_cfgs.get("min_dist", 1.0))
             ext_spread = float(inpaint_cfgs.get("spread", 1.0))
             ext_n_bq = int(inpaint_cfgs.get("n_bq_atom", 0))
-            ext_jitter_scale = float(inpaint_cfgs.get("jitter_scale", ext_spread))
+            ext_jitter_scale = _resolve_jitter_scale(
+                inpaint_cfgs, ext_init_method, ext_forward_noise
+            )
             t_int_start =  self.T
             unmasked_node_indices = [i for i in range(n_node_cond) if i not in mask_node_index]
             n_node_cond = condition_tensor.size(1)
@@ -3620,7 +3640,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             skeleton_type = str(outpaint_cfgs.get("skeleton_type", "random_walk"))
             bond_len = float(outpaint_cfgs.get("bond_len", 1.5))
             forward_noise = str(outpaint_cfgs.get("forward_noise", "jitter"))
-            jitter_scale = float(outpaint_cfgs.get("jitter_scale", spread))
+            jitter_scale = _resolve_jitter_scale(
+                outpaint_cfgs, init_method, forward_noise
+            )
 
             natom_ref = condition_tensor.size(1)
             natom_extra = n_nodes - natom_ref
@@ -4145,7 +4167,16 @@ class EnVariationalDiffusion(torch.nn.Module):
                 # Chain_retry was also allocated without extra features,
                 # so we should NOT include h_retry["extra"] when storing
                 xh_retry = torch.cat([x_retry, h_retry["categorical"], h_retry["integer"]], dim=2)
-                chain_retry[n_retry-1][-1] = xh_retry                          
+                chain_retry[n_retry-1][-1] = xh_retry
+                # Return the original denoising trajectory. Retry samples are
+                # accumulated in x/h, but chain_flat must still be assigned on
+                # this control-flow path.
+                chain_flat = chain.view(
+                    n_frames,
+                    n_samples,
+                    z.size(1),
+                    z.size(2) - len(self.extra_norm_values),
+                )
             else:
                 chain_flat = None
                 chain = None
@@ -4280,7 +4311,10 @@ class EnVariationalDiffusion(torch.nn.Module):
 `               - connector_index (torch.Tensor, optional): Indices of connector nodes for outpainting. Defaults to an empty tensor.
                 - seed_dist (float, optional): Distance of the seed from the connector atom (used if n_bq_atom == 0)..
                 - min_dist (float, optional): Minimum distance from any existing atom in xh_cond (except the connector itself). Defaults to 1.
-                - spread (float, optional): Spread of the initiating nodes. Defaults is 1 angstrom.
+                - spread (float, optional): Random-walk angular dispersion, or
+                    legacy seed-cloud position spread. Defaults to 1.
+                - jitter_scale (float): Explicit positional noise magnitude
+                    when forward_noise is "jitter".
                 - n_bq_atom (int, optional): Number of dummy atoms. Defaults is 0.
 
         Returns:
@@ -4367,7 +4401,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                 ext_min_dist = float(inpaint_cfgs.get("min_dist", 1.0))
                 ext_spread = float(inpaint_cfgs.get("spread", 1.0))
                 ext_n_bq = int(inpaint_cfgs.get("n_bq_atom", 0))
-                ext_jitter_scale = float(inpaint_cfgs.get("jitter_scale", ext_spread))
+                ext_jitter_scale = _resolve_jitter_scale(
+                    inpaint_cfgs, ext_init_method, ext_forward_noise
+                )
                 mask_node_index = inpaint_cfgs.get("mask_node_index", torch.tensor([], device=z.device, dtype=torch.long))
                 t_critical = 0.0
                 
@@ -4571,7 +4607,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                 skeleton_type = str(outpaint_cfgs.get("skeleton_type", "random_walk"))
                 bond_len = float(outpaint_cfgs.get("bond_len", 1.5))
                 forward_noise = str(outpaint_cfgs.get("forward_noise", "jitter"))
-                jitter_scale = float(outpaint_cfgs.get("jitter_scale", spread))
+                jitter_scale = _resolve_jitter_scale(
+                    outpaint_cfgs, init_method, forward_noise
+                )
 
                 s_saves = torch.linspace(0, self.T * t_start,
                                          steps=n_frames, device=z.device).long()

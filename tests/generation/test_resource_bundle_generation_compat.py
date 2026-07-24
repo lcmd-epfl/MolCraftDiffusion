@@ -176,6 +176,7 @@ interference:
       connector_dicts:
         1: [2]
       spread: 1.25
+      jitter_scale: 1.25
       seed_dist: 1.25
       min_dist: 2.5
 """,
@@ -207,6 +208,7 @@ interference:
       connector_dicts:
         0: [4]
       spread: 1.25
+      jitter_scale: 1.25
       seed_dist: 1.25
       min_dist: 2.5
 """,
@@ -268,6 +270,10 @@ def test_resource_bundle_generation_examples_compose_with_bundled_defaults(
     assert cfg.interference.num_generate > 0
     assert cfg.interference.batch_size > 0
     assert cfg.chkpt_directory
+    if expected_mode == "inpaint":
+        assert cfg.interference.condition_configs.inpaint_cfgs.jitter_scale is not None
+    elif expected_mode in ("outpaint", "outpaintft"):
+        assert cfg.interference.condition_configs.outpaint_cfgs.jitter_scale is not None
 
 
 @pytest.mark.parametrize(

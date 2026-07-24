@@ -311,9 +311,15 @@ def _min_clearance(cand, scaffold_pos, placed):
 
 def _build_random_walk(
     curr_mol_pos, connector_pos, connector_real_idx, n_extra, n_feat, device,
-    seed_dist=1.5, min_dist=1.0, bond_len=1.5, max_tries=50,
+    seed_dist=1.5, min_dist=1.0, spread=1.0, bond_len=1.5, max_tries=50,
 ):
-    """Connected self-avoiding 3D walk grown outward from the connector(s)."""
+    """Connected self-avoiding 3D walk grown outward from the connector(s).
+
+    ``spread`` controls angular dispersion: 0 produces a straight walk, 1
+    preserves the original equal blend of the previous and random directions,
+    and larger values make the walk more tortuous.
+    """
+    spread = max(0.0, float(spread))
     n_conn = connector_pos.shape[0]
     heads = [connector_pos[c].clone() for c in range(n_conn)]
     dirs = [
@@ -333,8 +339,8 @@ def _build_random_walk(
         for _ in range(max_tries):
             rd = torch.randn(3, device=device)
             rd = rd / torch.norm(rd)
-            new_dir = prev_dir * 0.5 + rd * 0.5
-            new_dir = new_dir / torch.norm(new_dir)
+            new_dir = prev_dir + rd * spread
+            new_dir = new_dir / torch.norm(new_dir).clamp_min(1e-8)
             cand = prev + new_dir * bond_len
             if _min_clearance(cand, curr_mol_pos, placed) >= min_dist * 0.9:
                 chosen = cand
@@ -524,6 +530,9 @@ def build_extra_node_template(
             SKELETON_BUILDERS). For "fragment", default to an aromatic ring when
             left at the procedural default.
         seed_dist, min_dist, spread, n_bq_atom, bond_len: geometry knobs.
+            For ``random_walk``, spread controls angular dispersion. For
+            legacy ``method="seed"``, it is the Gaussian position standard
+            deviation.
 
     Returns:
         (B, n_extra, D) clean coordinates + randomized features.
@@ -562,9 +571,21 @@ def build_extra_node_template(
     for b in range(B):
         curr_mol_pos = xh_cond[b, :, :3]
         connector_pos = curr_mol_pos[connector_indices]
+        builder_kwargs = {
+            "seed_dist": seed_dist,
+            "min_dist": min_dist,
+            "bond_len": bond_len,
+        }
+        if skeleton_type == "random_walk":
+            builder_kwargs["spread"] = spread
         node = builder(
-            curr_mol_pos, connector_pos, connector_indices, n_extra, n_feat,
-            device, seed_dist=seed_dist, min_dist=min_dist, bond_len=bond_len,
+            curr_mol_pos,
+            connector_pos,
+            connector_indices,
+            n_extra,
+            n_feat,
+            device,
+            **builder_kwargs,
         )
         out.append(node)
     return torch.stack(out)
@@ -1772,6 +1793,5 @@ def translate_to_origine(coords, node_mask):
     translation_vector = -centroid
     translated_coords = coords + translation_vector * node_mask
     return translated_coords
-
 
 

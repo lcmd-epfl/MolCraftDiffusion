@@ -31,5 +31,5 @@ condition_configs:
     spread: 1.0
     bond_len: 1.5
     forward_noise: jitter
+    jitter_scale: 1.0         # explicit positional forward-noise magnitude
     n_bq_atom: 0
-    # jitter_scale:            # defaults to `spread` when unset
