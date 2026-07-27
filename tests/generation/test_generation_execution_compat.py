@@ -256,9 +256,7 @@ def test_property_guidance_builds_target_and_scheduler_then_calls_sampler(
     assert kwargs["n_backwards"] == 4
 
 
-def test_structural_guidance_clamps_to_reference_size_and_passes_outpaint_config(
-    monkeypatch, tmp_path, fake_xyz_io
-):
+def _outpaint_factory(tmp_path, mol_size, monkeypatch, ref_natoms=4):
     from MolecularDiffusion.runmodes.generate.tasks_generate import GenerativeFactory
 
     task = FakeGenerationTask()
@@ -267,7 +265,7 @@ def test_structural_guidance_clamps_to_reference_size_and_passes_outpaint_config
         task_type="outpaint",
         num_generate=1,
         batch_size=1,
-        mol_size=[2],
+        mol_size=mol_size,
         condition_configs={
             "n_retrys": 0,
             "condition_component": "xh",
@@ -278,14 +276,32 @@ def test_structural_guidance_clamps_to_reference_size_and_passes_outpaint_config
     monkeypatch.setattr(
         factory,
         "preprocess_ref_structure",
-        lambda device: torch.zeros(1, 4, 6, device=device),
+        lambda device: torch.zeros(1, ref_natoms, 6, device=device),
     )
+    return task, factory
+
+
+def test_structural_guidance_rejects_outpaint_size_not_exceeding_scaffold(
+    monkeypatch, tmp_path, fake_xyz_io
+):
+    """Outpaint needs at least one atom to grow, so a target <= the scaffold is
+    a config error -- it used to be silently clamped up to the scaffold size."""
+    _, factory = _outpaint_factory(tmp_path, [2], monkeypatch)
+
+    with pytest.raises(ValueError, match="nothing to grow"):
+        factory.structural_guidance()
+
+
+def test_structural_guidance_passes_outpaint_config(
+    monkeypatch, tmp_path, fake_xyz_io
+):
+    task, factory = _outpaint_factory(tmp_path, [6], monkeypatch)
 
     factory.structural_guidance()
 
     method, nodesxsample, kwargs = task.calls[0]
     assert method == "sample"
-    assert nodesxsample.tolist() == [4]
+    assert nodesxsample.tolist() == [6]
     assert kwargs["condition_mode"] == "outpaint_xh"
     assert kwargs["condition_tensor"].shape == (1, 4, 6)
     assert kwargs["outpaint_cfgs"] == {"t_start": 0.75, "connector_dicts": {0: [1]}}

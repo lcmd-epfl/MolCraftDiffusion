@@ -2,7 +2,7 @@
 import csv
 import logging
 import math
-from typing import Callable, Dict, Iterator, List, Optional, Union, Any
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union, Any
 import os
 import pickle
 import sys
@@ -554,6 +554,49 @@ def _iter_db_rows(db_sources: List[Dict[str, Any]]) -> Iterator[Any]:
             yield from connect(source["path"]).select()
         else:
             yield from _iter_aselmdb_rows(source["path"])
+
+def _drop_hydrogens(
+    mol_ase: Any, with_hydrogen: bool
+) -> Tuple[Any, Optional[np.ndarray]]:
+    """Strip hydrogens from an ASE ``Atoms`` unless ``with_hydrogen``.
+
+    Mirrors what ``PointCloud_Mol.from_xyz``/``from_arrays`` already do for
+    the xyz/array loaders, so the ASE-db loaders honour ``with_hydrogen``
+    the same way.
+
+    Returns ``(atoms, keep_mask)``. ``keep_mask`` is ``None`` when nothing
+    was dropped, otherwise a boolean array over the *original* atom order,
+    so per-atom data coming from another source (e.g. an RDKit ``mol_block``)
+    can be filtered identically.
+    """
+    if with_hydrogen:
+        return mol_ase, None
+    keep = np.asarray(mol_ase.get_atomic_numbers()) != 1
+    if keep.all():
+        return mol_ase, None
+    return mol_ase[keep], keep
+
+
+def _check_any_loaded(
+    db_path: str,
+    total_rows: int,
+    n_loaded: int,
+    last_error: Optional[Exception],
+) -> None:
+    """Fail loudly when every row of a non-empty db was discarded.
+
+    Silently returning an empty dataset only surfaces much later as an
+    ``IndexError`` in an unrelated file, so a config/data mismatch is
+    reported here, where it can be acted on.
+    """
+    if total_rows and not n_loaded:
+        raise ValueError(
+            f"No entries could be loaded from {db_path}: all {total_rows} "
+            f"rows were discarded. Check `atom_vocab`, `with_hydrogen`, "
+            f"`max_atom` and `forbidden_atoms` against the data "
+            f"(last error: {last_error})"
+        )
+
 
 hybiridization_map = {
     "S": 0, 'SP': 1, 'SP2': 2, 'SP3': 3, 'SP3D': 4, 'SP3D2': 5, 'UNSPECIFIED': -1
@@ -1179,17 +1222,27 @@ class GraphDataset(torch_data.Dataset):
         skipped_mol_block = 0
         skipped_rdkit = 0
         skipped_atom_mismatch = 0
+        skipped_empty = 0
+        failed = 0
+        last_error: Optional[Exception] = None
         for i, row in enumerate(iterator):
             try:
                 mol_ase = row.toatoms()
                 row_data = getattr(row, "data", {}) or {}
 
-                if len(mol_ase) > max_atom:
-                    skipped_too_large += 1
-                    continue
-
                 if any(atom.symbol in forbidden_atoms for atom in mol_ase):
                     skipped_forbidden += 1
+                    continue
+
+                # Hydrogen filtering happens before the max_atom check so
+                # max_atom bounds the *stored* atom count, as in load_xyz.
+                mol_ase, keep_mask = _drop_hydrogens(mol_ase, with_hydrogen)
+                if len(mol_ase) == 0:
+                    skipped_empty += 1
+                    continue
+
+                if len(mol_ase) > max_atom:
+                    skipped_too_large += 1
                     continue
 
                 coords = torch.from_numpy(mol_ase.get_positions()).to(torch.float32)
@@ -1228,20 +1281,28 @@ class GraphDataset(torch_data.Dataset):
                             skipped_rdkit += 1
                             continue
 
+                        # Filter the RDKit atoms with the same mask used on
+                        # the ASE atoms so the two stay aligned.
+                        rdkit_atoms = list(mol_rdkit.GetAtoms())
+                        if keep_mask is not None and len(rdkit_atoms) == len(keep_mask):
+                            rdkit_atoms = [
+                                a for a, k in zip(rdkit_atoms, keep_mask) if k
+                            ]
+
                         ase_atomic_num = mol_ase.get_atomic_numbers()
-                        rdkit_atomic_num = np.array([atom.GetAtomicNum() for atom in mol_rdkit.GetAtoms()])
+                        rdkit_atomic_num = np.array([atom.GetAtomicNum() for atom in rdkit_atoms])
                         if not np.array_equal(ase_atomic_num, rdkit_atomic_num):
                             skipped_atom_mismatch += 1
                             continue
 
                         atom_feats = defaultdict(list)
-                        for atom in mol_rdkit.GetAtoms():
+                        for atom in rdkit_atoms:
                             atom_feats['degree'].append(atom.GetDegree())
                             atom_feats['formal_charge'].append(atom.GetFormalCharge())
                             atom_feats['hybridization'].append(hybiridization_map.get(str(atom.GetHybridization()), -1))
                             atom_feats['is_aromatic'].append(atom.GetIsAromatic())
                             atom_feats['valence'].append(atom.GetTotalValence())
-                        
+
                         node_features_extra = torch.tensor([
                             atom_feats[key] for key in node_feature_choice
                         ], dtype=torch.float32).T
@@ -1360,6 +1421,8 @@ class GraphDataset(torch_data.Dataset):
                         self.targets[field].append(val)
 
             except Exception as e:
+                failed += 1
+                last_error = e
                 logger.error(f"Error in loading db entry {i}: {e}")
                 continue
 
@@ -1383,12 +1446,20 @@ class GraphDataset(torch_data.Dataset):
                 f"in {len(_chunk_paths)} chunks → {chunk_dir}"
             )
 
-        if skipped_too_large or skipped_forbidden or skipped_nan or skipped_mol_block or skipped_rdkit or skipped_atom_mismatch:
+        if skipped_too_large or skipped_forbidden or skipped_nan or skipped_mol_block or skipped_rdkit or skipped_atom_mismatch or skipped_empty or failed:
             logger.warning(
                 f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, "
                 f"{skipped_nan} NaN values, {skipped_mol_block} missing mol_block, "
-                f"{skipped_rdkit} RDKit parse failures, {skipped_atom_mismatch} atom order mismatches"
+                f"{skipped_rdkit} RDKit parse failures, {skipped_atom_mismatch} atom order mismatches, "
+                f"{skipped_empty} empty after hydrogen removal, {failed} errors "
+                f"(last: {last_error})"
             )
+
+        _check_any_loaded(
+            db_path, total_len,
+            sum(_chunk_sizes) if _chunking else len(self.graph_data_list),
+            last_error,
+        )
 
     def load_pickle(self, pkl_file, verbose=0):
         """
@@ -2119,17 +2190,27 @@ class PointCloudDataset(torch_data.Dataset):
         skipped_mol_block = 0
         skipped_rdkit = 0
         skipped_atom_mismatch = 0
+        skipped_empty = 0
+        failed = 0
+        last_error: Optional[Exception] = None
         for i, row in enumerate(iterator):
             try:
                 mol_ase = row.toatoms()
                 row_data = getattr(row, "data", {}) or {}
 
-                if len(mol_ase) > max_atom:
-                    skipped_too_large += 1
-                    continue
-
                 if any(atom.symbol in forbidden_atoms for atom in mol_ase):
                     skipped_forbidden += 1
+                    continue
+
+                # Hydrogen filtering happens before the max_atom check so
+                # max_atom bounds the *stored* atom count, as in load_xyz.
+                mol_ase, keep_mask = _drop_hydrogens(mol_ase, with_hydrogen)
+                if len(mol_ase) == 0:
+                    skipped_empty += 1
+                    continue
+
+                if len(mol_ase) > max_atom:
+                    skipped_too_large += 1
                     continue
 
                 coords = torch.from_numpy(mol_ase.get_positions()).to(torch.float32)
@@ -2167,14 +2248,22 @@ class PointCloudDataset(torch_data.Dataset):
                             skipped_rdkit += 1
                             continue
 
+                        # Filter the RDKit atoms with the same mask used on
+                        # the ASE atoms so the two stay aligned.
+                        rdkit_atoms = list(mol_rdkit.GetAtoms())
+                        if keep_mask is not None and len(rdkit_atoms) == len(keep_mask):
+                            rdkit_atoms = [
+                                a for a, k in zip(rdkit_atoms, keep_mask) if k
+                            ]
+
                         ase_atomic_num = mol_ase.get_atomic_numbers()
-                        rdkit_atomic_num = np.array([atom.GetAtomicNum() for atom in mol_rdkit.GetAtoms()])
+                        rdkit_atomic_num = np.array([atom.GetAtomicNum() for atom in rdkit_atoms])
                         if not np.array_equal(ase_atomic_num, rdkit_atomic_num):
                             skipped_atom_mismatch += 1
                             continue
 
                         atom_feats = defaultdict(list)
-                        for atom in mol_rdkit.GetAtoms():
+                        for atom in rdkit_atoms:
                             atom_feats['degree'].append(atom.GetDegree())
                             atom_feats['formal_charge'].append(atom.GetFormalCharge())
                             atom_feats['hybridization'].append(hybiridization_map.get(str(atom.GetHybridization()), -1))
@@ -2313,6 +2402,8 @@ class PointCloudDataset(torch_data.Dataset):
                         self.smiles_list.append(smiles)
 
             except Exception as e:
+                failed += 1
+                last_error = e
                 logger.error(f"Error in loading db entry {i}: {e}")
                 continue
 
@@ -2334,12 +2425,20 @@ class PointCloudDataset(torch_data.Dataset):
                 f"in {len(_chunk_paths)} chunks → {chunk_dir}"
             )
 
-        if skipped_too_large or skipped_forbidden or skipped_nan or skipped_mol_block or skipped_rdkit or skipped_atom_mismatch:
+        if skipped_too_large or skipped_forbidden or skipped_nan or skipped_mol_block or skipped_rdkit or skipped_atom_mismatch or skipped_empty or failed:
             logger.warning(
                 f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, "
                 f"{skipped_nan} NaN values, {skipped_mol_block} missing mol_block, "
-                f"{skipped_rdkit} RDKit parse failures, {skipped_atom_mismatch} atom order mismatches"
+                f"{skipped_rdkit} RDKit parse failures, {skipped_atom_mismatch} atom order mismatches, "
+                f"{skipped_empty} empty after hydrogen removal, {failed} errors "
+                f"(last: {last_error})"
             )
+
+        _check_any_loaded(
+            db_path, total_len,
+            sum(_chunk_sizes) if _chunking else len(self.coords_list),
+            last_error,
+        )
 
     def _standarize_index(self, index, count):
         if isinstance(index, slice):
