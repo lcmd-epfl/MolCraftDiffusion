@@ -253,6 +253,12 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
     OmegaConf.set_readonly(task_config, False)
     OmegaConf.set_struct(task_config, False)
 
+    # The saved model_config points at the pretraining checkpoint used during training,
+    # which may not exist here. Weights come from this checkpoint's state_dict anyway.
+    if task_config.get("chkpt_path"):
+        log.info(f"Clearing stale chkpt_path from task config: {task_config.chkpt_path}")
+        task_config.chkpt_path = None
+
     n_types = len(atom_vocab) if atom_vocab else 0
     
     if OmegaConf.is_missing(task_config, "num_atom_types") or task_config.get("num_atom_types") == "???":

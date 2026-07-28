@@ -20,9 +20,8 @@ condition_configs:
   t_retry: 180
   outpaint_cfgs:
     t_start: 1
-    constraint_strength: 0.8   # code default
-    scale_factor: 1.1          # code default
-    # connector_dicts:         # optional for outpaintft (prefix-freeze growth); required only for plain outpaint
+    t_critical: 0.05           # code default; scaffold coords are released for s < this
+    connector_indices: [0]     # REQUIRED: 0-indexed scaffold atoms to grow from
     # --- extra-node placement (code defaults) ---
     init_method: skeleton      # "skeleton" | "seed" | "fragment"
     skeleton_type: random_walk

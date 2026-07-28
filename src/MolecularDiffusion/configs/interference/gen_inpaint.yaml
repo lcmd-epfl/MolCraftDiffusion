@@ -59,7 +59,6 @@ condition_configs:
     - 43
     - 42
     denoising_strength: 0.75   # code default None; fraction of steps over which masked atoms are denoised
-    t_start: 0.8
     constraint_strength: 0.8   # code default; overlap-push constraints for s < this value (0-1)
     scale_factor: 1.2          # code default 1.1; covalent-radius multiplier for bond-distance tolerance
     noise_initial_mask: False  # code default

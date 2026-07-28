@@ -3058,7 +3058,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         condition_to_use = self._select_conditioning_tensor(t)
 
-        if s > t_critical:
+        if s[0].item() > t_critical:
             # Fix the reference part as conditioning
             zs = torch.cat(
                 [condition_to_use, zs[:, mask_bools, :]], dim=1
@@ -3624,12 +3624,16 @@ class EnVariationalDiffusion(torch.nn.Module):
             t_int_start = int(t_start * self.T)
             constraint_strength = outpaint_cfgs.get("constraint_strength", 0.8)
             scale_factor = outpaint_cfgs.get("scale_factor", 1.1)
+            t_critical = outpaint_cfgs.get("t_critical", 0.05)
             
-            # outpaintft (prefix-freeze growth) does not require connectors;
-            # only plain "outpaint" needs explicit connector geometry.
+            # outpaintft applies no bonding constraint, so it never reads the
+            # per-connector degrees: it also accepts a plain `connector_indices`
+            # list. Plain outpaint needs the degrees, so it keeps requiring the dict.
             connector_dicts = outpaint_cfgs.get("connector_dicts", None) or {}
-            if not connector_dicts and condition_alg == "outpaint":
-                raise ValueError("connector_dicts must be specified in to use outpainting")
+            if not connector_dicts and condition_alg == "outpaintft":
+                connector_dicts = {
+                    int(i): [0] for i in (outpaint_cfgs.get("connector_indices") or [])
+                }
             connector_indices = list(connector_dicts.keys())
             connector_indices = torch.tensor(connector_indices, device=z.device, dtype=torch.long)
             min_dist = outpaint_cfgs.get("min_dist", 1.0)
@@ -3647,22 +3651,24 @@ class EnVariationalDiffusion(torch.nn.Module):
             natom_ref = condition_tensor.size(1)
             natom_extra = n_nodes - natom_ref
 
+            # Validate before building: every placement builder indexes the
+            # scaffold with these, so a bad set otherwise dies as an opaque
+            # ZeroDivisionError/IndexError inside the builder.
+            if connector_indices.numel() == 0 and not (init_method == "seed" and n_bq_atom > 0):
+                raise ValueError(
+                    "connector_dicts (or connector_indices for outpaintft) must be "
+                    "specified to use outpainting"
+                )
+            if any(idx > natom_ref - 1 for idx in connector_indices):
+                raise ValueError("connector_indices is out of bound")
+
             new_nodes = self._build_outpaint_extras(
                 condition_tensor, connector_indices, natom_extra,
                 init_method, skeleton_type, seed_dist, min_dist, spread,
                 n_bq_atom, bond_len,
             )
-            if any(idx > natom_ref - 1 for idx in connector_indices):
-                raise ValueError("connector_indices is out of bound")
-            if connector_indices.size(0) == 0 and condition_alg == "outpaint":
-                raise ValueError("connector_indices is empty")
             z = torch.cat([condition_tensor, new_nodes], dim=1)
-        
-            if any(idx > natom_ref - 1 for idx in connector_dicts.keys()):
-                raise ValueError("connector_indices is out of bound")
-            if not connector_dicts and condition_alg == "outpaint":
-                raise ValueError("connector_indices is empty")
-            
+
             z[:, :natom_ref, :] = condition_tensor
             n_nodes = z.size(1)
             node_mask = torch.ones((n_samples, n_nodes), device=z.device)
@@ -3792,8 +3798,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                             t_array, 
                             z, 
                             condition_tensor, 
-                            node_mask, edge_mask, 
+                            node_mask, edge_mask,
                             context,
+                            t_critical=t_critical,
                             fix_noise=fix_noise
                             )
                     else:
@@ -4003,8 +4010,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                                     t_array, 
                                     z, 
                                     condition_tensor, 
-                                    node_mask, edge_mask, 
+                                    node_mask, edge_mask,
                                     context,
+                                    t_critical=t_critical,
                                     fix_noise=fix_noise
                                     )
                             else:

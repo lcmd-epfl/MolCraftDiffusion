@@ -483,6 +483,68 @@ def test_jitter_scale_must_not_fall_back_to_spread():
     )
 
 
+def test_outpaintft_accepts_connector_indices_list_and_rejects_empty():
+    import MolecularDiffusion.modules.models.en_diffusion as en_diffusion
+
+    seen = {}
+
+    class MinimalOutpaintFtDiffusion:
+        T = 1
+        COV_R = None
+        condition_tensor = None
+        device = torch.device("cpu")
+        extra_norm_values = []
+        n_dims = 3
+        ndim_extra = 0
+        norm_values = [1.0, 1.0, 1.0]
+        num_classes = 2
+
+        def sample_combined_position_feature_noise(self, n_samples, n_nodes, node_mask):
+            del node_mask
+            return torch.zeros(n_samples, n_nodes, 6)
+
+        def _build_outpaint_extras(
+            self, condition_tensor, connector_indices, natom_extra, *args, **kwargs
+        ):
+            del args, kwargs
+            seen["connector_indices"] = connector_indices.tolist()
+            return torch.zeros(condition_tensor.size(0), natom_extra, 6)
+
+        def sample_p_zs_given_zt_op_ft(self, s_array, t_array, z, *args, **kwargs):
+            del s_array, t_array, args
+            seen["t_critical"] = kwargs["t_critical"]
+            return z
+
+        def sample_p_xh_given_z0(self, z, node_mask, edge_mask, context, **kwargs):
+            del node_mask, edge_mask, context, kwargs
+            return z[:, :, :3], {"categorical": z[:, :, 3:5], "integer": z[:, :, 5:6].long()}
+
+    def run(outpaint_cfgs):
+        return en_diffusion.EnVariationalDiffusion.sample(
+            MinimalOutpaintFtDiffusion(),
+            n_samples=1,
+            n_nodes=2,
+            node_mask=torch.ones(1, 2, 1),
+            edge_mask=torch.ones(4, 1),
+            context=None,
+            condition_tensor=torch.zeros(1, 1, 6),
+            condition_mode="outpaintft_xh",
+            outpaint_cfgs=outpaint_cfgs,
+        )
+
+    # A plain list stands in for connector_dicts on the ft path (degrees unused).
+    run({"connector_indices": [0], "init_method": "seed"})
+    assert seen["connector_indices"] == [0]
+    assert seen["t_critical"] == 0.05
+
+    run({"connector_indices": [0], "init_method": "seed", "t_critical": 0.0})
+    assert seen["t_critical"] == 0.0
+
+    # ...but the placement builders still need at least one connector.
+    with pytest.raises(ValueError, match="connector"):
+        run({"init_method": "seed"})
+
+
 def test_hybrid_cfg_filters_geometric_constraint_keys_before_sampling(
     monkeypatch, tmp_path, fake_xyz_io
 ):
