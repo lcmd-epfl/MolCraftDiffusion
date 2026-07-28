@@ -194,3 +194,51 @@ def test_compact_pyg_data_reconstructs_public_fields():
     assert expanded.atomic_numbers.dtype == torch.long
     assert expanded.tags.tolist() == [4, 4]
     assert expanded.edge_index.shape == (2, 2)
+
+
+def _tiny_ase_db(tmp_path):
+    """Two CH4-like molecules: 1 heavy atom + 4 H each."""
+    from ase import Atoms
+    from ase.db import connect
+
+    path = str(tmp_path / "tiny.db")
+    db = connect(path)
+    for symbol in ("C", "N"):
+        atoms = Atoms(
+            symbols=[symbol, "H", "H", "H", "H"],
+            positions=[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, -1.0, 0.0],
+            ],
+        )
+        db.write(atoms)
+    return path
+
+
+def test_load_db_honours_with_hydrogen(tmp_path):
+    from MolecularDiffusion.data.component.dataset import PointCloudDataset
+
+    path = _tiny_ase_db(tmp_path)
+
+    with_h = PointCloudDataset.__new__(PointCloudDataset)
+    with_h.load_db(path, atom_vocab=["H", "C", "N"], with_hydrogen=True)
+    assert with_h.n_atoms == [5, 5]
+
+    heavy = PointCloudDataset.__new__(PointCloudDataset)
+    heavy.load_db(path, atom_vocab=["C", "N"], with_hydrogen=False)
+    assert heavy.n_atoms == [1, 1]
+    assert torch.cat(heavy.charges_list).tolist() == [6, 7]
+    assert heavy.node_feature_list[0].shape == (1, 2)
+
+
+def test_load_db_raises_when_every_entry_is_discarded(tmp_path):
+    import pytest
+
+    from MolecularDiffusion.data.component.dataset import PointCloudDataset
+
+    dataset = PointCloudDataset.__new__(PointCloudDataset)
+    with pytest.raises(ValueError, match="No entries could be loaded"):
+        dataset.load_db(_tiny_ase_db(tmp_path), atom_vocab=["Xe"])

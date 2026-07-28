@@ -74,6 +74,19 @@ analyze = [
 flowmol = [
     "dgl",
 ]
+# DiffSMol shape precompute (molecule -> surface mesh -> point cloud). Needed
+# ONLY to build the shape cache offline; training and generation read the
+# cached tensors and import none of this. No openbabel and no oddt: oddt 0.7's
+# surface module imports `skimage.measure.marching_cubes_lewiner`, removed in
+# scikit-image 0.19, so it is dead on any modern env; its ~40-line marching-
+# cubes surface is inlined in modules/models/diffsmol/shape_utils.py with
+# openbabel's vdW radii hardcoded (and asserted).
+# pytorch3d is deliberately NOT required -- trimesh's area-uniform
+# `Trimesh.sample` replaces its one live call site.
+shape = [
+    "scikit-image",
+    "trimesh",
+]
 # GPU install (CUDA-capable torch wheels, auto-detected by pip on Linux/Windows):
 #   pip install molcraftdiffusion[gpu]
 gpu = [
