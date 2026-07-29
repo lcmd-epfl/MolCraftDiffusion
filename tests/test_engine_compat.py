@@ -162,3 +162,33 @@ def test_engine_lightning_extracts_old_ema_state_and_removes_legacy_keys():
 
     assert torch.equal(wrapper._pending_ema_state["weight"], torch.tensor(2.0))
     assert "ema_model.weight" not in checkpoint["state_dict"]
+
+
+def test_saved_hyperparameters_exclude_datasets(monkeypatch):
+    """Checkpoints must carry weights + inference config, never the dataset."""
+    from MolecularDiffusion.core.engine import Engine
+    from MolecularDiffusion.utils import comm
+
+    monkeypatch.delenv("SLURM_PROCID", raising=False)
+    monkeypatch.delenv("SLURM_GPUS_ON_NODE", raising=False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    monkeypatch.setattr(comm, "get_world_size", lambda: 1)
+    monkeypatch.setattr(comm, "get_rank", lambda: 0)
+
+    engine = Engine(
+        task=TinyTask(),
+        train_set=["train"],
+        valid_set=["valid"],
+        test_set=["test"],
+        optimizer=None,
+        logger="logging",
+        pin_memory=False,
+        batch_size=8,
+    )
+
+    cfg = engine.sanitized_config_dict()
+
+    for key in ("train_set", "valid_set", "test_set", "optimizer", "scheduler", "collate_fn"):
+        assert key not in cfg, f"{key} must not be pickled into the checkpoint"
+    assert cfg["batch_size"] == 8
+    assert "task" in cfg

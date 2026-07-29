@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molcraftdiffusion"
-version = "1.4.0"
+version = "1.5.0"
 description = "A unified generative AI framework for 3D molecular generation using diffusion models"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -45,20 +45,40 @@ dependencies = [
     "torchmetrics",
     "biotite",
     "datamol",
+    # Imported unguarded at module level on the `MolCraftDiff train` path
+    # (cli/train.py -> data/component/dataset.py), so they are core, not
+    # optional: without them the primary command dies on ImportError, no
+    # install hint. They used to be declared only in [data]/[analyze] --
+    # rdkit happened to arrive transitively via datamol, ase had no such
+    # backdoor. (A bare `import MolecularDiffusion` does not need either.)
+    "ase",
+    "rdkit",
+    # `lightning` and `pytorch-lightning` are SEPARATE distributions. The code
+    # imports both namespaces, so declaring only `lightning` was not enough.
+    "pytorch-lightning",
+    "lightning-utilities",
 ]
 
 [project.optional-dependencies]
 data = [
-    "ase",
-    "rdkit-pypi",
     "mendeleev",
     "safetensors",
     "dscribe",
     "openbabel>=3.2.0",
 ]
+# DiffPharma novel-pocket preprocessing: raw PDB+SDF -> pocket + interaction
+# pseudo-particles. Biopython parses the PDB, ODDT detects the H-bond and
+# hydrophobic contacts. Needed ONLY for that path -- training and generating
+# from converted ASE dbs import neither.
+#
+# Kept out of [data] on purpose: oddt 0.7 is unmaintained and calls np.in1d,
+# removed in numpy 2.0, so data/component/diffpharma_prep.py aliases it back
+# to np.isin at import. No reason to inflict that on every [data] user.
+bio = [
+    "oddt",
+    "biopython",
+]
 analyze = [
-    "ase",
-    "rdkit-pypi",
     "posebusters>=0.5.1",
     "morfeus-ml",
     "rmsd",

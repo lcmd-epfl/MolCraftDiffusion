@@ -905,5 +905,12 @@ class Engine(core.Configurable):
     # These cannot be saved.
     def sanitized_config_dict(self):
         cfg = self.config_dict()
-        exclude_keys = {"optimizer", "scheduler", "collate_fn",}
+        # Configurable records every __init__ arg, so train/valid/test_set --
+        # the whole dataset -- would otherwise be pickled into every
+        # checkpoint. Checkpoints hold weights + inference config only;
+        # load_from_checkpoint already setdefault()s these back to None.
+        exclude_keys = {
+            "optimizer", "scheduler", "collate_fn",
+            "train_set", "valid_set", "test_set",
+        }
         return {k: v for k, v in cfg.items() if k not in exclude_keys}

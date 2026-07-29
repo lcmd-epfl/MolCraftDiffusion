@@ -586,7 +586,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         seed_everything(cfg.seed, workers=True)
 
-    engine_cfg = cfg.get("engine", {})
+    # A config with no `engine:` block is valid (the "original" engine is the
+    # default). Must be a Config, not a bare dict -- OmegaConf.select() only
+    # accepts Containers, and every wrapper below selects out of this.
+    engine_cfg = cfg.get("engine", None) or OmegaConf.create({})
     eval_metric_key = engine_cfg.get("eval_metric_key", None)
     eval_higher_is_better = engine_cfg.get("eval_higher_is_better", None)
 
@@ -743,7 +746,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if hasattr(task_module.task, "sample"):
             metrics = lightning_wrapper(
                 task_module, data_module, trainer_module, logger_module,
-                engine_cfg=cfg.engine,
+                engine_cfg=engine_cfg,
                 generative_analysis=gen_analysis, n_samples=n_samples,
                 metric=metric, use_posebuster=use_posebuster, batch_size=gen_batch_size,
                 ckpt_path=cfg.trainer.get("resume_from_checkpoint", None),
@@ -756,7 +759,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         else:
             metrics = lightning_wrapper(
                 task_module, data_module, trainer_module, logger_module,
-                engine_cfg=cfg.engine,
+                engine_cfg=engine_cfg,
                 ckpt_path=cfg.trainer.get("resume_from_checkpoint", None),
                 monitor_metric=cfg.trainer.get("monitor_metric", None),
                 monitor_mode=cfg.trainer.get("monitor_mode", None),

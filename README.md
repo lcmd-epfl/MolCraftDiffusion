@@ -58,6 +58,9 @@ pip install molcraftdiffusion[cpu] \
 ```bash
 pip install 'molcraftdiffusion[data]'     # data prep, augmentation, SOAP featurization
 pip install 'molcraftdiffusion[analyze]'  # metrics, xyz2mol, xtb-electronic
+pip install 'molcraftdiffusion[bio]'      # DiffPharma novel-pocket prep from raw PDB+SDF
+pip install 'molcraftdiffusion[shape]'    # DiffSMol offline shape-cache precompute
+pip install 'molcraftdiffusion[flowmol]'  # FlowMol backbone (see note below re: DGL CUDA build)
 
 # xTB — must be installed via conda, not pip
 conda install -c conda-forge xtb==6.7.1 -y
