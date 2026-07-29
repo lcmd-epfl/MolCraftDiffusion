@@ -243,11 +243,21 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
     _validate_task_type(checkpoint, expected_task_type)
 
     hparams = checkpoint.get("hyper_parameters", {})
-    if "model_config" in hparams and hparams["model_config"] is not None:
-        task_config = OmegaConf.create(hparams["model_config"])
+    caller_task_config = task_config
+    ckpt_model_config = hparams.get("model_config")
+    if ckpt_model_config is not None:
+        task_config = OmegaConf.create(ckpt_model_config)
         log.info("Loaded task configuration from checkpoint hyperparameters")
+        config_source = "checkpoint"
     elif task_config is None:
         raise ValueError("task_config not provided and 'model_config' not found in checkpoint.")
+    else:
+        config_source = "generate config"
+        log.warning(
+            "Checkpoint has no 'model_config'; rebuilding the architecture from the "
+            "generate config instead. If the two disagree, weights load partially and "
+            "silently — check the key counts logged below."
+        )
 
     task_config = copy.deepcopy(task_config)
     OmegaConf.set_readonly(task_config, False)
@@ -258,6 +268,20 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
     if task_config.get("chkpt_path"):
         log.info(f"Clearing stale chkpt_path from task config: {task_config.chkpt_path}")
         task_config.chkpt_path = None
+
+    # Keys the caller may override even though the architecture came from the checkpoint.
+    # The path-valued ones are baked in at train time and are resolved again on load, so
+    # without this a checkpoint trained elsewhere (a cluster, another user's tree) cannot
+    # be run locally at all. Architecture keys are deliberately NOT here — those must keep
+    # matching the weights.
+    if ckpt_model_config is not None and caller_task_config is not None:
+        for key in ("chkpt_path", "autoencoder_ckpt", "vae_ckpt", "shape_cache_path",
+                    "size_distribution_path", "normalize_condition", "extra_norm_values",
+                    "reference_freeze_mode"):
+            override = caller_task_config.get(key)
+            if override is not None:
+                log.info(f"Override from generate config: tasks.{key} = {override}")
+                task_config[key] = override
 
     n_types = len(atom_vocab) if atom_vocab else 0
     
@@ -295,8 +319,23 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
         else:
             cleaned_state_dict[key] = value
     
-    task.load_state_dict(cleaned_state_dict, strict=False)
-    log.info(f"Loaded {len(cleaned_state_dict)} parameters from checkpoint")
+    load_result = task.load_state_dict(cleaned_state_dict, strict=False)
+    missing = list(getattr(load_result, "missing_keys", []) or [])
+    unexpected = list(getattr(load_result, "unexpected_keys", []) or [])
+    log.info(
+        f"Loaded state_dict (architecture from {config_source}): "
+        f"{len(cleaned_state_dict)} keys offered, "
+        f"{len(missing)} missing, {len(unexpected)} unexpected"
+    )
+    if missing or unexpected:
+        # strict=False means a mismatched architecture loads partially and runs on
+        # partly random weights. The counts are the only signal that happened.
+        log.warning(
+            f"state_dict mismatch: {len(missing)} missing, {len(unexpected)} unexpected. "
+            "A large count means the rebuilt architecture does not match the checkpoint "
+            "and generation will run on partly random weights. "
+            f"First missing: {missing[:5]} | first unexpected: {unexpected[:5]}"
+        )
     _stamp_condition_names(task, checkpoint)
 
     if 'data_stats' in checkpoint:
@@ -645,7 +684,39 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         with open(config_path, "w") as f:
             OmegaConf.save(config=cfg, f=f)
         log.info(f"Configuration saved to {config_path}")
-    
+
+        # config.yaml above is what was asked for. This is what the run actually uses:
+        # values reconciled against the checkpoint after it was loaded. Without it there
+        # is no artifact showing the difference, and several of these keys are read from
+        # the checkpoint rather than the config.
+        effective = {
+            "chkpt_directory": cfg.chkpt_directory,
+            "task_type": getattr(task, "task_type", None),
+            "atom_vocab": list(getattr(task, "atom_vocab", None) or []),
+            "condition_names": list(getattr(task, "condition", None) or []),
+            "diffusion_steps": getattr(getattr(task, "model", None), "T", None),
+            "reference_freeze_mode": getattr(task, "reference_freeze_mode", None),
+            "has_reference_scaffold": getattr(task, "reference_scaffold", None) is not None,
+            "has_node_dist_model": getattr(task, "node_dist_model", None) is not None,
+            "has_prop_dist_model": getattr(task, "prop_dist_model", None) is not None,
+            "extra_norm_values": list(
+                getattr(getattr(task, "model", None), "extra_norm_values", None) or []
+            ),
+            "interference": OmegaConf.to_container(cfg.interference, resolve=True),
+        }
+        prop_dist = getattr(task, "prop_dist_model", None)
+        normalizer = getattr(prop_dist, "normalizer", None) if prop_dist else None
+        if normalizer:
+            # The bounds target_values are normalized against. Recorded because a raw
+            # target is meaningless without them.
+            effective["condition_normalizer"] = {
+                k: {kk: float(vv) for kk, vv in v.items()} for k, v in normalizer.items()
+            }
+        effective_path = os.path.join(cfg.interference.output_path, "effective_config.yaml")
+        with open(effective_path, "w") as f:
+            OmegaConf.save(config=OmegaConf.create(effective), f=f)
+        log.info(f"Effective (post-checkpoint) configuration saved to {effective_path}")
+
     generator.run()
 
 

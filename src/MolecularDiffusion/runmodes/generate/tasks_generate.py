@@ -26,8 +26,11 @@ from ase.data import atomic_masses, atomic_numbers
 
 logger = logging.getLogger(__name__)
 
+# Geometric-constraint knobs the guided (*_cfg / *_gg / *_cfggg) samplers do not apply.
+# The connector spec is deliberately NOT here: it also carries WHICH atoms to grow from,
+# which the guided path does need. Stripping it used to leave that path with no connectors
+# at all, so it raised on every batch.
 _GEOM_CONSTRAINT_CFG_KEYS = {
-    "connector_dicts",
     "constraint_strength",
     "scale_factor",
 }
@@ -238,7 +241,15 @@ class GenerativeFactory:
         self.batch_size = batch_size
         self.seed = seed
         self.n_frames = n_frames
-        
+
+        # Batch outcome tracking. Every sampling loop swallows its own exceptions so one
+        # bad batch cannot kill a long run; these let _assert_produced() tell "some batches
+        # failed" from "nothing worked at all". Set here, not in run(), because the
+        # generation methods are also called directly.
+        self._num_round = 0
+        self._fail_count = 0
+        self._first_exc = None
+
         if n_frames > 0:
             self.visualize_trajectory = True
             
@@ -332,8 +343,21 @@ class GenerativeFactory:
         match = re.search(r"molecule_(\d+)\.xyz$", os.path.basename(path))
         return int(match.group(1)) if match else -1
         
+    def _assert_produced(self):
+        """Raise if every sampling batch failed.
+
+        Without this the run writes zero molecules and still exits 0, which no caller can
+        tell from success. A config error (bad connector shape, wrong mol_size, missing
+        reference file) fails identically on every batch, so all-failed is the signature.
+        """
+        if self._num_round and self._fail_count >= self._num_round:
+            raise RuntimeError(
+                f"All {self._num_round} sampling batches failed; no molecules were written. "
+                f"First failure was {type(self._first_exc).__name__}: {self._first_exc}"
+            ) from self._first_exc
+
     def run(self):
-        
+
         if self.task_type == "unconditional":
             self.unconditional_generation()
         elif self.task_type in ("conditional", "cfg"):
@@ -346,7 +370,9 @@ class GenerativeFactory:
             self.hybrid_guidance()
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
-        
+
+        self._assert_produced()
+
     def unconditional_generation(self):
             
         fail_count = 0
@@ -357,6 +383,7 @@ class GenerativeFactory:
         current_batch_size = self.batch_size
         
         progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
+        self._num_round = num_round
         
         for i in progress_bar:
             if i == num_round-1 and self.num_generate % self.batch_size != 0:
@@ -447,6 +474,9 @@ class GenerativeFactory:
                         self._move_xyz(path_xyz, idx)
             except Exception as e:
                 fail_count += 1
+                self._fail_count += 1
+                if self._first_exc is None:
+                    self._first_exc = e
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
 
             progress_bar.set_postfix({
@@ -477,6 +507,7 @@ class GenerativeFactory:
             num_round += 1
         current_batch_size = self.batch_size
         progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
+        self._num_round = num_round
         
         for i in progress_bar:
 
@@ -588,6 +619,9 @@ class GenerativeFactory:
                     df_dict["size"].append(nodesxsample.item())
             except Exception as e:
                 fail_count += 1
+                self._fail_count += 1
+                if self._first_exc is None:
+                    self._first_exc = e
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
 
             progress_bar.set_postfix({
@@ -620,6 +654,7 @@ class GenerativeFactory:
         current_batch_size = self.batch_size
         
         progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
+        self._num_round = num_round
         
         if hasattr(self.task, 'predictive_model'):
             property_eval = True
@@ -723,6 +758,9 @@ class GenerativeFactory:
                             
             except Exception as e:
                 fail_count += 1
+                self._fail_count += 1
+                if self._first_exc is None:
+                    self._first_exc = e
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
 
             progress_bar.set_postfix({
@@ -890,6 +928,7 @@ class GenerativeFactory:
         current_batch_size = self.batch_size
 
         progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
+        self._num_round = num_round
 
         condition_mode = self.task_type + "_" + self.condition_configs.get("condition_component", "xh")
 
@@ -1001,6 +1040,9 @@ class GenerativeFactory:
 
             except Exception as e:
                 fail_count += 1
+                self._fail_count += 1
+                if self._first_exc is None:
+                    self._first_exc = e
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
 
             progress_bar.set_postfix({
@@ -1046,6 +1088,7 @@ class GenerativeFactory:
             num_round += 1
         current_batch_size = self.batch_size
         progress_bar = tqdm(range(num_round), desc="Sampling molecules", leave=True)
+        self._num_round = num_round
         
         
         if hasattr(self.task, 'predictive_model'):
@@ -1182,6 +1225,9 @@ class GenerativeFactory:
                     df_dict["size"].append(nodesxsample.item())    
             except Exception as e:
                 fail_count += 1
+                self._fail_count += 1
+                if self._first_exc is None:
+                    self._first_exc = e
                 tqdm.write(f"[Batch {i}] Sampling failed: {e}")
 
             progress_bar.set_postfix({
@@ -1337,7 +1383,16 @@ class GenerativeFactory:
             ValueError: If the processed reference structure is empty.
         """
         file_path = self.condition_configs.get("reference_structure_path", None)
-        if not file_path or not os.path.exists(file_path):
+        if file_path and not os.path.exists(file_path):
+            # A path that was given but does not resolve is a mistake, not a request for
+            # the embedded scaffold. Falling back here silently builds every molecule
+            # around a different reference than the caller named.
+            raise FileNotFoundError(
+                f"reference_structure_path was set to {file_path!r} but that file does "
+                "not exist. Omit the key entirely to use the scaffold embedded in the "
+                "checkpoint."
+            )
+        if not file_path:
             reference_freeze_mode = getattr(
                 self.task, "reference_freeze_mode", "all"
             )
@@ -1362,7 +1417,9 @@ class GenerativeFactory:
                     scaffold = self._center_saved_scaffold_by_com(scaffold)
                 return scaffold
             raise FileNotFoundError(
-                f"Reference structure file not found at path: {file_path}"
+                "No reference_structure_path was given and this checkpoint embeds no "
+                "reference scaffold or feature statistics. Structure-guided generation "
+                "needs one of the two."
             )
 
         # Load molecule with hydrogen atoms

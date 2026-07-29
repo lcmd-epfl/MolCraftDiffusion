@@ -8,9 +8,53 @@ from scipy.spatial import KDTree
 from torch_geometric.data import Data
 from torch_geometric.nn import radius_graph
 from torch_geometric.utils import to_networkx
+import logging
 from typing import List, Optional
 from ase.data import covalent_radii
 from .substituent_builder import select_fragment, place_fragment
+
+logger = logging.getLogger(__name__)
+
+CONNECTORS_KEY = "connectors"
+_CONNECTOR_ALIASES = ("connector_dicts", "connector_indices")
+
+
+def resolve_connectors(outpaint_cfgs) -> dict:
+    """Read the growth-site spec out of an outpaint config block.
+
+    Canonical form is ``connectors: {atom_index: [n_bonds]}``. The degree is the number
+    of new bonds the connector should form, and is only honoured by plain ``outpaint`` --
+    ``outpaintft`` and the guided variants apply no bonding constraint and use the keys
+    alone.
+
+    ``connector_dicts`` (same shape) and ``connector_indices`` (a bare list, degree 0)
+    are accepted as deprecated aliases so existing configs keep running.
+
+    Returns {int index: [int degree]}; empty dict if nothing is specified. Callers decide
+    whether empty is an error -- ``init_method: seed`` with phantom atoms legitimately has
+    no connectors.
+    """
+    if not outpaint_cfgs:
+        return {}
+
+    spec = outpaint_cfgs.get(CONNECTORS_KEY, None)
+    if not spec:
+        for alias in _CONNECTOR_ALIASES:
+            spec = outpaint_cfgs.get(alias, None)
+            if spec:
+                logger.warning(
+                    "'%s' is deprecated; use '%s: {atom_index: [n_bonds]}'. "
+                    "Mapping it across for now.", alias, CONNECTORS_KEY,
+                )
+                break
+    if not spec:
+        return {}
+
+    if isinstance(spec, dict):
+        return {int(k): list(v) if isinstance(v, (list, tuple)) else [int(v)]
+                for k, v in spec.items()}
+    # Bare list of indices: no bonding constraint, which degree 0 expresses.
+    return {int(i): [0] for i in spec}
 
 EDGE_THRESHOLD = 2
 WEIGHT_FACTOR = 2
@@ -1612,10 +1656,12 @@ def enforce_min_nodes_per_connector(
     connectors = ref[connector_indices]
     num_connectors = connectors.shape[0]
     
+    # Repeat a single value across connectors. N/d_threshold_c may arrive as tensors, for
+    # which `x * n` scales values instead of repeating the sequence.
     if len(N) == 1:
-        N = N * num_connectors
+        N = [N[0]] * num_connectors
     if len(d_threshold_c) == 1:
-        d_threshold_c = d_threshold_c * num_connectors
+        d_threshold_c = [d_threshold_c[0]] * num_connectors
 
     if len(N) != num_connectors or len(d_threshold_c) != num_connectors:
         raise ValueError("Number of N and d_threshold_c must match number of connector nodes.")

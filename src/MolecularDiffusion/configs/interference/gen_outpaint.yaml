@@ -19,7 +19,7 @@ condition_configs:
   n_retrys: 0                # retries are currently disabled for structure-guided generation
   t_retry: 180
   outpaint_cfgs:
-    connector_dicts:           # REQUIRED (no default): {scaffold_atom_idx: [degree]}, 0-indexed into the reference
+    connectors:                # REQUIRED (no default): {scaffold_atom_idx: [n_bonds]}, 0-indexed into the reference
     t_start: 0.8               # code default 1.0
     constraint_strength: 0.7   # code default 0.8; geometric constraints applied for s < this (0-1)
     scale_factor: 1.1          # code default; covalent-radius multiplier for bond-distance tolerance

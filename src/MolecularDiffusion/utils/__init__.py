@@ -36,6 +36,7 @@ from .geom_constraint import (
     build_extra_node_template,
     ensure_intact,
     enforce_min_nodes_per_connector,
+    resolve_connectors,
     find_close_points_torch_and_push_op2,
 )
 
@@ -130,6 +131,7 @@ __all__ = [
     "build_extra_node_template",
     "ensure_intact",
     "enforce_min_nodes_per_connector",
+    "resolve_connectors",
     "find_close_points_torch_and_push_op2",
     
     "check_connected",

@@ -21,7 +21,8 @@ condition_configs:
   outpaint_cfgs:
     t_start: 1
     t_critical: 0.05           # code default; scaffold coords are released for s < this
-    connector_indices: [0]     # REQUIRED: 0-indexed scaffold atoms to grow from
+    connectors: {0: [0]}       # REQUIRED: {scaffold_atom_idx: [n_bonds]}, 0-indexed.
+                               # This mode ignores n_bonds (no bonding constraint); use 0.
     # --- extra-node placement (code defaults) ---
     init_method: skeleton      # "skeleton" | "seed" | "fragment"
     skeleton_type: random_walk

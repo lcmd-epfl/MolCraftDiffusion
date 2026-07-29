@@ -22,6 +22,7 @@ from MolecularDiffusion.utils import (
     create_pyg_graph,
     enforce_min_nodes_per_connector,
     ensure_intact,
+    resolve_connectors,
     build_extra_node_template,
     find_close_points_torch_and_push_op2,
     remove_mean_with_mask,
@@ -3626,14 +3627,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             scale_factor = outpaint_cfgs.get("scale_factor", 1.1)
             t_critical = outpaint_cfgs.get("t_critical", 0.05)
             
-            # outpaintft applies no bonding constraint, so it never reads the
-            # per-connector degrees: it also accepts a plain `connector_indices`
-            # list. Plain outpaint needs the degrees, so it keeps requiring the dict.
-            connector_dicts = outpaint_cfgs.get("connector_dicts", None) or {}
-            if not connector_dicts and condition_alg == "outpaintft":
-                connector_dicts = {
-                    int(i): [0] for i in (outpaint_cfgs.get("connector_indices") or [])
-                }
+            connector_dicts = resolve_connectors(outpaint_cfgs)
             connector_indices = list(connector_dicts.keys())
             connector_indices = torch.tensor(connector_indices, device=z.device, dtype=torch.long)
             min_dist = outpaint_cfgs.get("min_dist", 1.0)
@@ -3656,11 +3650,11 @@ class EnVariationalDiffusion(torch.nn.Module):
             # ZeroDivisionError/IndexError inside the builder.
             if connector_indices.numel() == 0 and not (init_method == "seed" and n_bq_atom > 0):
                 raise ValueError(
-                    "connector_dicts (or connector_indices for outpaintft) must be "
+                    "connectors ({atom_index: [n_bonds]}) must be "
                     "specified to use outpainting"
                 )
             if any(idx > natom_ref - 1 for idx in connector_indices):
-                raise ValueError("connector_indices is out of bound")
+                raise ValueError("connectors: atom index out of bounds for the reference structure")
 
             new_nodes = self._build_outpaint_extras(
                 condition_tensor, connector_indices, natom_extra,
@@ -4603,9 +4597,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                 
                 t_start = outpaint_cfgs.get("t_start", 1.0)
                 t_critical = outpaint_cfgs.get("t_critical", 0.0)
-                connector_indices = outpaint_cfgs.get("connector_indices", None)
-                if connector_indices is None:
-                    raise ValueError("connector_indices must be specified in to use outpainting")
+                # This path applies no per-connector bonding constraint, so only the keys
+                # of `connectors` are used; the degrees are ignored.
+                connector_indices = list(resolve_connectors(outpaint_cfgs).keys())
                 connector_indices = torch.tensor(connector_indices, device=z.device, dtype=torch.long)
                 min_dist = outpaint_cfgs.get("min_dist", 1.0)
                 seed_dist = outpaint_cfgs.get("seed_dist", 2.0)
@@ -4632,9 +4626,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                     n_bq_atom, bond_len,
                 )
                 if any(idx > natom_ref - 1 for idx in connector_indices):
-                    raise ValueError("connector_indices is out of bound")
+                    raise ValueError("connectors: atom index out of bounds for the reference structure")
                 if connector_indices.size(0) == 0 and condition_alg == "outpaint":
-                    raise ValueError("connector_indices is empty")
+                    raise ValueError("connectors is empty")
                 z = torch.cat([condition_tensor, new_nodes], dim=1)
                 z = self._mask_padded_nodes(z, node_mask)
                 # Training-consistent init: forward-noise clean template to t_start.

@@ -564,7 +564,7 @@ def test_hybrid_cfg_filters_geometric_constraint_keys_before_sampling(
             "condition_component": "xh",
             "outpaint_cfgs": {
                 "t_start": 0.4,
-                "connector_dicts": {0: [1]},
+                "connectors": {0: [1]},
                 "constraint_strength": 2.0,
                 "scale_factor": 1.2,
             },
@@ -587,7 +587,11 @@ def test_hybrid_cfg_filters_geometric_constraint_keys_before_sampling(
     assert kwargs["guidance_ver"] == "cfg"
     assert kwargs["cfg_scale"] == 3.0
     assert kwargs["condition_mode"] == "outpaint_xh"
-    assert kwargs["outpaint_cfgs"] == {"t_start": 0.4}
+    # constraint_strength / scale_factor are stripped: the guided sampler applies no
+    # geometric constraint. `connectors` survives the strip because it also carries WHICH
+    # atoms to grow from, which this path does need — stripping it left the sampler with
+    # no connectors at all and it raised on every batch.
+    assert kwargs["outpaint_cfgs"] == {"t_start": 0.4, "connectors": {0: [1]}}
 
 
 def test_trajectory_generation_computes_frame_schedule_and_moves_each_frame_batch(
