@@ -171,7 +171,7 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
         raw_ckpt = torch.load(chkpt_path, map_location="cpu", weights_only=False)
         _validate_task_type(raw_ckpt, expected_task_type)
 
-        wrapper = EngineLightning.load_from_checkpoint(chkpt_path, map_location="cpu", strict=False)
+        wrapper = EngineLightning.load_from_checkpoint(chkpt_path, map_location="cpu", strict=False, weights_only=False)
         log.info("Successfully loaded model using EngineLightning.load_from_checkpoint")
         
         if atom_vocab and hasattr(wrapper.task, 'atom_vocab') and wrapper.task.atom_vocab is None:
@@ -341,7 +341,7 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
     if 'data_stats' in checkpoint:
         task.tabasco_model.set_data_stats(checkpoint['data_stats'])
     if 'node_dist_model' in checkpoint:
-        task._node_dist_model = checkpoint['node_dist_model']
+        task.node_dist_model = checkpoint['node_dist_model']
     if 'prop_dist_model' in checkpoint:
         task.prop_dist_model = checkpoint['prop_dist_model']
     if 'reference_indices' in checkpoint:
