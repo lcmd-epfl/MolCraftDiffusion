@@ -307,7 +307,61 @@ def test_structural_guidance_passes_outpaint_config(
     assert kwargs["outpaint_cfgs"] == {"t_start": 0.75, "connector_dicts": {0: [1]}}
 
 
-@pytest.mark.parametrize("task_type", ["inpaint", "outpaint", "outpaintft"])
+def test_structural_guidance_passes_silvr_config(monkeypatch, tmp_path, fake_xyz_io):
+    """SILVR routes through structural_guidance and carries silvr_cfgs.
+
+    Also pins the size guardrail: a target below the reference is snapped up
+    to it (the driver's `total_atoms = max(total_atoms, n_ref)`), and no
+    outpaint-style "nothing to grow" error fires.
+    """
+    from MolecularDiffusion.runmodes.generate.tasks_generate import GenerativeFactory
+
+    task = FakeGenerationTask()
+    silvr_cfgs = {"silvr_rate": 0.02, "shift_centre": True}
+    factory = GenerativeFactory(
+        task=task,
+        task_type="silvr",
+        num_generate=1,
+        batch_size=1,
+        mol_size=[2],
+        condition_configs={"n_retrys": 3, "silvr_cfgs": silvr_cfgs},
+        output_path=os.fspath(tmp_path),
+    )
+    monkeypatch.setattr(
+        factory,
+        "preprocess_ref_structure",
+        lambda device: torch.zeros(1, 4, 6, device=device),
+    )
+
+    factory.run()
+
+    method, nodesxsample, kwargs = task.calls[0]
+    assert method == "sample"
+    assert nodesxsample.tolist() == [4]
+    assert kwargs["condition_mode"] == "silvr_xh"
+    assert kwargs["condition_tensor"].shape == (1, 4, 6)
+    assert kwargs["silvr_cfgs"] == silvr_cfgs
+    assert kwargs["n_retrys"] == 0
+
+
+def test_structural_guidance_rejects_ddim_for_silvr(monkeypatch, tmp_path):
+    from MolecularDiffusion.runmodes.generate.tasks_generate import GenerativeFactory
+
+    factory = GenerativeFactory(
+        task=FakeGenerationTask(),
+        task_type="silvr",
+        sampling_mode="ddim",
+        num_generate=1,
+        batch_size=1,
+        mol_size=[6],
+        condition_configs={"silvr_cfgs": {}},
+        output_path=os.fspath(tmp_path),
+    )
+    with pytest.raises(ValueError, match="ddpm"):
+        factory.structural_guidance()
+
+
+@pytest.mark.parametrize("task_type", ["inpaint", "outpaint", "outpaintft", "silvr"])
 def test_structural_guidance_always_disables_retries(
     task_type, monkeypatch, tmp_path, fake_xyz_io
 ):

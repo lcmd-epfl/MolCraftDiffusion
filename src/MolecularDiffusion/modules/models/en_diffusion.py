@@ -3080,6 +3080,87 @@ class EnVariationalDiffusion(torch.nn.Module):
         return zs
         
         
+    def sample_p_zs_given_zt_silvr(
+        self,
+        s,
+        t,
+        zt,
+        node_mask,
+        edge_mask,
+        context,
+        xh_ref,
+        silvr_rate,
+        ref_node_mask,
+        total_shift,
+        condition_component,
+        fix_noise=False,
+    ):
+        """One SILVR reverse step (Runcie & Mey 2023, arXiv:2304.10905).
+
+        Reproduces the published sampler's per-step block verbatim
+        (docs/model_integrations/silvr/reference_source/
+        silvr_fork_en_diffusion.py L893-976):
+
+        1. re-centre zt on its own coordinate mean (over node_mask.sum());
+        2. rebuild + re-centre the padded reference, accumulating the removed
+           mean into ``total_shift``;
+        3. take the ordinary, unmodified EDM reverse step;
+        4. blend the reference's noised latent into the reference rows.
+
+        ``alpha_t``/``sigma_t`` come from ``gamma(t)`` -- the higher-noise
+        timestep, one level noisier than the ``z`` step 3 just produced. That
+        is what the source does; it is not a typo for ``gamma(s)``.
+
+        Returns:
+            tuple: ``(zs, xh_ref, total_shift)`` -- the latter two are carried
+            into the next step by the caller.
+        """
+        n_pad = zt.size(2) - self.n_dims
+        gamma_t = self.inflate_batch_array(self.gamma(t), zt)
+        alpha_t = self.alpha(gamma_t, zt)
+        sigma_t = self.sigma(gamma_t, zt)
+
+        n_live = node_mask.sum(1, keepdim=True)
+
+        # 1. re-centre z (sample_p_zs_given_zt asserts a zero-mean input).
+        mean = zt[:, :, : self.n_dims].sum(1, keepdim=True) / n_live
+        zt = zt - F.pad(mean, (0, n_pad)) * node_mask
+
+        # 2. rebuild + re-centre the reference.
+        #
+        # REPRODUCED FROM SOURCE, AND SUSPICIOUS -- NOT A TYPO OF OURS:
+        # (ref_node_mask - node_mask) == -1 over the dummy region, so the dummy
+        # rows of xh_ref end up holding the *negated* live latent (fork L936;
+        # the adjacent commented-out attempt at L1074-1075 uses +z instead).
+        # It cannot corrupt the reference rows -- next step's `xh_ref *
+        # ref_node_mask` discards the dummy region -- but it does enter `mean`
+        # below, hence total_shift, hence the final coordinates. Changing it
+        # changes the published output geometry, and there is no reference
+        # output to validate a "corrected" variant against.
+        xh_ref = xh_ref * ref_node_mask + zt * (ref_node_mask - node_mask)
+        mean = xh_ref[:, :, : self.n_dims].sum(1, keepdim=True) / n_live
+        mean = F.pad(mean, (0, n_pad))
+        xh_ref = xh_ref - mean * ref_node_mask
+        total_shift = total_shift + mean
+
+        # 3. the ordinary EDM reverse step.
+        zs = self.sample_p_zs_given_zt(
+            s, t, zt, node_mask, edge_mask, context, fix_noise=fix_noise
+        )
+
+        # 4. SILVR (fork L971-976).
+        eps = self.sample_combined_position_feature_noise(
+            zt.size(0), zt.size(1), node_mask
+        )
+        z_t = alpha_t * xh_ref + sigma_t * eps
+        update = (
+            -(zs * alpha_t * ref_node_mask) * silvr_rate
+            + (z_t * ref_node_mask) * silvr_rate
+        )
+        if condition_component == "x":
+            update[:, :, self.n_dims :] = 0
+        return zs + update, xh_ref, total_shift
+
     def sample_combined_position_feature_noise(
         self,
         n_samples,
@@ -3345,8 +3426,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         n_frames=0,
         t_retry=180,
         n_retrys=0,
+        silvr_cfgs=None,
     ):
-        
+
         """
         Draw samples from the generative model.
         """
@@ -3382,10 +3464,15 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         self.clean_condition_tensor = condition_tensor
 
-        if condition_component == "xh" or condition_component == "x":
+        # SILVR is excluded: this block centres the reference over its own
+        # n_ref rows and throws the removed mean away, whereas SILVR must
+        # centre over node_mask.sum() and KEEP the mean (it accumulates into
+        # total_gravity_center_shift, which is what puts the sample back in
+        # the binding site). SILVR does its own centring in its setup block.
+        if condition_alg != "silvr" and condition_component in ("xh", "x"):
             n_node_cond = condition_tensor.size(1)
-    
-            node_mask_cond = torch.ones((n_samples, n_node_cond,1), device=z.device)  
+
+            node_mask_cond = torch.ones((n_samples, n_node_cond,1), device=z.device)
             if condition_alg != "outpaintft":
                 condition_tensor[:,:, : self.n_dims] = remove_mean_with_mask(condition_tensor[:,:, : self.n_dims], node_mask_cond)
 
@@ -3698,6 +3785,91 @@ class EnVariationalDiffusion(torch.nn.Module):
                 condition_tensor = z[:, :natom_ref, :]
                 self.condition_tensor = z[:, ~mask_node_bool_corr, :]
 
+        elif condition_alg == "silvr":
+            # SILVR (Runcie & Mey 2023): every atom stays mobile; each reverse
+            # step nudges the reference rows of the latent towards a freshly
+            # noised copy of the reference. Setup mirrors the published
+            # sampler (silvr_fork_en_diffusion.py L774-890).
+            if self.ndim_extra > 0:
+                raise ValueError(
+                    "silvr does not support models with extra node features "
+                    f"(ndim_extra={self.ndim_extra}): z is laid out as "
+                    "[x, h_cat, h_int, h_extra] while the reference tensor is "
+                    "[x, h_cat, h_extra, h_int], so the channels would be "
+                    "silently scrambled."
+                )
+            if condition_tensor is None:
+                raise ValueError(
+                    "silvr requires a reference structure; set "
+                    "condition_configs.reference_structure_path."
+                )
+
+            silvr_cfgs = silvr_cfgs or {}
+            n_ref = condition_tensor.size(1)
+            if n_ref > n_nodes:
+                raise ValueError(
+                    f"silvr reference has {n_ref} atoms but the target "
+                    f"molecule size is {n_nodes}; the reference must fit."
+                )
+            shift_centre = bool(silvr_cfgs.get("shift_centre", True))
+
+            # Per-atom rates (silvr_rates) or one uniform rate (silvr_rate).
+            silvr_rates = silvr_cfgs.get("silvr_rates", None)
+            if silvr_rates:
+                if len(silvr_rates) != n_ref:
+                    raise ValueError(
+                        f"silvr_rates has {len(silvr_rates)} entries but the "
+                        f"reference has {n_ref} atoms."
+                    )
+                rate_row = torch.tensor(
+                    list(silvr_rates), dtype=z.dtype, device=z.device
+                )
+            else:
+                rate_row = torch.full(
+                    (n_ref,),
+                    float(silvr_cfgs.get("silvr_rate", 0.01)),
+                    dtype=z.dtype,
+                    device=z.device,
+                )
+            if bool(((rate_row < 0.0) | (rate_row > 1.0)).any()):
+                raise ValueError("silvr rate(s) must lie in [0, 1].")
+
+            # (1, n_nodes, 1): rate on the reference rows, 0 on dummy/pad rows.
+            silvr_rate = torch.zeros(
+                (1, n_nodes, 1), dtype=z.dtype, device=z.device
+            )
+            silvr_rate[0, :n_ref, 0] = rate_row
+            ref_node_mask = torch.zeros(
+                (1, n_nodes, 1), dtype=z.dtype, device=z.device
+            )
+            ref_node_mask[:, :n_ref, :] = 1.0
+
+            # Reference zero-padded to the full node count. The source
+            # hardcodes 181 (GEOM-drugs max_n_nodes) here.
+            #
+            # DELIBERATE DEVIATION -- DO NOT "FIX" BACK: condition_tensor comes
+            # from preprocess_ref_structure(), i.e. already divided by
+            # model.norm_values, so it lives in the same latent space as z. The
+            # published sampler mixes RAW one-hot into a latent normalized by
+            # [1, 4, 10], leaving its feature channels 4x hot. Coordinates are
+            # unaffected (norm_values[0] == 1), but feature guidance here is
+            # therefore ~4x weaker than the paper's at the same silvr_rate.
+            xh_ref = torch.zeros_like(z)
+            xh_ref[:, :n_ref, :] = condition_tensor[:, :n_ref, :]
+
+            # Initial mean, over node_mask.sum() (NOT n_ref) as in the source,
+            # retained so it can be added back after the loop.
+            n_live = node_mask.sum(1, keepdim=True)
+            mean = xh_ref[:, :, : self.n_dims].sum(1, keepdim=True) / n_live
+            mean = F.pad(mean, (0, z.size(2) - self.n_dims))
+            total_gravity_center_shift = mean
+            xh_ref = xh_ref - mean * node_mask
+
+            # SILVR freezes nothing, so there is no scaffold block to carry;
+            # explicitly clear the stateful attribute other modes leave behind
+            # (otherwise the mask_node_bool_corr deref below fires).
+            self.condition_tensor = None
+
         if context is not None:
             context = (
                 context[0,0].repeat(1, z.size(1), 1).to(self.device)
@@ -3797,6 +3969,23 @@ class EnVariationalDiffusion(torch.nn.Module):
                             t_critical=t_critical,
                             fix_noise=fix_noise
                             )
+                    elif condition_alg == "silvr":
+                        z, xh_ref, total_gravity_center_shift = (
+                            self.sample_p_zs_given_zt_silvr(
+                                s_array,
+                                t_array,
+                                z,
+                                node_mask,
+                                edge_mask,
+                                context,
+                                xh_ref,
+                                silvr_rate,
+                                ref_node_mask,
+                                total_gravity_center_shift,
+                                condition_component,
+                                fix_noise=fix_noise,
+                            )
+                        )
                     else:
                         z = self.sample_p_zs_given_zt(
                         s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise
@@ -3830,6 +4019,16 @@ class EnVariationalDiffusion(torch.nn.Module):
         N_DEGREE_MAX = 8
 
         z = z.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+
+        if condition_alg == "silvr" and shift_centre:
+            # Undo the accumulated per-step re-centring once, putting the
+            # sample back in the reference's frame (fork L1081-1089). Feature
+            # channels are zeroed first: the source's "mean" spans all
+            # channels, but only coordinates may be translated.
+            total_gravity_center_shift = total_gravity_center_shift.type(z.dtype)
+            total_gravity_center_shift[:, :, self.n_dims :] = 0
+            z = z + total_gravity_center_shift * node_mask
+
         try:
             # Finally sample p(x, h | z_0).
             x, h = self.sample_p_xh_given_z0(
@@ -3893,8 +4092,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         # assert_mean_zero_with_mask(x, node_mask)
 
+        # SILVR samples are deliberately off-origin (that is what shift_centre
+        # buys: coordinates in the reference/binding-site frame), so this
+        # projection must not run for it — it would undo the shift entirely.
+        # The published sampler has the equivalent block commented out.
         max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
-        if max_cog > 5e-2:
+        if max_cog > 5e-2 and condition_alg != "silvr":
             print(
                 f"Warning cog drift with error {max_cog:.3f}. Projecting "
                 f"the positions down."

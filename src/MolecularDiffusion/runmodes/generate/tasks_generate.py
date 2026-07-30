@@ -364,7 +364,7 @@ class GenerativeFactory:
             self.conditional_generation()
         elif self.task_type in ("gradient_guidance", "gg", "cfggg"):
             self.property_guidance()
-        elif self.task_type in ("inpaint", "outpaint", "outpaintft"):
+        elif self.task_type in ("inpaint", "outpaint", "outpaintft", "silvr"):
             self.structural_guidance()
         elif self.task_type in {"inpaint_cfg", "inpaint_gg", "inpaint_cfggg", "outpaint_cfg", "outpaint_gg", "outpaint_cfggg"}:
             self.hybrid_guidance()
@@ -821,8 +821,10 @@ class GenerativeFactory:
     def _enforce_scaffold_size(self, nodesxsample, ref_natoms):
         """Per-sample size guardrail for structure-guided generation.
 
-        - inpaint: a target below the scaffold is snapped up to the scaffold size
-          (inpaint regenerates masked atoms in place, size is derived), with a warning.
+        - inpaint / silvr: a target below the reference is snapped up to the
+          reference size (both keep every reference atom present -- inpaint
+          regenerates masked atoms in place, silvr guides them -- so the size is
+          derived, not requested), with a warning.
         - outpaint: the target must exceed the scaffold. Randomized [0,0] draws that
           land <= scaffold are resampled from the node distribution (up to
           _SIZE_RESAMPLE_TRIES) rather than killing the run or clamping to a
@@ -835,8 +837,9 @@ class GenerativeFactory:
             if n_below:
                 nodesxsample = torch.clamp(nodesxsample, min=floor)
                 self._warn_size_once(
-                    f"[size guardrail] {n_below}/{nodesxsample.numel()} inpaint "
-                    f"size(s) were below the scaffold ({floor} atoms) and were "
+                    f"[size guardrail] {n_below}/{nodesxsample.numel()} "
+                    f"{self.task_type} size(s) were below the scaffold "
+                    f"({floor} atoms) and were "
                     f"snapped up to the scaffold size."
                 )
             return nodesxsample
@@ -878,6 +881,15 @@ class GenerativeFactory:
         return nodesxsample
 
     def structural_guidance(self):
+
+        # SILVR modifies the DDPM reverse loop only; sample_ddim is a separate
+        # loop with no SILVR step, so fail loudly instead of silently ignoring
+        # the requested mode.
+        if self.task_type == "silvr" and self.sampling_mode != "ddpm":
+            raise ValueError(
+                f"silvr supports sampling_mode 'ddpm' only, got "
+                f"'{self.sampling_mode}'."
+            )
 
         # get condition structure
         xh_ref = self.preprocess_ref_structure(self.task.device)
@@ -990,6 +1002,21 @@ class GenerativeFactory:
                         condition_mode=condition_mode,
                         outpaint_cfgs=self.condition_configs.get("outpaint_cfgs", {}),
                         use_noised_conditioning=self.condition_configs.get("use_noised_conditioning", False),
+                        n_frames=self.n_frames,
+                        n_retrys=n_retrys,
+                        t_retry=self.condition_configs.get("t_retry"),
+                        context=context,
+                    )
+                elif self.task_type == "silvr":
+                    # No post-hoc reference-frame restore here: the model's
+                    # reverse loop already adds total_gravity_center_shift back
+                    # (gated by silvr_cfgs.shift_centre). Doing it here too
+                    # would double-shift.
+                    one_hot, charges, x, node_mask = self.task.sample(
+                        nodesxsample,
+                        condition_tensor=xh_tensor,
+                        condition_mode=condition_mode,
+                        silvr_cfgs=self.condition_configs.get("silvr_cfgs", {}),
                         n_frames=self.n_frames,
                         n_retrys=n_retrys,
                         t_retry=self.condition_configs.get("t_retry"),
