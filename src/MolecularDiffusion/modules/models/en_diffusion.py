@@ -3095,7 +3095,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         condition_component,
         fix_noise=False,
     ):
-        """One SILVR reverse step (Runcie & Mey 2023, arXiv:2304.10905).
+        """One SILVR reverse step (Runcie & Mey, JCIM 2023, 63, 5996-6005).
 
         Reproduces the published sampler's per-step block verbatim
         (docs/model_integrations/silvr/reference_source/

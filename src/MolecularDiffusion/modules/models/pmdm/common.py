@@ -1,0 +1,286 @@
+"""Shared building blocks for the PMDM epsilon network.
+
+Ported from the PMDM reference implementation (``models/common.py``,
+``models/geometry.py``, ``models/epsnet/diffusion.py``,
+``utils/misc.py::get_adj_matrix``). Only the pieces
+``MDM_full_pocket_coor_shared`` actually calls are kept; the upstream
+readouts, cluster helpers and losses have no consumer here.
+
+Three deliberate deviations from upstream:
+
+* ``BOND_TYPES`` was imported from ``utils/chem.py``, which imports openbabel
+  at module scope. Only ``len(BOND_TYPES)`` is ever used, so the count is
+  inlined as :data:`NUM_BOND_TYPES`.
+* ``torch.sparse.LongTensor`` (removed in modern torch) is replaced by
+  :func:`torch.sparse_coo_tensor`.
+* ``get_edges`` upstream takes separate protein/ligand cutoffs but both call
+  sites pass the same value twice, which makes the second (ligand-block)
+  pass a no-op. It takes one cutoff here.
+
+# ponytail: the vendored surface is the reachable subset only. If a future
+# pass turns on ``vae_context``/``linker_mask``, port those branches then.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Optional, Tuple
+
+import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
+from torch_geometric.nn import radius_graph
+from torch_geometric.utils import dense_to_sparse, remove_self_loops, to_dense_adj
+from torch_scatter import scatter_add
+from torch_sparse import coalesce
+
+#: ``len(rdkit.Chem.rdchem.BondType.names)`` -- see module docstring.
+NUM_BOND_TYPES = 22
+
+
+# --------------------------------------------------------------------------- #
+# geometry (models/geometry.py)
+# --------------------------------------------------------------------------- #
+def get_distance(pos: Tensor, edge_index: Tensor) -> Tensor:
+    """Euclidean length of every edge, ``(E,)``."""
+    return (pos[edge_index[0]] - pos[edge_index[1]]).norm(dim=-1)
+
+
+def eq_transform(
+    score_d: Tensor, pos: Tensor, edge_index: Tensor, edge_length: Tensor
+) -> Tensor:
+    """Turn a per-edge distance score into an equivariant per-node score."""
+    n = pos.size(0)
+    dd_dr = (1.0 / edge_length) * (pos[edge_index[0]] - pos[edge_index[1]])
+    return scatter_add(
+        dd_dr * score_d, edge_index[0], dim=0, dim_size=n
+    ) + scatter_add(-dd_dr * score_d, edge_index[1], dim=0, dim_size=n)
+
+
+# --------------------------------------------------------------------------- #
+# timestep / node-count sinusoidal embedding (models/epsnet/diffusion.py)
+# --------------------------------------------------------------------------- #
+def get_num_embedding(timesteps: Tensor, embedding_dim: int) -> Tensor:
+    """Sinusoidal embedding of a 1-D integer tensor, ``(G, embedding_dim)``."""
+    if timesteps.dim() != 1:
+        raise ValueError(f"expected a 1-D tensor, got shape {tuple(timesteps.shape)}")
+    half_dim = embedding_dim // 2
+    emb = math.log(10000) / (half_dim - 1)
+    emb = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
+    emb = emb.to(device=timesteps.device)
+    emb = timesteps.float()[:, None] * emb[None, :]
+    emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
+    if embedding_dim % 2 == 1:
+        emb = F.pad(emb, (0, 1, 0, 0))
+    return emb
+
+
+# --------------------------------------------------------------------------- #
+# small modules (models/common.py)
+# --------------------------------------------------------------------------- #
+class MultiLayerPerceptron(nn.Module):
+    """MLP with no activation/dropout after the last layer."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dims: list,
+        activation: str = "relu",
+        dropout: float = 0,
+    ) -> None:
+        super().__init__()
+        self.dims = [input_dim] + list(hidden_dims)
+        self.activation = getattr(F, activation) if isinstance(activation, str) else None
+        self.dropout = nn.Dropout(dropout) if dropout else None
+        self.layers = nn.ModuleList(
+            nn.Linear(self.dims[i], self.dims[i + 1]) for i in range(len(self.dims) - 1)
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i < len(self.layers) - 1:
+                if self.activation is not None:
+                    x = self.activation(x)
+                if self.dropout is not None:
+                    x = self.dropout(x)
+        return x
+
+
+class GaussianSmearing(nn.Module):
+    """Radial basis expansion of a distance."""
+
+    def __init__(
+        self, start: float = 0.0, stop: float = 10.0, num_gaussians: int = 50
+    ) -> None:
+        super().__init__()
+        offset = torch.linspace(start, stop, num_gaussians)
+        self.coeff = -0.5 / (offset[1] - offset[0]).item() ** 2
+        self.register_buffer("offset", offset)
+
+    def forward(self, dist: Tensor) -> Tensor:
+        dist = dist.view(-1, 1) - self.offset.view(1, -1)
+        return torch.exp(self.coeff * torch.pow(dist, 2))
+
+
+class ShiftedSoftplus(nn.Module):
+    """``softplus(x) - log(2)``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.shift = math.log(2.0)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return F.softplus(x) - self.shift
+
+
+# --------------------------------------------------------------------------- #
+# graph construction
+# --------------------------------------------------------------------------- #
+def get_adj_matrix(n_particles: int, device=None) -> Tensor:
+    """Fully-connected, self-loop-free edge index for one molecule, ``(2, n*(n-1))``.
+
+    Upstream builds this with a double python loop
+    (``utils/misc.py::get_adj_matrix``); the edge *set* is identical here.
+    """
+    idx = torch.arange(n_particles, device=device)
+    row, col = torch.meshgrid(idx, idx, indexing="ij")
+    mask = row != col
+    return torch.stack([row[mask], col[mask]], dim=0)
+
+
+def _extend_graph_order(
+    num_nodes: int, edge_index: Tensor, edge_type: Tensor, order: int = 3
+) -> Tuple[Tensor, Tensor]:
+    """Add k-hop (k <= ``order``) edges, typed ``NUM_BOND_TYPES + k - 1``."""
+
+    def binarize(x: Tensor) -> Tensor:
+        return torch.where(x > 0, torch.ones_like(x), torch.zeros_like(x))
+
+    def higher_order(adj: Tensor, order: int) -> Tensor:
+        eye = torch.eye(adj.size(0), dtype=torch.long, device=adj.device)
+        adj_mats = [eye, binarize(adj + eye)]
+        for i in range(2, order + 1):
+            adj_mats.append(binarize(adj_mats[i - 1] @ adj_mats[1]))
+        order_mat = torch.zeros_like(adj)
+        for i in range(1, order + 1):
+            order_mat += (adj_mats[i] - adj_mats[i - 1]) * i
+        return order_mat
+
+    n = num_nodes
+    adj = to_dense_adj(edge_index).squeeze(0)
+    adj_order = higher_order(adj, order)
+
+    type_mat = to_dense_adj(edge_index, edge_attr=edge_type).squeeze(0)
+    type_highorder = torch.where(
+        adj_order > 1, NUM_BOND_TYPES + adj_order - 1, torch.zeros_like(adj_order)
+    )
+    type_new = type_mat + type_highorder
+
+    new_edge_index, new_edge_type = dense_to_sparse(type_new)
+    return coalesce(new_edge_index, new_edge_type.long(), n, n)
+
+
+def _extend_to_radius_graph(
+    pos: Tensor,
+    edge_index: Tensor,
+    edge_type: Tensor,
+    cutoff: float,
+    batch: Tensor,
+    unspecified_type_number: int = -1,
+) -> Tuple[Tensor, Tensor]:
+    """Union the bond graph with a radius graph; types are summed on overlap."""
+    n = pos.size(0)
+    bgraph_adj = torch.sparse_coo_tensor(edge_index, edge_type, (n, n))
+
+    rgraph_edge_index = radius_graph(pos, r=cutoff, batch=batch, loop=False)
+    rgraph_adj = torch.sparse_coo_tensor(
+        rgraph_edge_index,
+        torch.full(
+            (rgraph_edge_index.size(1),),
+            unspecified_type_number,
+            dtype=torch.long,
+            device=pos.device,
+        ),
+        (n, n),
+    )
+
+    composed = (bgraph_adj + rgraph_adj).coalesce()
+    return composed.indices(), composed.values().long()
+
+
+def extend_graph_order_radius(
+    num_nodes: int,
+    pos: Tensor,
+    edge_index: Tensor,
+    edge_type: Tensor,
+    batch: Tensor,
+    order: int = 3,
+    cutoff: float = 10.0,
+    extend_order: bool = True,
+    extend_radius: bool = True,
+) -> Tuple[Tensor, Tensor]:
+    """Bond graph -> (k-hop extended) -> (unioned with a radius graph).
+
+    With PMDM's training transform the input bond graph is already
+    fully connected, so ``extend_order`` is a no-op and ``extend_radius``
+    only re-*types* edges: an edge inside ``cutoff`` ends up as type 0
+    (``1 + (-1)``), one outside stays type 1.
+    """
+    if extend_order:
+        edge_index, edge_type = _extend_graph_order(
+            num_nodes=num_nodes,
+            edge_index=edge_index,
+            edge_type=edge_type,
+            order=order,
+        )
+    if extend_radius:
+        edge_index, edge_type = _extend_to_radius_graph(
+            pos=pos,
+            edge_index=edge_index,
+            edge_type=edge_type,
+            cutoff=cutoff,
+            batch=batch,
+        )
+    return edge_index, edge_type
+
+
+def get_edges(
+    pos: Tensor, batch_mask: Tensor, cutoff: float, max_pairs: Optional[int] = None
+) -> Tensor:
+    """Dense within-graph radius graph over the joined ligand+pocket cloud.
+
+    Kept dense (``torch.cdist``) exactly as upstream: the pocket is a few
+    hundred atoms, so the pairwise matrix is small, and a sparse rebuild
+    would change which edges tie on the cutoff boundary.
+
+    # ponytail: O(N^2) in the joined point count, fine to ~5k atoms/batch.
+    # Swap in torch_cluster.radius_graph if a batch ever gets bigger.
+    """
+    del max_pairs
+    adj = (batch_mask[:, None] == batch_mask[None, :]) & (
+        torch.cdist(pos, pos) <= cutoff
+    )
+    edges = torch.stack(torch.where(adj), dim=0)
+    edges, _ = remove_self_loops(edges)
+    return edges
+
+
+def center_pos_pl(
+    ligand_pos: Tensor,
+    pocket_pos: Tensor,
+    ligand_batch: Tensor,
+    pocket_batch: Tensor,
+) -> Tuple[Tensor, Tensor]:
+    """Move ligand *and* pocket so the per-complex ligand centroid is at 0."""
+    from torch_scatter import scatter_mean
+
+    com = scatter_mean(ligand_pos, ligand_batch, dim=0)
+    return ligand_pos - com[ligand_batch], pocket_pos - com[pocket_batch]
+
+
+def clip_norm(vec: Tensor, limit: float, p: int = 2) -> Tensor:
+    """Rescale rows of ``vec`` whose norm exceeds ``limit``."""
+    norm = torch.norm(vec, dim=-1, p=p, keepdim=True)
+    denom = torch.where(norm > limit, limit / norm, torch.ones_like(norm))
+    return vec * denom
