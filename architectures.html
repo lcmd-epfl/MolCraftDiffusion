@@ -298,6 +298,7 @@
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/data/component/diffpharma_prep/index.html">MolecularDiffusion.data.component.diffpharma_prep</a></li>
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/data/component/feature/index.html">MolecularDiffusion.data.component.feature</a></li>
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/data/component/pharmacophore/index.html">MolecularDiffusion.data.component.pharmacophore</a></li>
+<li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/data/component/pmdm_data/index.html">MolecularDiffusion.data.component.pmdm_data</a></li>
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/data/component/pointcloud/index.html">MolecularDiffusion.data.component.pointcloud</a></li>
 </ul>
 </li>
@@ -335,6 +336,7 @@
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/runmodes/train/tasks_equiformer/index.html">MolecularDiffusion.runmodes.train.tasks_equiformer</a></li>
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/runmodes/train/tasks_esen/index.html">MolecularDiffusion.runmodes.train.tasks_esen</a></li>
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/runmodes/train/tasks_gfmdiff/index.html">MolecularDiffusion.runmodes.train.tasks_gfmdiff</a></li>
+<li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/runmodes/train/tasks_painn/index.html">MolecularDiffusion.runmodes.train.tasks_painn</a></li>
 <li class="toctree-l5"><a class="reference internal" href="autoapi/MolecularDiffusion/runmodes/train/trainer/index.html">MolecularDiffusion.runmodes.train.trainer</a></li>
 </ul>
 </li>
@@ -451,8 +453,8 @@ select one by choosing a <strong>task config</strong> (<code class="docutils lit
 config’s <code class="docutils literal notranslate"><span class="pre">_target_</span></code> factory builds the matching model, so adding or swapping an
 architecture never touches the core engine.</p>
 <p>Configs live in <code class="docutils literal notranslate"><span class="pre">configs/tasks/</span></code>. The tables below list one row per <strong>distinct
-model</strong> — configs that differ only in hyperparameters or a starting checkpoint
-are collected under <a class="reference internal" href="#variants"><span class="xref myst">Variants</span></a> instead.</p>
+model</strong>; configs that differ only in hyperparameters or a starting checkpoint
+are not listed separately.</p>
 <section id="de-novo-3d-generation">
 <h2>1. De novo 3D generation<a class="headerlink" href="#de-novo-3d-generation" title="Link to this heading">¶</a></h2>
 <p>Whole-molecule generators trained on a plain 3D molecule dataset. No
@@ -482,12 +484,17 @@ conditioning input beyond the atom count.</p>
 <td class="text-left"><p>GFMDiff</p></td>
 <td class="text-left"><p>Geometric full-molecule diffusion (<code class="docutils literal notranslate"><span class="pre">tasks_gfmdiff</span></code>).</p></td>
 </tr>
-<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_tabasco.yaml</span></code></p></td>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_painn.yaml</span></code></p></td>
+<td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion</span></code></p></td>
+<td class="text-left"><p>PaiNN (scalar+vector message passing)</p></td>
+<td class="text-left"><p>OM-Diff’s <code class="docutils literal notranslate"><span class="pre">EquivNet</span></code> backbone under the default EDM objective (<code class="docutils literal notranslate"><span class="pre">tasks_painn</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_tabasco.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_tabasco</span></code></p></td>
 <td class="text-left"><p>TABASCO</p></td>
 <td class="text-left"><p>Flow matching; simplified, fast, tuned for physical quality.</p></td>
 </tr>
-<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_flowmol.yaml</span></code></p></td>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_flowmol.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_flowmol</span></code></p></td>
 <td class="text-left"><p>FlowMol (SE(3)-equivariant GVP)</p></td>
 <td class="text-left"><p>Flow matching for coordinates, atom types, and formal charges. <strong>Bond-free variant only:</strong> bonds are not modeled or generated; graph edges serve geometric message passing only. Needs the <code class="docutils literal notranslate"><span class="pre">[flowmol]</span></code> extra (DGL).</p></td>
@@ -547,14 +554,19 @@ molecule); a plain molecule dataset is not enough.</p>
 <tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_diffpharma.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_diffpharma</span></code></p></td>
 <td class="text-left"><p><strong>Protein pocket</strong> + pharmacophore particles</p></td>
-<td class="text-left"><p>DiffPharma (EGNN over 3 parallel interaction graphs). The only <strong>structure-based (SBDD)</strong> backbone here: generates a ligand <em>inside a given pocket</em>. Four node sets — ligand, full-atom pocket, <code class="docutils literal notranslate"><span class="pre">interh</span></code>, <code class="docutils literal notranslate"><span class="pre">interhp</span></code> — and <strong>only the ligand is noised</strong>, so it cannot train on a ligand-only dataset. Ligand size comes from a 2D histogram conditioned on pocket size. Bond-free. Novel pockets from raw PDB+SDF need the <code class="docutils literal notranslate"><span class="pre">[bio]</span></code> extra — see <a class="reference internal" href="#model_integrations/diffpharma/FINAL_REPORT.md"><span class="xref myst">model_integrations/diffpharma/FINAL_REPORT.md</span></a>.</p></td>
+<td class="text-left"><p>DiffPharma (EGNN over 3 parallel interaction graphs). A <strong>structure-based (SBDD)</strong> backbone: generates a ligand <em>inside a given pocket</em>. Four node sets — ligand, full-atom pocket, <code class="docutils literal notranslate"><span class="pre">interh</span></code>, <code class="docutils literal notranslate"><span class="pre">interhp</span></code> — and <strong>only the ligand is noised</strong>, so it cannot train on a ligand-only dataset. Ligand size comes from a 2D histogram conditioned on pocket size. Bond-free. Novel pockets from raw PDB+SDF need the <code class="docutils literal notranslate"><span class="pre">[bio]</span></code> extra — see <a class="reference internal" href="#model_integrations/diffpharma/FINAL_REPORT.md"><span class="xref myst">model_integrations/diffpharma/FINAL_REPORT.md</span></a>.</p></td>
 </tr>
-<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_difflinker.yaml</span></code></p></td>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_pmdm.yaml</span></code></p></td>
+<td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_pmdm</span></code></p></td>
+<td class="text-left"><p><strong>Protein pocket</strong></p></td>
+<td class="text-left"><p>PMDM (dual EGNN + SchNet encoders, ligand↔pocket cross-attention). A <strong>structure-based (SBDD)</strong> backbone, like DiffPharma but pocket-only. Two node sets — ligand and full-atom pocket — and <strong>only the ligand is noised</strong>; the pocket is fixed context, so a ligand-only dataset cannot train it. Continuous DDPM (sigmoid schedule, T=1000) on coordinates + atom types, with a global (6 Å) and a local (3 Å) branch over the joined cloud. Bond-free: the real bonds are discarded before the model sees them. Generation goes through <code class="docutils literal notranslate"><span class="pre">PMDMPocketGenerator</span></code> (<code class="docutils literal notranslate"><span class="pre">gen_pmdm_pocket.yaml</span></code>), not <code class="docutils literal notranslate"><span class="pre">GenerativeFactory</span></code>, since <code class="docutils literal notranslate"><span class="pre">sample()</span></code> has no channel for “which pocket”. Inpainting/linker sampling not ported — see <a class="reference internal" href="#model_integrations/pmdm/FINAL_REPORT.md"><span class="xref myst">model_integrations/pmdm/FINAL_REPORT.md</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_difflinker.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_difflinker</span></code></p></td>
 <td class="text-left"><p><strong>Fragments</strong> to join</p></td>
 <td class="text-left"><p>DiffLinker. Linker design: generates the connecting atoms between held-fixed fragments.</p></td>
 </tr>
-<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">pharmacophore.yaml</span></code></p></td>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">pharmacophore.yaml</span></code></p></td>
 <td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">diffusion_pharmacophore</span></code></p></td>
 <td class="text-left"><p><strong>Pharmacophore</strong> points</p></td>
 <td class="text-left"><p>Ligand-derived pharmacophore conditioning (no protein). Requires <code class="docutils literal notranslate"><span class="pre">open3d</span></code>.</p></td>
@@ -625,21 +637,6 @@ guidance.</p>
 </table>
 </div>
 </section>
-<section id="variants">
-<h2>Variants<a class="headerlink" href="#variants" title="Link to this heading">¶</a></h2>
-<p>Same model as <code class="docutils literal notranslate"><span class="pre">diffusion.yaml</span></code> (identical <code class="docutils literal notranslate"><span class="pre">ModelTaskFactory_EGCL</span></code>, <code class="docutils literal notranslate"><span class="pre">task_type:</span> <span class="pre">diffusion</span></code>) — config presets, not separate architectures:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">diffusion_extraf.yaml</span></code> — EDM with extra atom features.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">diffusion_pretrained.yaml</span></code> — EDM set up to fine-tune from an existing checkpoint.</p></li>
-</ul>
-</section>
-<section id="not-a-training-config">
-<h2>Not a training config<a class="headerlink" href="#not-a-training-config" title="Link to this heading">¶</a></h2>
-<p>ShEPhERD is integrated as a scoring/architecture module
-(<code class="docutils literal notranslate"><span class="pre">modules/models/shepherd_arch/</span></code>, <code class="docutils literal notranslate"><span class="pre">utils/shepherd_score/</span></code>) used by the guidance
-and <code class="docutils literal notranslate"><span class="pre">analyze</span> <span class="pre">metrics</span> <span class="pre">--metrics</span> <span class="pre">shepherd</span></code> paths, rather than as a standalone
-training config.</p>
-</section>
 <section id="references">
 <h2>References<a class="headerlink" href="#references" title="Link to this heading">¶</a></h2>
 <p>Backbones and objectives integrated here are based on the following work.</p>
@@ -650,6 +647,12 @@ Molecule Generation in 3D.</em> ICML 2022. <a class="reference external" href="h
 Molecule Generation.</em> ECML PKDD 2023. <a class="reference external" href="https://arxiv.org/abs/2302.09048">arXiv:2302.09048</a></p></li>
 <li><p><strong>GFMDiff</strong> — Xu et al. <em>Geometric-Facilitated Denoising Diffusion Model for
 3D Molecule Generation.</em> AAAI 2024. <a class="reference external" href="https://arxiv.org/abs/2401.02683">arXiv:2401.02683</a></p></li>
+<li><p><strong>PaiNN / OM-Diff</strong> — the backbone is the <code class="docutils literal notranslate"><span class="pre">EquivNet</span></code> of <em>OM-Diff: Inverse-design
+of organometallic catalysts with guided equivariant denoising diffusion</em>, 2024.
+<a class="reference external" href="https://doi.org/10.26434/chemrxiv-2024-882hh">doi:10.26434/chemrxiv-2024-882hh</a> — itself a variant
+of <strong>PaiNN</strong>: Schütt, Unke &amp; Gastegger, <em>Equivariant message passing for the
+prediction of tensorial properties and molecular spectra</em>, ICML 2021
+(<a class="reference external" href="https://arxiv.org/abs/2102.03150">arXiv:2102.03150</a>).</p></li>
 <li><p><strong>TABASCO</strong> — Vonessen, Harris, Cretu &amp; Liò. <em>TABASCO: A Fast, Simplified
 Model for Molecular Generation with Improved Physical Quality.</em> 2025.
 <a class="reference external" href="https://arxiv.org/abs/2507.00899">arXiv:2507.00899</a></p></li>
@@ -670,6 +673,10 @@ Machine Intelligence 2025. <a class="reference external" href="https://arxiv.org
 a pharmacophore-conditioned extension of <strong>DiffSBDD</strong>: Schneuing et al.,
 <em>Structure-based Drug Design with Equivariant Diffusion Models</em>, Nature
 Computational Science 2024 (<a class="reference external" href="https://arxiv.org/abs/2210.13695">arXiv:2210.13695</a>).</p></li>
+<li><p><strong>PMDM</strong> — Huang, Yang, Zhou, Zhang, Chen, Zhang, Wang &amp; Tang. <em>A dual
+diffusion model enables 3D molecule generation and lead optimization based on
+target pocket.</em> Nature Communications 2024.
+<a class="reference external" href="https://doi.org/10.1038/s41467-024-46569-1">doi:10.1038/s41467-024-46569-1</a></p></li>
 <li><p><strong>DiffLinker</strong> — Igashov et al. <em>Equivariant 3D-Conditional Diffusion Model
 for Molecular Linker Design.</em> Nature Machine Intelligence 2024. <a class="reference external" href="https://arxiv.org/abs/2210.05274">arXiv:2210.05274</a></p></li>
 <li><p><strong>eSEN</strong> — Fu et al. <em>Learning Smooth and Expressive Interatomic Potentials
@@ -761,8 +768,6 @@ electrostatics, and pharmacophores for bioisosteric drug design.</em> ICLR 2025.
 <li><a class="reference internal" href="#conditional-and-structure-aware-generation">3. Conditional and structure-aware generation</a></li>
 <li><a class="reference internal" href="#property-prediction-and-guidance">4. Property prediction and guidance</a></li>
 <li><a class="reference internal" href="#self-supervised-pretraining">5. Self-supervised pretraining</a></li>
-<li><a class="reference internal" href="#variants">Variants</a></li>
-<li><a class="reference internal" href="#not-a-training-config">Not a training config</a></li>
 <li><a class="reference internal" href="#references">References</a></li>
 </ul>
 </li>
