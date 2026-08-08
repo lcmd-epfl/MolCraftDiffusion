@@ -6,6 +6,16 @@
 # logs_diffusion/training_2023_06_06__20_16_16/checkpoints/642000.pt --
 # not from the repo's configs/training.yml, which differs.
 # Do not change the architecture block if you intend to load that checkpoint.
+#
+# This config is ALSO TargetDiff (ICLR 2023, guanjq/targetdiff). KGDiff is
+# TargetDiff plus the affinity head; the backbone (uni_transformer.py) is
+# byte-identical and every hyperparameter below matches targetdiff's
+# configs/training.yml. To run plain TargetDiff, set
+# use_classifier_guide=false and sample with guide_mode=wo. Caveat: the
+# affinity MSE is still *computed* (score_model.py, get_diffusion_loss), it
+# is just dropped from the total loss -- an affinity-free dataset needs
+# dummy labels. TargetDiff's separate EGNN affinity predictor
+# (models/property_pred) is not ported.
 _target_: MolecularDiffusion.modules.tasks.diffusion_kgdiff.ModelTaskFactory
 
 task_type: diffusion_kgdiff
