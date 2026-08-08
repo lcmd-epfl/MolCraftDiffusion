@@ -1,0 +1,26 @@
+# Shape-conditioned generation for DiffSMol.
+#
+# `reference_shape` is a .pt written by
+# docs/model_integrations/diffsmol/scripts/precompute_shapes.py -- the same
+# code path the training cache came from, so the reference latent is in the
+# same frame and produced by the same (vendored) shape-AE weights.
+#
+# If it points at a full cache rather than a single-molecule file, also set
+# `reference_key` to the cache key of the molecule to condition on.
+#
+# For unconditional generation just use `interference: gen_unconditional`:
+# task.sample() falls back to the zero latent, which is the classifier-free
+# unconditional branch.
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffsmol.DiffSMolShapeGenerator
+
+reference_shape: ???
+reference_key: null
+
+num_generate: 100
+batch_size: 8
+num_steps: null        # null => the task's default_num_steps
+guide_stren: 2.0       # CFG weight; 0 = conditional pass only
+mol_size: []           # empty => draw from the volume-conditioned histogram
+seed: 42
+save_xyzrender_figures: false
+output_path: generated_diffsmol

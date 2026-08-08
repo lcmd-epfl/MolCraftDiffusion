@@ -1,0 +1,28 @@
+# Pocket-conditioned generation for DiffPharma.
+#
+# GenerativeFactory cannot express "sample inside this pocket" (it has no
+# pocket concept at all), so this points at a dedicated generator, exactly as
+# gen_diffsmol_shape.yaml does. cli/generate.py only calls
+# `instantiate(cfg.interference, task=task)` then `.run()`.
+#
+# Set EXACTLY ONE pocket source:
+#   pocket_db + pocket_index  -- a row of a converted ASE db (center=false)
+#   pocket_pdb + ref_sdf      -- a novel protein + reference ligand pose,
+#                                preprocessed on the fly (needs the [data]
+#                                extra: biopython, oddt, openbabel, rdkit)
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffpharma.DiffPharmaPocketGenerator
+
+pocket_db: null
+pocket_index: 0
+
+pocket_pdb: null
+ref_sdf: null
+
+num_generate: 20
+batch_size: 4
+num_steps: null      # null => the model's T (500)
+mol_size: []         # empty => draw from the 2D size prior conditioned on
+                     # the pocket size; a list => sample uniformly from it
+seed: 42
+device: null         # null => cuda if available
+output_path: generated_diffpharma

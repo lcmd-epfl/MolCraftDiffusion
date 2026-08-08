@@ -1,0 +1,23 @@
+_target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
+task_type: silvr
+sampling_mode: "ddpm"        # silvr is DDPM-only; "ddim" raises
+num_generate: 100
+mol_size:  [26]              # n_ref + n_dummy; [0,0] draws from the node distribution. Below the reference is snapped up to it
+target_values: []
+property_names: []
+negative_target_values: []   # code default
+batch_size: 1
+seed: 86
+n_frames: 0
+max_mol_size: 0              # code default; 0 = no cap
+save_xyzrender_figures: false # code default
+output_path: generated_mol
+condition_configs:
+  reference_structure_path: "data/template_structures/BINOLCpHHH.xyz"
+  condition_component: xh            # code default; "x" restricts SILVR to coordinates
+  n_retrys: 0                        # forced to 0 for structure-guided modes
+  t_retry: 180
+  silvr_cfgs:
+    silvr_rate: 0.01         # code default; uniform per-step blend towards the reference (0-1)
+    silvr_rates: null        # code default; optional per-atom list of length n_ref, overrides silvr_rate
+    shift_centre: true       # code default; return coordinates in the reference's frame

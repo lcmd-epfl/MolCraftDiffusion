@@ -1,0 +1,51 @@
+# Pocket-conditioned generation for PMDM.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
+# "which pocket", so this points at a dedicated generator, exactly as
+# gen_diffpharma_pocket.yaml and gen_diffsmol_shape.yaml do. cli/generate.py
+# only calls `instantiate(cfg.interference, task=task)` then `.run()`.
+#
+# There is no unconditional mode: PMDM's network has no path that runs
+# without a pocket.
+_target_: MolecularDiffusion.modules.tasks.diffusion_pmdm.PMDMPocketGenerator
+
+# A converted ASE db (scripts/convert_dataset.py), read with center=false so
+# the sampled ligand comes back in this pocket's own frame.
+pocket_db: ???
+pocket_index: 0
+
+num_generate: 20
+batch_size: 4
+
+# Reverse-process steps. null => the model's full schedule
+# (tasks.num_diffusion_timesteps, 1000). Upstream subsamples it as
+# range(0, T, T // num_steps).
+num_steps: null
+
+# Empty => draw ligand sizes from the training-set histogram baked into the
+# checkpoint; a list => sample uniformly from it.
+mol_size: []
+
+# Discard unusable samples (atoms closer than 0.9 A, or a disconnected graph)
+# and resample, instead of writing them out. Upstream does the same
+# (sample.py:320, try_num=10): its reported molecules are the ones that
+# survived reconstruction, so raw output is not comparable to its numbers.
+# The run prints how many were rejected and why -- set false to keep
+# everything and inspect the raw distribution.
+validity_filter: true
+max_retries: 10
+
+# --- sampler knobs (upstream sample.py defaults; exposed, not tuned) ---
+sampling_type: generalized   # generalized | ddpm_noisy | ld
+step_lr: 1.0e-6
+clip: 1000.0
+clip_pos: null
+global_start_sigma: null     # null => inf (the global branch is always on)
+w_global_pos: 1.0
+w_global_node: 1.0
+w_local_pos: 1.0
+w_local_node: 1.0
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_pmdm

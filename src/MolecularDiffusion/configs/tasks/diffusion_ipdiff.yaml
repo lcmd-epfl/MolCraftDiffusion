@@ -1,0 +1,88 @@
+# IPDiff: pocket-conditioned 3D ligand diffusion conditioned on a frozen,
+# separately pretrained binding-interaction prior (IPNet).
+# See docs/model_integrations/ipdiff/INTEGRATION_PLAN.md.
+#
+# Defaults below are the RELEASED IPDiff checkpoint's own settings, read out
+# of `config` inside pretrained_ipdiff.pt. Do not change the architecture
+# block if you intend to load that checkpoint -- the converter asserts every
+# shape and will refuse.
+#
+# Relationship to the other two pocket models in-tree:
+#   - the backbone is TargetDiff's uni_o2 transformer, shared by import with
+#     configs/tasks/diffusion_kgdiff.yaml (byte-identical code);
+#   - KGDiff adds an affinity head used as its own classifier guide at
+#     sampling time; IPDiff instead injects a pretrained network's hidden
+#     features into the token embeddings AND into the noising schedule.
+#     There is no guidance, no CFG, and no property head here at all.
+_target_: MolecularDiffusion.modules.tasks.diffusion_ipdiff.ModelTaskFactory
+
+task_type: diffusion_ipdiff
+
+# --- the interaction prior (IPNet / BAPNet) --------------------------- #
+# REQUIRED IN SUBSTANCE. IPDiff's entire conditioning signal is this frozen
+# network's output, so it refuses to build with missing or absent weights.
+# Ships with the integration (2.4 MB, copied from the released Google Drive
+# folder). The path is relative to the CWD you run MolCraftDiff from.
+net_cond_ckpt: docs/model_integrations/ipdiff/checkpoints/ipnet
+# Width of IPNet's per-node output, concatenated into every token embedding
+# and fed to the shift MLP. Must match the checkpoint (128).
+cond_dim: 128
+
+# --- node feature widths ---
+# [element one-hot (6: H,C,N,O,S,Se) | amino acid one-hot (20) | is_backbone]
+protein_atom_feature_dim: 27
+# 13-class (element, is_aromatic) ligand vocabulary ("add_aromatic"),
+# covering H, C, N, O, F, P, S, Cl. Collapsed to 8 elements on output.
+ligand_atom_feature_dim: 13
+
+# --- diffusion ---
+model_mean_type: C0            # the net predicts x0, not the noise
+beta_schedule: sigmoid         # position channel
+beta_start: 1.0e-7
+beta_end: 2.0e-3
+pos_beta_s: 0.01               # only used if beta_schedule == cosine
+v_beta_schedule: cosine        # atom-type channel (D3PM, log space)
+v_beta_s: 0.01
+num_diffusion_timesteps: 1000
+sample_time_method: symmetric  # [importance, symmetric]
+
+# --- loss: loss_pos + 100*loss_v (no third term -- no affinity head) ---
+loss_v_weight: 100.0
+
+# Gaussian jitter added to POCKET coordinates during training only
+# (upstream train.py:124, config.train.pos_noise_std). 0 disables it.
+pos_noise_std: 0.1
+
+# --- architecture (uni_o2 SE(3) attention transformer) ---
+model_type: uni_o2
+num_blocks: 1
+num_layers: 9
+hidden_dim: 128
+n_heads: 16
+# NOT bond orders: a one-hot of the four ligand/protein incidence
+# combinations (ll / lp / pl / pp). No bond information reaches the network.
+edge_feat_dim: 4
+num_r_gaussian: 20
+knn: 32                        # graph is knn over the joint point cloud
+cutoff_mode: knn
+num_node_types: 8
+act_fn: relu
+norm: true
+ew_net_type: global            # [r, m, global, none]
+num_x2h: 1
+num_h2x: 1
+r_max: 10.0
+x2h_out_fc: false
+sync_twoup: false
+node_indicator: true           # 1 extra dim flagging ligand vs pocket tokens
+
+# time_emb_dim: 0 means NO time embedding reaches the backbone. The timestep
+# still enters the model through shift_t_mlp_pos([h_bap, t]), which is where
+# IPDiff needs it.
+time_emb_dim: 0
+time_emb_mode: simple
+
+# Positions are centred on the POCKET centroid, not zero-CoM; the sampler
+# adds the offset back, so samples land in the input pocket's frame. IPNet
+# was pretrained in this same frame.
+center_pos_mode: protein

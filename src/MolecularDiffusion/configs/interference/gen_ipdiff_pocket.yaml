@@ -1,0 +1,42 @@
+# Pocket-conditioned generation for IPDiff.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
+# "which pocket", so this points at a dedicated generator, exactly as
+# gen_kgdiff_pocket.yaml and gen_pmdm_pocket.yaml do. cli/generate.py only
+# calls `instantiate(cfg.interference, task=task)` then `.run()`.
+#
+# There is no unconditional mode: IPDiff's network cannot run without
+# protein_pos/protein_v, and its prior needs a real complex.
+_target_: MolecularDiffusion.modules.tasks.diffusion_ipdiff.IPDiffPocketGenerator
+
+# A converted ASE db. IPDiff consumes KGDiff's format unchanged, so use
+# KGDiff's converter (docs/model_integrations/kgdiff/scripts/convert_dataset.py)
+# -- there is no separate IPDiff dataset. Coordinates are never re-centred at
+# load time: the model subtracts the pocket centroid internally
+# (center_pos_mode: protein) and the sampler adds it back, so sampled ligands
+# come back in this pocket's own frame.
+pocket_db: ???
+pocket_index: 0
+
+num_generate: 20
+# NB the prior (BAPNet) builds a FULLY CONNECTED complex graph and re-runs it
+# every reverse step, so memory scales with (pocket atoms x batch_size)^2.
+# Upstream trains and samples at 4. Drop to 1-2 if you OOM.
+batch_size: 4
+
+# Reverse-process steps. null => the model's full schedule
+# (tasks.num_diffusion_timesteps, 1000).
+num_steps: null
+
+# Empty => draw ligand sizes from the pocket-size-conditioned prior (the
+# static atom_num_config table -- no training data and no checkpoint buffer
+# needed). A list => sample uniformly from it instead.
+mol_size: []
+
+# No guidance knobs on purpose: IPDiff has no classifier, no CFG and no
+# property head. Its conditioning IS the pretrained prior, applied during
+# training and re-applied every reverse step.
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_ipdiff
