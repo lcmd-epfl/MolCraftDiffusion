@@ -1,0 +1,38 @@
+# PMDM: pocket-conditioned 3D ligand diffusion.
+# See docs/model_integrations/pmdm/INTEGRATION_PLAN.md.
+#
+# Defaults below are upstream's released `configs/crossdock_epoch.yml`
+# settings for the MDM_full_pocket_coor_shared network.
+_target_: MolecularDiffusion.modules.tasks.diffusion_pmdm.ModelTaskFactory
+
+task_type: diffusion_pmdm
+
+# --- node feature widths ---
+# num_atom = |ligand element vocab| = len(data.atom_vocab); the diffused
+# ligand feature is that one-hot, and the two node heads output it.
+num_atom: 10
+# [element one-hot (10) | amino acid one-hot (20) | is_backbone (1)]
+protein_feature_dim: 31
+
+# --- architecture ---
+# hidden_dim must equal protein_hidden_dim: the cross-attention block mixes
+# ligand and pocket tokens in one space.
+hidden_dim: 128
+protein_hidden_dim: 128
+num_convs: 3          # global EGNN stack depth
+num_convs_local: 3    # local EGNN stack depth
+protein_num_convs: 2  # SchNet tower depth (pocket and ligand)
+cutoff: 3.0           # local graph radius
+g_cutoff: 6.0         # global graph radius
+encoder_cutoff: 6.0   # SchNet tower radius
+edge_order: 3         # k-hop extension of the ligand graph
+mlp_act: relu
+edge_encoder: mlp     # only 'mlp' is ported
+soft_edge: true
+norm_coors: true
+
+# --- diffusion ---
+beta_schedule: sigmoid
+beta_start: 1.0e-7
+beta_end: 2.0e-3
+num_diffusion_timesteps: 1000

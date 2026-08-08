@@ -1,0 +1,51 @@
+# GeoLDM stage 1: E(n) hierarchical VAE (encoder/decoder EGNN pair).
+# See docs/model_integrations/geoldm/INTEGRATION_PLAN.md for the integration
+# plan and docs/adding_new_models.md §2.3 for this file's role.
+_target_: MolecularDiffusion.modules.tasks.vae_geoldm.GeoLDMVAETaskFactory
+task_type: vae_geoldm
+
+n_dims: 3
+include_charges: true
+
+# EGNN encoder/decoder (others/GeoLDM/egnn/models.py::EGNN_encoder_QM9 /
+# EGNN_decoder_QM9). Sized per the GeoLDM paper's actual QM9 recipe
+# (arXiv:2305.01140, Appendix D), NOT the generic main_qm9.py argparse
+# defaults (those are CLI fallbacks, not what QM9 was actually trained with):
+#   - latent_nf (their k) = 1 for QM9. Their own Table 3 ablation shows LOWER
+#     k performs BETTER (k=1: 89.4% Mol Sta / 93.8% Valid; k=4: 87.4/92.6;
+#     k=8: 87.1/92.1; k=16: 86.0/92.4) -- higher k measurably hurts, it's not
+#     "more capacity is better" here. Previously set to 8, backwards.
+#   - decoder is sized the SAME as the diffusion dynamics network (9 layers,
+#     256 hidden for QM9) -- hidden_nf/n_layers below feed the decoder.
+#   - encoder is a single 1-layer EGNN (deliberately shallow, to constrain
+#     encoding capacity and regularize the latent space) -- already
+#     hardcoded as n_layers=1 in GeoLDMVAETaskFactory.build(), unaffected by
+#     the n_layers value below.
+#   - attention=True, tanh=True, norm_constant=1 match main_qm9.py's actual
+#     QM9 argparse defaults (unlike latent_nf, these aren't overridden
+#     per-dataset in Appendix D, so the generic defaults apply here).
+hidden_nf: 256
+latent_nf: 1
+n_layers: 9
+attention: true
+tanh: true
+model: egnn_dynamics
+norm_constant: 1
+inv_sublayers: 2
+sin_embedding: false
+normalization_factor: 100
+aggregation_method: sum
+
+# EnHierarchicalVAE (others/GeoLDM/equivariant_diffusion/en_diffusion.py).
+# NOTE: this implements KL-reg (kl_weight-penalized KL against a standard
+# normal). The paper's actual best QM9 results use "ES-reg" (early-stop the
+# encoder's training, then freeze it) instead -- their own text says KL-reg
+# "observed unexpected failure with extremely poor performance" and "is
+# unstable for training". ES-reg is NOT implemented in this port (would need
+# a code change to GeoLDMVAETask's training loop, not just a config value)
+# -- known gap, see docs/model_integrations/geoldm/FINAL_REPORT.md.
+kl_weight: 0.01
+normalize_factors: [1.0, 4.0, 10.0]
+
+augment_noise: 0.0
+data_augmentation: false

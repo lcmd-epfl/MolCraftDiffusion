@@ -1,0 +1,39 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_painn.ModelTaskFactory
+task_type: diffusion
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+chkpt_path: null
+
+# PaiNN (OM-Diff EquivNet) backbone hyperparameters
+# (bundled defaults from om-diff/configs/model/diffusion.yaml)
+num_interactions: 5
+hidden_dims:
+  node_size: 256
+  edge_size: 64
+  embedding_dim: 256
+rbf_features: 64
+rbf_max_distance: 5.0
+time_features: 16 # Fourier time features; contributes 2x this to the backbone input
+cutoff: null # null = dense edge_mask; set e.g. 7.5 for OM-Diff's radius graph
+envelop_p: 6 # polynomial cutoff envelope order; only used when cutoff is set
+
+# specific to diffusion (copied verbatim from diffusion_gfmdiff.yaml -- the
+# diffusion math is EnVariationalDiffusion's, shared across every §1 backbone)
+diffusion_steps: 400
+diffusion_noise_schedule: polynomial_2 # learned, cosine_x, polynomial_x, issnr_x, smld_x
+diffusion_noise_precision: 1e-5
+diffusion_loss_type: vlb
+normalize_factors: [1, 4, 10]
+extra_norm_values: []
+augment_noise: False
+data_augmentation: False
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10 # None | "maxmin" | "mad" | "value_N" (divide condition by N; value_10 = default). NOT a boolean.
+reference_indices: null # indices of core atoms for the outpainting objective
+# evaluator parameters
+use_posebuster: True
+metrics: valid_posebuster # use_posebuster must be true
+n_samples: 24
+generative_analysis: True
+batch_size: 4

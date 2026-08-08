@@ -1,0 +1,46 @@
+# GeoLDM stage 2: E(n) latent diffusion over a frozen VAE's latent space.
+# See docs/model_integrations/geoldm/INTEGRATION_PLAN.md for the integration
+# plan and docs/adding_new_models.md §2.3 for this file's role.
+#
+# Two-stage: train `vae_geoldm` first (configs/tasks/vae_geoldm.yaml), then
+# point `vae_ckpt` at that run's checkpoint. Its architecture is now
+# inferred automatically from the checkpoint itself (both engines' formats
+# store enough to do this -- see GeoLDMTaskFactory._load_frozen_vae()), so
+# `vae_config` no longer needs to be hand-duplicated here. It's still
+# accepted as a fallback override for checkpoints that predate this and
+# don't carry the needed metadata.
+_target_: MolecularDiffusion.modules.tasks.diffusion_geoldm.GeoLDMTaskFactory
+task_type: diffusion_geoldm
+
+vae_ckpt: ???  # path to the trained vae_geoldm checkpoint, set by the user config
+
+n_dims: 3
+include_charges: true
+
+# EGNN dynamics (others/GeoLDM/egnn/models.py::EGNN_dynamics_QM9). Matches
+# the GeoLDM paper's actual QM9 recipe (arXiv:2305.01140, Appendix D): "we
+# train EGNNs with 9 layers and 256 hidden features [...] with a batch size
+# 64" for the latent denoising network epsilon_theta on QM9. Also matches
+# main_qm9.py's argparse defaults for attention/tanh/norm_constant.
+hidden_nf: 256
+n_layers: 9
+attention: true
+tanh: true
+model: egnn_dynamics
+norm_constant: 1
+inv_sublayers: 2
+sin_embedding: false
+normalization_factor: 100
+aggregation_method: sum
+condition_time: true
+
+# EnLatentDiffusion (others/GeoLDM/equivariant_diffusion/en_diffusion.py).
+diffusion_steps: 500
+diffusion_noise_schedule: polynomial_2
+diffusion_noise_precision: 1e-5
+diffusion_loss_type: l2
+normalize_factors: [1.0, 4.0, 10.0]
+trainable_ae: false
+
+augment_noise: 0.0
+data_augmentation: false

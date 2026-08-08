@@ -1,0 +1,88 @@
+# DiffSMol: shape-conditioned hybrid diffusion (Gaussian on positions +
+# D3PM categorical on atom types), bond-free.
+# See docs/model_integrations/diffsmol/INTEGRATION_PLAN.md.
+#
+# Heavy atoms only. The data config MUST set `with_hydrogen: false` and an
+# atom_vocab that is a subset of [C,N,O,F,P,S,Cl,Br,I]: the shape surface,
+# the point cloud and the diffused atoms must be the identical atom set.
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffsmol.DiffSMolTaskFactory
+
+task_type: diffusion_diffsmol
+
+# Path to the precomputed shape cache written by
+# docs/model_integrations/diffsmol/scripts/precompute_shapes.py.
+# null => every molecule falls back to the zero latent, i.e. purely
+# unconditional training. Set this for shape-conditioned training.
+shape_cache_path: null
+
+num_diffusion_timesteps: 1000
+default_num_steps: null   # null => num_diffusion_timesteps
+
+# Classifier-free guidance weight used at generation time.
+# 0 = conditional pass only (upstream's shipped "no guidance" setting).
+guide_stren: 0.0
+threshold_type: null      # reference_threshold | dynamic_threshold | rescale
+threshold_p: null
+
+# Number of mesh-volume bins for the volume-conditioned size histogram.
+n_volume_bins: 20
+
+# Atom vocabulary mode.
+#   basic        -> plain elements, taken from the data config's atom_vocab
+#                   (default; this is what training uses).
+#   add_aromatic -> upstream's fixed 15-class (element, is_aromatic) vocab.
+#                   Generation-only: it is what the released DiffSMol
+#                   checkpoint was trained on, and there is no aromaticity
+#                   channel in the data contract to train against.
+atom_mode: basic
+
+model_config:
+  # --- diffusion schedules (upstream training config) ---
+  schedule_pos:
+    beta_schedule: sigmoid
+    beta_start: 1.0e-7
+    beta_end: 0.01
+    s: 6
+  schedule_v:
+    beta_schedule: cosine
+    s: 0.01
+  model_mean_type: C0
+  v_mode: uniform         # uniform | tomask (D3PM transition kernel)
+  v_net_type: mlp
+  loss_v_weight: 200.0
+  loss_pos_type: mse
+  loss_weight_type: noise_level
+  loss_pos_min_weight: 0
+  loss_pos_max_weight: 10
+  sample_time_method: symmetric
+
+  # --- backbone (uni_o2) ---
+  num_blocks: 1
+  num_layers: 8
+  scalar_hidden_dim: 128
+  vec_hidden_dim: 32
+  n_heads: 16
+  knn: 8
+  edge_feat_dim: 5        # 5-wide edge feature (see pred_bond_type)
+  # false => the 5-wide edge feature is a distance/element bond-order
+  #          heuristic, recomputed once per block. Bond-free port default.
+  # true  => restores upstream's per-layer `b_inference` head and its
+  #          predicted-bond-type feedback loop, i.e. layers 1..N-1 consume
+  #          refined predicted bond types instead of the heuristic. REQUIRED
+  #          for the released DiffSMol checkpoint's weights to mean anything;
+  #          adds ~4% params. Bond *supervision* is still out of scope (no
+  #          ground-truth bond channel in the data contract), so this only
+  #          changes what the network sees, never the loss.
+  pred_bond_type: false
+  num_r_gaussian: 20
+  act_fn: relu
+  norm: true
+  r_max: 10.0
+  time_emb_dim: 8
+
+  # --- shape conditioning ---
+  shape_dim: 128          # must match the vendored shape-AE latent_dim
+  shape_latent_dim: 128
+  cond_mask_prob: 0.1     # CFG dropout; creates the unconditional branch
+  use_shape_vec_mul: false
+  use_residue: true

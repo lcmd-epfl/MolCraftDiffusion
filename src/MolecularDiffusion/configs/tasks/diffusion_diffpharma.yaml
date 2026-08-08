@@ -1,0 +1,45 @@
+# DiffPharma: pocket- and pharmacophore-conditioned 3D ligand diffusion.
+# See docs/model_integrations/diffpharma/INTEGRATION_PLAN.md.
+#
+# Defaults below are the released `full_hDSP_hpSSP` / DiffPharma.yml settings
+# the pretrained checkpoint was trained with -- do not change them if you
+# intend to load `DiffPharma_best.ckpt` (scripts/convert_checkpoint.py
+# asserts this config still matches the checkpoint's hparams).
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffpharma.DiffPharmaTaskFactory
+
+task_type: diffusion_diffpharma
+
+# 2D (n_ligand x n_pocket) size histogram shipped with the dataset.
+# Required: it is the prior ligand sizes are drawn from at generation time
+# and the log p(N) term of the eval loss.
+size_distribution_path: ???
+
+# --- node feature widths (vocab sizes; see modules/tasks/diffusion_diffpharma.py) ---
+atom_nf: 11        # [C,N,O,S,B,Br,Cl,P,I,F,others]
+residue_nf: 11     # full-atom pocket, same vocabulary
+interh_nf: 3       # [SP,DD,AC]
+interhp_nf: 6      # [SP,Car,C3,C2,C1,others]
+n_dims: 3
+
+# --- EGNN ---
+joint_nf: 128
+hidden_nf: 256
+n_layers: 8
+attention: true
+tanh: true
+norm_constant: 1
+inv_sublayers: 1
+sin_embedding: false
+aggregation_method: sum
+normalization_factor: 100
+edge_cutoff_ligand: null
+edge_cutoff_pocket: 5.0
+edge_cutoff_interaction: 5.0
+reflection_equivariant: false
+
+# --- diffusion ---
+diffusion_steps: 500
+diffusion_noise_schedule: polynomial_2
+diffusion_noise_precision: 5.0e-4
+diffusion_loss_type: l2
+normalize_factors: [1, 1]

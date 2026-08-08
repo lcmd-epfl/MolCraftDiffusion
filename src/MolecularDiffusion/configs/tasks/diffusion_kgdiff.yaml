@@ -1,0 +1,72 @@
+# KGDiff: pocket-conditioned 3D ligand diffusion with a self-guiding
+# affinity ("value") head. See docs/model_integrations/kgdiff/INTEGRATION_PLAN.md.
+#
+# Defaults below are the settings of the RELEASED KGDiff(h0) checkpoint,
+# taken from the training.yml shipped beside
+# logs_diffusion/training_2023_06_06__20_16_16/checkpoints/642000.pt --
+# not from the repo's configs/training.yml, which differs.
+# Do not change the architecture block if you intend to load that checkpoint.
+_target_: MolecularDiffusion.modules.tasks.diffusion_kgdiff.ModelTaskFactory
+
+task_type: diffusion_kgdiff
+
+# --- node feature widths ---
+# [element one-hot (6: H,C,N,O,S,Se) | amino acid one-hot (20) | is_backbone]
+protein_atom_feature_dim: 27
+# 13-class (element, is_aromatic) ligand vocabulary ("add_aromatic"),
+# covering H, C, N, O, F, P, S, Cl. Collapsed to 8 elements on output.
+ligand_atom_feature_dim: 13
+
+# --- diffusion ---
+model_mean_type: C0            # the net predicts x0, not the noise
+beta_schedule: sigmoid         # position channel
+beta_start: 1.0e-7
+beta_end: 2.0e-3
+pos_beta_s: 0.01               # only used if beta_schedule == cosine
+v_beta_schedule: cosine        # atom-type channel (D3PM, log space)
+v_beta_s: 0.01
+num_diffusion_timesteps: 1000
+sample_time_method: symmetric  # [importance, symmetric]
+
+# --- loss weights: loss_pos + 100*loss_v + 1*loss_exp ---
+loss_v_weight: 100.0
+loss_exp_weight: 1.0
+# false drops the affinity term, i.e. trains plain TargetDiff. The released
+# KGDiff checkpoint was trained with it on.
+use_classifier_guide: true
+# false = predict affinity from ligand atoms only (the released setting);
+# true = pool over pocket atoms too (the KGDiff(h0, P) variant).
+pred_exp_from_all: false
+
+# --- architecture (uni_o2 SE(3) attention transformer) ---
+model_type: uni_o2
+num_blocks: 1
+num_layers: 9
+hidden_dim: 128
+n_heads: 16
+# NOT bond orders: a one-hot of the four ligand/protein incidence
+# combinations (ll / lp / pl / pp). No bond information reaches the network.
+edge_feat_dim: 4
+num_r_gaussian: 20
+knn: 32                        # graph is knn over the joint point cloud
+cutoff_mode: knn
+num_node_types: 8
+act_fn: relu
+norm: true
+ew_net_type: global            # [r, m, global, none]
+num_x2h: 1
+num_h2x: 1
+r_max: 10.0
+x2h_out_fc: false
+sync_twoup: false
+node_indicator: true           # 1 extra dim flagging ligand vs pocket tokens
+
+# time_emb_dim: 0 means NO time embedding reaches the network -- the
+# released checkpoint is trained this way, and the joint-guidance path
+# depends on it (pv_joint_guide never passes t).
+time_emb_dim: 0
+time_emb_mode: simple
+
+# Positions are centred on the POCKET centroid, not zero-CoM; the sampler
+# adds the offset back, so samples land in the input pocket's frame.
+center_pos_mode: protein
