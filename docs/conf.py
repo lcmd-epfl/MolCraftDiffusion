@@ -9,19 +9,25 @@ sys.path.insert(0, os.path.abspath("../src"))
 project = "MolCraftDiffusion"
 copyright = "2025, pregHosh"
 author = "pregHosh"
-release = "1.2.0"
+release = "1.7.0"
 
 # -- General configuration -----------------------------------------------------
+user_docs_only = os.environ.get("MOLCRAFT_DOCS_USER_ONLY") == "1"
+
 extensions = [
     "myst_parser",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
-    "sphinx.ext.intersphinx",
-    "autoapi.extension",
     "sphinx_copybutton",
     "sphinx_sitemap",
     "sphinx_design",
 ]
+
+# Generated API pages reflect docstrings from many integrated upstream models.
+# Their warnings remain visible in the full build, while CI checks the
+# hand-written, user-facing documentation strictly and deterministically.
+if not user_docs_only:
+    extensions.extend(["sphinx.ext.intersphinx", "autoapi.extension"])
 
 myst_enable_extensions = [
     "colon_fence",
@@ -53,6 +59,15 @@ source_suffix = {
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+if user_docs_only:
+    exclude_patterns.extend(
+        [
+            "api.md",
+            "autoapi/**",
+            "adding_new_models.md",
+            "model_integrations/**",
+        ]
+    )
 
 suppress_warnings = [
     "myst.xref_missing",
@@ -74,9 +89,23 @@ html_css_files = ["custom.css"]
 html_extra_path = ["google093a72c24f91da74.html"]
 
 html_meta = {
-    "description": "MolCraftDiffusion is a framework for 3D molecular generation using diffusion models for data-driven molecular design and computational chemistry.",
-    "keywords": "MolCraftDiffusion, 3D molecular generation, molecular generation, molecular design, diffusion models, computational chemistry, generative AI chemistry, drug design, drug discovery, cheminformatics",
+    "description": "MolCraftDiffusion is a unified platform for diverse 3D molecular generation workflows in computational chemistry.",
+    "keywords": "MolCraftDiffusion, 3D molecular generation, molecular generation, molecular design, diffusion models, flow matching, computational chemistry, generative AI chemistry, drug design, drug discovery, cheminformatics",
 }
+
+# Link checking is part of documentation CI. Avoid anchor checks because many
+# scientific publishers generate anchors dynamically.
+linkcheck_anchors = False
+linkcheck_timeout = 20
+linkcheck_retries = 2
+linkcheck_ignore = [
+    # These publisher pages are valid but reject automated link-check requests.
+    r"https://chemrxiv\.org/.*",
+    r"https://doi\.org/10\.26434/chemrxiv-2024-882hh",
+    r"https://doi\.org/10\.1093/bib/bbad435",
+    r"https://doi\.org/10\.1021/acs\.jcim\.3c00667",
+    r"https://pubs\.acs\.org/doi/10\.1021/jacs\.5c19960",
+]
 
 html_theme_options = {
     "sidebar_hide_name": True,

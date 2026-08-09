@@ -43,10 +43,10 @@ These capabilities share the same configuration system, CLI, data pipeline, chec
 | **Broad generator coverage** | Multiple 3D generation paradigms and application domains in one platform |
 | **3D-native generation** | Models trained directly in Cartesian space; geometric validity by construction, not augmentation |
 | **Extensible architecture** | Multiple backbone families included; adding a new model is a single sub-package drop-in |
-| **Steerable generation** | Guide outputs toward target properties or structural constraints without retraining |
+| **Steerable generation** | Guide outputs towards target properties or structural constraints without retraining |
 | **End-to-end pipeline** | Raw data through training to post-generation analysis, with no glue scripts needed |
 | **Unified CLI** | `train · generate · predict · analyze · data`, all from one `MolCraftDiff` entry point |
-| **Built-in analysis suite** | Geometry optimization, validity metrics, quantum-chemical descriptors, and featurization |
+| **Built-in analysis suite** | Geometry optimisation, validity metrics, quantum-chemical descriptors, and featurisation |
 
 ## Installation
 
@@ -113,7 +113,7 @@ MolCraftDiff analyze metrics generated_molecules/
 MolCraftDiff analyze --help
 ```
 
-The analysis suite covers structural validation, geometry optimization and comparison, electronic properties, molecular representations, and feature extraction. See the [analysis tutorial](https://preghosh.github.io/MolCraftDiffusion/tutorials/09_analyze.html) for commands and optional dependencies.
+The analysis suite covers structural validation, geometry optimisation and comparison, electronic properties, molecular representations, and feature extraction. See the [analysis tutorial](https://preghosh.github.io/MolCraftDiffusion/tutorials/09_analyze.html) for commands and optional dependencies.
 
 ## Documentation
 
