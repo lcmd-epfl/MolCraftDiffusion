@@ -1,0 +1,28 @@
+# PMDM pocket-ligand complexes (diffused ligand + fixed full-atom pocket),
+# read from an ASE db written by
+# docs/model_integrations/pmdm/scripts/convert_dataset.py.
+_target_: MolecularDiffusion.data.component.pmdm_data.PMDMDataModule
+
+root: ???
+train_file: pmdm_smoke.db
+# null => reuse train_file. There is no split in the converted smoke set;
+# point these at real val/test dbs for a full CrossDocked run.
+val_file: null
+test_file: null
+
+# Subtract the joint ligand+pocket centroid at load time (upstream's
+# training-time behaviour; center_pos_pl re-centres per batch anyway).
+# Generation uses center=false so coordinates come back in the input
+# pocket's frame.
+center: true
+
+# null = all complexes; set an int to cap each split (debugging).
+limit: null
+
+batch_size: 4
+num_workers: 0
+
+# Ligand atom vocabulary; must match tasks.num_atom in length.
+# PMDM's crossdock (pocket) atom_decoder, utils/transforms.py:45-47 ->
+# atomic numbers [1, 6, 7, 8, 9, 15, 16, 17, 34, 119].
+atom_vocab: [H, C, N, O, F, P, S, Cl, Se, others]

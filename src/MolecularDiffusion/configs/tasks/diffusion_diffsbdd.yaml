@@ -1,0 +1,75 @@
+# DiffSBDD: E(3)-equivariant pocket-conditioned 3D ligand diffusion.
+# See docs/model_integrations/diffsbdd/INTEGRATION_PLAN.md.
+#
+# Every default below is read off the RELEASED full-atom CrossDocked
+# checkpoints (Zenodo 8183747, `crossdocked_fullatom_cond.ckpt` and
+# `crossdocked_fullatom_joint.ckpt`) -- specifically their `hyper_parameters`
+# `egnn_params` / `diffusion_params` -- NOT from the repo's
+# configs/crossdock_fullatom_*.yml, which disagree (the cond yml claims
+# joint_nf 128 / hidden_nf 256 / n_layers 6; the shipped weights are 32 /
+# 128 / 5). Changing any architecture value makes the converted pretrained
+# checkpoints unloadable.
+#
+# `mode` picks the DDPM class (lightning_modules.py:59-61):
+#   pocket_conditioning -> ConditionalDDPM      (ligand diffused, pocket fixed)
+#   joint               -> EnVariationalDiffusion (both diffused; enables
+#                          RePaint-style inpainting as its ONLY sampler)
+# Use configs/tasks/diffusion_diffsbdd_joint.yaml for the joint checkpoint.
+# The two modes share this task_type AND their state-dict shapes, so a
+# mismatch cannot be caught by strict=False -- the task carries a `mode_id`
+# buffer that raises instead.
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffsbdd.ModelTaskFactory
+
+task_type: diffusion_diffsbdd
+
+mode: pocket_conditioning
+
+# --- node feature widths ---
+# ONE 10-class element vocabulary [C,N,O,S,B,Br,Cl,P,I,F] for both node sets:
+# the released full-atom weights have dataset='crossdock', which resolves the
+# pocket encoder to the same atom_encoder (lightning_modules.py:90-97), and
+# both `atom_encoder.0.weight` and `residue_encoder.0.weight` are (20, 10).
+# Hydrogens are stripped (process_crossdock.py --no_H).
+atom_nf: 10
+residue_nf: 10
+n_dims: 3
+
+# --- EGNN backbone ---
+joint_nf: 32                  # shared ligand/pocket embedding width
+hidden_nf: 128
+n_layers: 5                   # equivariant blocks
+inv_sublayers: 1              # invariant GCLs per block
+attention: true
+tanh: true
+norm_constant: 1
+sin_embedding: false
+normalization_factor: 100     # used when aggregation_method == sum
+aggregation_method: sum
+# false => the cross-product term is active, so the network is rotation- but
+# not reflection-equivariant. This ADDS the cross_product_mlp parameters;
+# flipping it changes the state dict.
+reflection_equivariant: false
+
+# --- message-passing graph (geometric scaffolding, NOT a bond graph) ---
+edge_cutoff_ligand: null      # null => fully connected within the ligand
+edge_cutoff_pocket: 5.0
+edge_cutoff_interaction: 5.0
+# null => no learnable edge-provenance embedding (every shipped config).
+edge_embedding_dim: null
+
+# --- diffusion ---
+diffusion_steps: 500
+diffusion_noise_schedule: polynomial_2   # or `cosine`
+diffusion_noise_precision: 5.0e-4
+# [x, h] -- the one-hot block is divided by 4 before noising.
+normalize_factors: [1, 4]
+
+# --- ligand-size prior ---
+# Shape of the 2D joint (n_ligand_atoms, n_pocket_nodes) histogram buffer.
+# Fixed here so a checkpoint's buffer shape never depends on which dataset it
+# was trained on; these are the released CrossDocked histogram's own bounds.
+# A complex larger than this raises rather than silently mis-scoring log_pN.
+max_n_lig: 107
+max_n_pocket: 1671
+
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]

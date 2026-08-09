@@ -1,0 +1,30 @@
+# DiffSBDD in `joint` mode: ligand AND pocket are diffused together
+# (EnVariationalDiffusion). Everything else is inherited from
+# diffusion_diffsbdd.yaml -- a separate file rather than a CLI override
+# because `mode` decides which sampler a checkpoint's weights were trained
+# for, and cli/generate.py rebuilds the task from cfg.tasks, so picking the
+# wrong one must be a visible config choice.
+#
+# In this mode there is no separate de-novo sampler: pocket-conditioned
+# generation IS inpainting with lig_fixed=0 / pocket_fixed=1
+# (lightning_modules.py:814-834), which is also what makes fragment-fixing
+# available here.
+#
+# USE THIS FOR TRAINING JOINT FROM SCRATCH, NOT FOR PRETRAINED GENERATION.
+# The released CrossDocked joint checkpoint it matches
+# (`diffsbdd_fullatom_joint.ckpt`) is defective -- it emits |eps_hat| ~ 6e3 at
+# t=0.9 and samples atoms tens of angstroms apart, reproduced with upstream's
+# own unmodified code on their own example pocket. The usable pretrained joint
+# model is Binding MOAD's, which has a different architecture and therefore
+# its own config: `diffusion_diffsbdd_joint_moad.yaml` (see its header, and
+# docs/model_integrations/diffsbdd/scripts/convert_checkpoint.py).
+#
+# Pair with docs/model_integrations/diffsbdd/checkpoints/converted/
+# diffsbdd_fullatom_joint.ckpt. Loading a conditional checkpoint under this
+# config raises (the task's `mode_id` buffer), because the two modes are
+# state-dict identical and strict=False would otherwise hide the mix-up.
+defaults:
+  - diffusion_diffsbdd
+  - _self_
+
+mode: joint

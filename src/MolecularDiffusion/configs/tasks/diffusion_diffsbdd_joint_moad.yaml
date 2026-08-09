@@ -1,0 +1,88 @@
+# DiffSBDD, mode `joint`, architecture of the released BINDING MOAD full-atom
+# joint checkpoint (`moad_fullatom_joint.ckpt`, Zenodo 8183747).
+#
+# ## Why this file exists: the released CrossDocked joint weights are broken
+#
+# `crossdocked_fullatom_joint.ckpt` does not denoise. Verified with UPSTREAM's
+# OWN unmodified code (`others/DiffSBDD/generate_ligands.py`, their example
+# pocket `example/3rfm.pdb`), so this is a defect in the release, not in this
+# port:
+#
+#   cond  (crossdocked_fullatom_cond) : C/N/O molecules, min interatomic 1.1-1.2 A
+#   joint (crossdocked_fullatom_joint): Br/P/I/N soup, atoms 20-390 A apart
+#   joint (moad_fullatom_joint)       : C/N/O molecules, min interatomic 0.9-1.3 A
+#
+# Feeding a real complex forward at t=0.9 shows why: the CrossDocked joint
+# weights emit |eps_hat| ~ 6e3 (the conditional ones stay at ~3), i.e. they
+# diverge at high noise. Its `normalize_factors: [1, 4]` leaves coordinates in
+# raw angstroms, so at high t the whole complex collapses inside the 5 A edge
+# cutoffs and the message graph saturates. The MOAD joint model was trained
+# with `normalize_factors: [5, 5]` and 0.8/1.4 (i.e. 4 A / 7 A) cutoffs and
+# does not have the problem.
+#
+# So: this is the task config for the only USABLE pretrained joint model.
+# `diffusion_diffsbdd_joint.yaml` keeps the CrossDocked architecture and stays
+# the right choice for training joint from scratch on CrossDocked data.
+#
+# ## Every value below is read off the checkpoint's own `hyper_parameters`
+#
+# (`egnn_params` / `diffusion_params`), not from
+# others/DiffSBDD/configs/moad_fullatom_joint.yml. Change one and the
+# converted checkpoint stops loading.
+#
+# Pair with docs/model_integrations/diffsbdd/checkpoints/converted/
+# diffsbdd_fullatom_joint_moad.ckpt.
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffsbdd.ModelTaskFactory
+
+task_type: diffusion_diffsbdd
+
+mode: joint
+
+# Same 10-class element vocabulary as the CrossDocked models: MOAD's
+# `dataset_params['bindingmoad']` atom_encoder (constants.py:97) is identical,
+# and full-atom pockets reuse it for the residue encoder.
+atom_nf: 10
+residue_nf: 10
+n_dims: 3
+
+# --- EGNN backbone (differs from the CrossDocked models -- bigger) ---
+joint_nf: 128
+hidden_nf: 192
+n_layers: 6
+inv_sublayers: 1
+attention: true
+tanh: true
+norm_constant: 1
+sin_embedding: false
+normalization_factor: 100
+aggregation_method: sum
+reflection_equivariant: false
+
+# --- message-passing graph ---
+# NB these cutoffs are compared against the NORMALISED coordinates (get_edges
+# runs on the incoming z_t), so with normalize_factors[0] = 5 they mean 4 A
+# and 7 A respectively -- not 0.8 and 1.4 A.
+edge_cutoff_ligand: null
+edge_cutoff_pocket: 0.8
+edge_cutoff_interaction: 1.4
+# This model DOES use the learnable 3-way edge-provenance embedding
+# (lig-lig / lig-pocket / pocket-pocket); the CrossDocked ones do not. It adds
+# `dynamics.edge_embedding.weight` to the state dict.
+edge_embedding_dim: 8
+
+# --- diffusion ---
+diffusion_steps: 500
+diffusion_noise_schedule: polynomial_2
+diffusion_noise_precision: 1.0e-5
+# [x, h]: coordinates are divided by 5 here, unlike the CrossDocked models.
+normalize_factors: [5, 5]
+
+# --- ligand-size prior ---
+# Shape of this checkpoint's own (n_ligand_atoms, n_pocket_nodes) histogram.
+# Smaller than the CrossDocked one, and the model's DistributionNodes RAISES
+# on a complex outside it -- the 100-complex smoke db tops out at 57 ligand
+# atoms / 654 pocket atoms, which fits, but a full CrossDocked run will not.
+max_n_lig: 61
+max_n_pocket: 662
+
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]

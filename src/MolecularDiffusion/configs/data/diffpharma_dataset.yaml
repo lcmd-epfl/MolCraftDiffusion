@@ -1,0 +1,23 @@
+# DiffPharma complexes (ligand + full-atom pocket + interaction particles),
+# read from ASE dbs written by
+# docs/model_integrations/diffpharma/scripts/convert_dataset.py.
+_target_: MolecularDiffusion.data.component.diffpharma_data.DiffPharmaDataModule
+
+root: ???
+train_file: train.db
+val_file: val.db
+test_file: test.db
+
+# Subtract the joint ligand+pocket centroid at load time (upstream's
+# training-time behaviour). Generation uses center=false so coordinates come
+# back in the input pocket's frame.
+center: true
+
+# null = all complexes; set an int to cap each split (debugging).
+limit: null
+
+batch_size: 8
+num_workers: 0
+
+# Ligand atom vocabulary; must match tasks.atom_nf.
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F, others]

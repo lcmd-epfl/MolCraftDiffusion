@@ -1,0 +1,26 @@
+# KGDiff pocket-ligand complexes (diffused ligand + fixed pocket + one
+# normalised Vina affinity per complex), read from an ASE db written by
+# docs/model_integrations/kgdiff/scripts/convert_dataset.py.
+_target_: MolecularDiffusion.data.component.kgdiff_data.KGDiffDataModule
+
+root: ???
+train_file: kgdiff_smoke.db
+# null => reuse train_file. There is no split in the converted smoke set;
+# point these at real val/test dbs for a full CrossDocked run.
+val_file: null
+test_file: null
+
+# null = all complexes; set an int to cap each split (debugging).
+limit: null
+
+batch_size: 4
+num_workers: 0
+
+# There is no `center` knob on purpose: ScorePosNet3D centres on the pocket
+# centroid itself (center_pos_mode: protein) in both the loss and the
+# sampler, and the sampler adds the offset back.
+
+# Output atom vocabulary -- the 8 distinct elements behind the model's
+# 13-class (element, is_aromatic) vocabulary
+# (MAP_ATOM_TYPE_AROMATIC_TO_INDEX, utils/transforms.py:48-62).
+atom_vocab: [H, C, N, O, F, P, S, Cl]

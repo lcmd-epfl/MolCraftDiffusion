@@ -1,0 +1,36 @@
+# DiffSBDD ligand-pocket complexes (diffused ligand + protein pocket), read
+# from an ASE db. The db format is the KGDiff converter's output, reused
+# UNCHANGED -- there is no diffsbdd-specific converter:
+#
+#   python docs/model_integrations/kgdiff/scripts/convert_dataset.py \
+#       <crossdocked test_set dir> <out.db>
+#
+# The db stores raw integers (element Z, amino-acid index); this module owns
+# DiffSBDD's own vocabulary expansion, so changing a vocabulary never means
+# reconverting. The `affinity` column that KGDiff needs is ignored here.
+_target_: MolecularDiffusion.data.component.diffsbdd_data.DiffSBDDDataModule
+
+root: ???
+train_file: diffsbdd_smoke.db
+# null => reuse train_file. There is no split in the converted smoke set;
+# point these at real val/test dbs for a full CrossDocked run.
+val_file: null
+test_file: null
+
+# null = all complexes; set an int to cap each split (debugging).
+limit: null
+
+batch_size: 4
+num_workers: 0
+
+# Joint-centre ligand+pocket per complex at load time, exactly as upstream's
+# ProcessedLigandPocketDataset does (dataset.py:35-41, center=True) for both
+# modes. The generator reads its pocket with center=False instead, so samples
+# come back in the original pocket's frame.
+center: true
+
+# One 10-class element vocabulary shared by ligand and pocket. Hydrogens are
+# stripped from both node sets (upstream runs process_crossdock.py --no_H),
+# and this vocabulary has no `others` bucket, so any other out-of-vocabulary
+# element raises rather than becoming a silent all-zero feature row.
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]

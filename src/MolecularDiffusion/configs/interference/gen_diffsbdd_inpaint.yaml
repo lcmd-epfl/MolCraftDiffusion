@@ -1,0 +1,47 @@
+# Fragment-fixed generation (RePaint inpainting) for DiffSBDD.
+#
+# SAME `_target_` as gen_diffsbdd_pocket.yaml -- the two configs differ only
+# in whether `fixed_atom_indices` is null. A separate generator class would be
+# an interface with one implementation.
+#
+# Works in BOTH modes: ConditionalDDPM.inpaint (conditional_model.py:558,
+# what upstream's own inpaint.py calls, on the CONDITIONAL checkpoint) and
+# EnVariationalDiffusion.inpaint (en_diffusion.py:677).
+#
+# HOW FIXED ATOMS ARE CHOSEN. Upstream selects them by PDB atom name
+# (`--fix_atoms "C1 N6 C5"`). The ASE db has no atom names, so this port
+# selects by INDEX into the reference ligand stored in the same db row that
+# supplies the pocket. Same lig_fixed tensor reaches inpaint() either way.
+# Indices are into the HEAVY-ATOM ligand (hydrogens are stripped at load).
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffsbdd.DiffSBDDPocketGenerator
+
+pocket_db: ???
+pocket_index: 0
+
+num_generate: 20
+batch_size: 4
+
+# Upstream's inpaint.py CLI defaults (inpaint.py:205-206): far fewer
+# timesteps, many resampling iterations per step. Total network calls are
+# num_steps * resamplings, so raise them together with care.
+num_steps: 50
+resamplings: 20
+
+# The fixed substructure: indices into the reference ligand. Override this.
+fixed_atom_indices: [0, 1, 2, 3]
+
+# null => total ligand size is drawn from the pocket-conditioned joint prior,
+# clamped to at least len(fixed_atom_indices) (inpaint.py:107-112). An int =>
+# exactly len(fixed_atom_indices) + add_n_nodes atoms.
+add_n_nodes: null
+mol_size: []
+
+# Where the noised system is centred each step: 'ligand' (on the fixed atoms,
+# upstream's default) or 'pocket'. Conditional mode only.
+center: ligand
+# RePaint jump length. Joint mode only (en_diffusion.py:653).
+jump_length: 1
+
+seed: 42
+device: null
+output_path: generated_diffsbdd_inpaint

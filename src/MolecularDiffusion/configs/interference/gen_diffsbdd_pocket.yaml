@@ -1,0 +1,43 @@
+# De-novo pocket-conditioned generation for DiffSBDD.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
+# "which pocket", so this points at a dedicated generator, exactly as
+# gen_kgdiff_pocket.yaml / gen_pmdm_pocket.yaml do. cli/generate.py only calls
+# `instantiate(cfg.interference, task=task)` then `.run()`, so every key here
+# goes straight to that generator's __init__ -- nothing needs registering.
+#
+# There is no unconditional mode: ConditionalDDPM.sample() itself raises
+# without a pocket (conditional_model.py:474).
+#
+# Works for BOTH modes. Under `tasks: diffusion_diffsbdd` it calls
+# sample_given_pocket(); under `tasks: diffusion_diffsbdd_joint` it calls
+# EnVariationalDiffusion.inpaint() with lig_fixed=0 / pocket_fixed=1, which is
+# upstream's own joint-mode generation path (lightning_modules.py:814-834).
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffsbdd.DiffSBDDPocketGenerator
+
+# A converted ASE db. Read with center=False, so sampled ligands come back in
+# this pocket's own frame and overlay on the original structure.
+pocket_db: ???
+pocket_index: 0
+
+num_generate: 20
+batch_size: 4
+
+# Reverse-process steps. null => the model's full schedule
+# (tasks.diffusion_steps, 500).
+num_steps: null
+
+# Empty => draw ligand sizes from the 2D joint histogram CONDITIONED on this
+# pocket's size (the native behaviour). A list => sample uniformly from it.
+mol_size: []
+
+# De novo: nothing is held fixed. See gen_diffsbdd_inpaint.yaml.
+fixed_atom_indices: null
+add_n_nodes: null
+resamplings: 1
+center: ligand
+jump_length: 1
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_diffsbdd
