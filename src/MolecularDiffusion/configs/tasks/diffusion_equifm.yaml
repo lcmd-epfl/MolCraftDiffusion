@@ -1,0 +1,55 @@
+# EquiFM -- equivariant flow matching with hybrid probability transport
+# (arXiv:2312.07168, NeurIPS 2023; target repo github.com/AlgoMole/MolFM).
+#
+# Backbone: the platform's existing EGNN (modules/models/geoldm), which is
+# token-identical to MolFM's and already matches the released checkpoint keys.
+# Defaults below are MolFM's released QM9 hyperparameters (args.pickle).
+#
+# The TRAINING objective is a reconstruction of the paper's Algorithm 1 and is
+# NOT the authors' released objective (theirs additionally used an unpublished
+# angle penalty, an l2_masked_mean reduction and ODE regularisation). See
+# modules/tasks/diffusion_equifm.py and docs/model_integrations/equifm/.
+_target_: MolecularDiffusion.modules.tasks.diffusion_equifm.ModelTaskFactory
+task_type: diffusion_equifm
+
+n_dims: 3
+include_charges: true
+normalize_factors: [1, 4, 10]
+
+# Paths. sigma_min is the Lipman et al. flow-matching convention (the paper
+# never gives a value); beta_min/beta_max are from cnf_models.py:8-19.
+sigma_min: 1.0e-4
+beta_min: 0.1
+beta_max: 20.0
+
+# HB_path  -> required by the CONVERTED PRETRAINED checkpoint (args.pickle says
+#             discrete_path='HB_path'): the h channels are reweighted by M_para
+#             at integration time and the training target is divided by the same
+#             factor, so the two stay consistent.
+# OT_path  -> the verbatim Algorithm-1 model: the network emits the full
+#             velocity and nothing is reweighted. Use this when training here.
+# See Cnflows.reweight_factor for why this must be chosen explicitly.
+discrete_path: HB_path
+
+# Fixed-step RK4 ODE steps (4 network evals each). torchdiffeq is deliberately
+# not a dependency; paper Fig. 3 shows fixed-step solvers match dopri5.
+default_n_timesteps: 250
+
+# Equivariant Optimal Transport coupling (paper Algorithm 3). false falls back
+# to the vanilla independent coupling (the Table 3 ablation row).
+use_eot: true
+eot_max_iters: 20
+
+# empty -> EquiFMTaskFactory.build() fills num_atoms_histogram from train_set
+dataset_stats: {}
+
+dynamics:
+  n_layers: 9
+  hidden_nf: 256
+  attention: true
+  tanh: true
+  norm_constant: 1
+  inv_sublayers: 1
+  sin_embedding: false
+  normalization_factor: 1
+  aggregation_method: sum
