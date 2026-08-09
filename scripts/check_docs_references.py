@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -33,9 +34,22 @@ def documentation_sources() -> list[Path]:
     return sources
 
 
+def tracked_paths() -> set[str]:
+    """Return paths present in Git's index, including newly staged files."""
+    result = subprocess.run(
+        ["git", "ls-files", "--cached"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return set(result.stdout.splitlines())
+
+
 def main() -> int:
     """Report missing concrete YAML references and return a CI exit code."""
     missing: list[tuple[Path, int, str]] = []
+    tracked = tracked_paths()
 
     for source in documentation_sources():
         for line_number, line in enumerate(
@@ -45,7 +59,7 @@ def main() -> int:
                 reference = match.group("path")
                 if Path(reference).name.startswith("my_"):
                     continue
-                if not (ROOT / reference).is_file():
+                if reference not in tracked or not (ROOT / reference).is_file():
                     missing.append((source.relative_to(ROOT), line_number, reference))
 
     if missing:
