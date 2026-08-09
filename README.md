@@ -9,23 +9,38 @@
   <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Weights-HuggingFace-yellow" alt="Weights"/></a>
   <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Dataset-HuggingFace-yellow" alt="Dataset"/></a>
   <a href="https://preghosh.github.io/MolCraftDiffusion/"><img src="https://img.shields.io/badge/Docs-blue" alt="Docs"/></a>
-  <a href="https://huggingface.co/spaces/pregH/MolCraftDiffusion-demo"><img src="https://img.shields.io/badge/Demo-HuggingFace-green" alt="Demo"/></a>
 </p>
 
 ---
 
-Three-dimensional molecular generative models assign atoms explicit Cartesian coordinates, enabling generation to be conditioned on both geometric (steric, shape) and physicochemical constraints, providing a more physically meaningful route to molecular discovery than string- or graph-based representations. The field, however, remains fragmented: implementations are scattered across incompatible repositories and evaluation protocols, impeding reproducibility and controlled comparison across methods.
+Three-dimensional molecular generative models place atoms directly in Cartesian space, enabling geometric and physicochemical conditioning. Yet their implementations and evaluation workflows remain fragmented across incompatible repositories.
 
-MolCraftDiffusion is a modular, extensible platform for building, deploying, and evaluating 3D molecular diffusion models in computational chemistry. Its layered architecture decouples core training logic from model definitions and task implementations, so new generative architectures, guidance strategies, and evaluation metrics integrate with minimal changes to the codebase. Efficient pre-training is achieved through **curriculum learning**: a progressive chemical complexity ordering applied to datasets compiled from multiple sources, circumventing the cost of full retraining in downstream applications. Guided generation is supported via structure-directed mechanisms (**inpainting** for systematic structural variant exploration, **outpainting** for fragment extension) and property-directed mechanisms (gradient-based and classifier-free guidance). The platform's extensibility is demonstrated by integrating three architecturally distinct models from the literature (TABASCO, ADiT, and ShEPhERD), each without modifications to the core codebase, supporting applications from virtual library construction to inverse molecular design.
+**One platform brings together a broad range of 3D molecular generators for de novo, property-directed, structure-guided, shape-conditioned, pocket-conditioned, fragment-based, and pharmacophore-driven design.**
+
+MolCraftDiffusion unifies data preparation, training and fine-tuning, guided generation, checkpoint handling, and evaluation behind a modular architecture and consistent CLI. This shared workflow makes diverse generators easier to build, compare, and apply across virtual library construction, chemical-space exploration, inverse design, and structure-based discovery.
 
 <p align="center">
   <img src="./images/overview.png" alt="workflow" width="700"/>
 </p>
 
+## One Platform, Many 3D Generation Paradigms
+
+- **De novo generation** of complete 3D molecules
+- **Property-directed generation** for inverse molecular design
+- **Structure-guided generation** through inpainting, outpainting, and soft reference steering
+- **Shape-conditioned generation** around desired molecular geometries
+- **Protein-pocket-conditioned generation** for structure-based molecular design
+- **Fragment linking and scaffold elaboration**
+- **Pharmacophore-conditioned generation**
+- **Latent-space diffusion and flow-matching approaches**
+
+These capabilities share the same configuration system, CLI, data pipeline, checkpoint handling, and analysis tools, making it possible to apply and compare different generation paradigms without maintaining separate codebases. See the [supported architectures and their application domains](https://preghosh.github.io/MolCraftDiffusion/architectures.html).
+
 ## Features
 
 | | |
 |---|---|
+| **Broad generator coverage** | Multiple 3D generation paradigms and application domains in one platform |
 | **3D-native generation** | Models trained directly in Cartesian space; geometric validity by construction, not augmentation |
 | **Extensible architecture** | Multiple backbone families included; adding a new model is a single sub-package drop-in |
 | **Steerable generation** | Guide outputs toward target properties or structural constraints without retraining |
@@ -54,41 +69,7 @@ pip install molcraftdiffusion[cpu] \
     --find-links https://data.pyg.org/whl/torch-2.6.0+cpu.html
 ```
 
-**Optional feature groups:**
-```bash
-pip install 'molcraftdiffusion[data]'     # data prep, augmentation, SOAP featurization
-pip install 'molcraftdiffusion[analyze]'  # metrics, xyz2mol, xtb-electronic
-pip install 'molcraftdiffusion[bio]'      # DiffPharma novel-pocket prep from raw PDB+SDF
-pip install 'molcraftdiffusion[shape]'    # DiffSMol offline shape-cache precompute
-pip install 'molcraftdiffusion[flowmol]'  # FlowMol backbone (see note below re: DGL CUDA build)
-
-# xTB — must be installed via conda, not pip
-conda install -c conda-forge xtb==6.7.1 -y
-conda install xtb-python -y
-```
-
-> Commands that require optional packages exit with an installation hint rather than crashing.
-
-### UMA featurization backend (optional)
-
-`MolCraftDiff analyze featurize --backend uma` uses a pretrained UMA model. fairchem is **not** a pip dependency; vendor it manually:
-
-```bash
-git clone https://github.com/pregHosh/fairchem fairchem
-```
-
-Download `uma-s-1p2.pt` from [Hugging Face](https://huggingface.co/pregH/MolecularDiffusion) and place it at `training_outputs/uma-s-1p2.pt` (or pass `--checkpoint /path/to/checkpoint.pt`). The default SOAP backend has no such requirement.
-
-### Development install
-
-```bash
-git clone https://github.com/pregHosh/MolCraftDiffusion
-cd MolCraftDiffusion
-pip install -e .[gpu] --find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
-
-pip install -e '.[data]'     # optional
-pip install -e '.[analyze]'  # optional
-```
+See the [installation guide](https://preghosh.github.io/MolCraftDiffusion/installation.html) for optional capabilities, platform-specific dependencies, and development setup.
 
 ## Usage
 
@@ -96,25 +77,29 @@ Pre-trained diffusion models are available on [Hugging Face](https://huggingface
 
 ### CLI
 
-Run all commands from the repo root. Every command accepts a YAML config name and supports Hydra-style key overrides:
+Training and inference commands accept a YAML config followed by optional Hydra-style overrides:
 
 ```
-MolCraftDiff [COMMAND] [CONFIG_NAME] [key=value ...]
+MolCraftDiff {train|generate|predict|eval-predict} CONFIG [key=value ...]
 ```
+
+Analysis and data preparation are direct utility command groups, while generation sweeps accept a sweep config and command-line options.
 
 | Command | Description |
 |---|---|
 | `train` | Train a diffusion, regression, or guidance model |
 | `generate` | Sample molecules from a trained model |
+| `generate-sweep` | Run and resume generation parameter sweeps |
 | `predict` | Run property prediction |
 | `eval-predict` | Evaluate prediction results |
 | `analyze` | Post-process and evaluate generated molecules |
 | `data` | Data preparation and augmentation utilities |
 
 ```bash
-MolCraftDiff train   example_diffusion_config
-MolCraftDiff generate my_generation_config
-MolCraftDiff predict  my_prediction_config
+MolCraftDiff train configs/example_diffusion_config.yaml
+MolCraftDiff generate configs/generate.yaml interference.num_generate=100
+MolCraftDiff predict configs/predict.yaml
+MolCraftDiff generate-sweep path/to/sweep.yaml --dry-run
 MolCraftDiff data prepare compile -s data_dir/ -d dataset.db
 
 MolCraftDiff --help         # all commands
@@ -124,52 +109,38 @@ MolCraftDiff train --help   # per-command help
 ### Analysis & Post-processing
 
 ```bash
-MolCraftDiff analyze optimize  generated_molecules/                              # GFN-xTB geometry optimization
-MolCraftDiff analyze metrics   generated_molecules/                              # validity and connectivity
-MolCraftDiff analyze compare   generated_molecules/                              # RMSD, energy diff, bonds/angles
-MolCraftDiff analyze xyz2mol   generated_molecules/                              # XYZ → SMILES + fingerprints
-MolCraftDiff analyze featurize generated_molecules/                              # SOAP feature vectors (default)
-MolCraftDiff analyze featurize generated_molecules/ --backend uma --device cuda  # UMA backbone embeddings
+MolCraftDiff analyze metrics generated_molecules/
+MolCraftDiff analyze --help
 ```
 
-## Visualization
+The analysis suite covers structural validation, geometry optimization and comparison, electronic properties, molecular representations, and feature extraction. See the [analysis tutorial](https://preghosh.github.io/MolCraftDiffusion/tutorials/09_analyze.html) for commands and optional dependencies.
 
-- [3DMolViewer](https://github.com/pregHosh/3DMolViewer): interactive 3D property visualization
-- [V](https://github.com/briling/v): lightweight X11 molecular viewer
+## Documentation
 
-## Tutorials
-
-Full tutorials are at **https://preghosh.github.io/MolCraftDiffusion/**
+- [Installation](https://preghosh.github.io/MolCraftDiffusion/installation.html)
+- [Supported architectures and application domains](https://preghosh.github.io/MolCraftDiffusion/architectures.html)
+- [Tutorials](https://preghosh.github.io/MolCraftDiffusion/tutorials/index.html)
+- [Configuration templates](https://preghosh.github.io/MolCraftDiffusion/config_templates.html)
 
 ## Project Structure
 
 ```
-├── .project-root
-├── justfile
-├── pyproject.toml
-└── src/MolecularDiffusion/
-    ├── cli/                    # Click entry points (train, generate, predict, analyze, data)
-    ├── configs/                # Hydra config trees (tasks, data, trainer, logger, hydra, interference)
-    ├── core/                   # Training engine (PyTorch Lightning wrapper, callbacks, logging)
-    ├── data/                   # Dataset, dataloader, and featurization components
-    ├── modules/
-    │   ├── layers/             # Reusable equivariant building blocks (EGCL, Equiformer v2, …)
-    │   │                       #   Add a new layer family here; wire it into a model below.
-    │   ├── models/             # One sub-package per architecture:
-    │   │   ├── en_diffusion/   #   EDM — E(n)-equivariant diffusion (default backbone)
-    │   │   ├── ldm/            #   Latent diffusion model (Equiformer encoder/decoder + VAE)
-    │   │   ├── tabasco/        #   TABASCO flow-matching architecture
-    │   │   ├── shepherd_arch/  #   Shepherd — bundles its own equiformer_v2 variant
-    │   │   └── <new_arch>/     #   Drop a new architecture here; register it in configs/tasks/
-    │   └── tasks/              # Lightning modules that bind a model to a training objective
-    │                           #   (diffusion, regression, guidance, pharmacophore, SSL, …)
-    ├── runmodes/               # Run-mode logic (train, generate, analyze, data preparation)
-    └── utils/                  # Geometry, diffusion math, graph utilities, I/O helpers
+src/MolecularDiffusion/
+├── cli/                         # Shared command-line entry points
+├── configs/
+│   ├── tasks/<generator>.yaml   # Hydra registration for a generator
+│   └── ...                      # Shared data, trainer, engine, and generation configs
+├── core/                        # Architecture-agnostic training engines and callbacks
+├── data/                        # Shared datasets, loaders, and molecular representations
+├── modules/
+│   ├── layers/<family>/         # Optional reusable architectural building blocks
+│   ├── models/<generator>/      # Isolated model implementation
+│   └── tasks/<generator>.py     # Thin adapter to the common task interface
+├── runmodes/                    # Generic training, generation, and analysis workflows
+└── utils/                       # Geometry, diffusion, graph, and I/O utilities
 ```
 
-## License
-
-MIT
+Adding a generator normally requires only its isolated model implementation, a task adapter, and a Hydra task config. The shared CLI, data pipeline, training engines, checkpoint handling, and analysis workflows remain unchanged because they operate through a common task interface.
 
 ## Citation
 
