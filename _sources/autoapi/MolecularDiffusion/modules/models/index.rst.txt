@@ -12,10 +12,12 @@ Submodules
 
    /autoapi/MolecularDiffusion/modules/models/difflinker/index
    /autoapi/MolecularDiffusion/modules/models/diffpharma/index
+   /autoapi/MolecularDiffusion/modules/models/diffsbdd/index
    /autoapi/MolecularDiffusion/modules/models/diffsmol/index
    /autoapi/MolecularDiffusion/modules/models/egcl/index
    /autoapi/MolecularDiffusion/modules/models/egt/index
    /autoapi/MolecularDiffusion/modules/models/en_diffusion/index
+   /autoapi/MolecularDiffusion/modules/models/equifm/index
    /autoapi/MolecularDiffusion/modules/models/equiformer_v2_backbone/index
    /autoapi/MolecularDiffusion/modules/models/equiformer_v2_dynamics/index
    /autoapi/MolecularDiffusion/modules/models/esen/index
