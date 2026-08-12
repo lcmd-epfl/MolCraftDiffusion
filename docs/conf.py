@@ -103,7 +103,8 @@ linkcheck_ignore = [
     r"https://chemrxiv\.org/.*",
     r"https://doi\.org/10\.26434/chemrxiv-2024-882hh",
     r"https://doi\.org/10\.1093/bib/bbad435",
-    r"https://doi\.org/10\.1021/acs\.jcim\.3c00667",
+    # ACS resolves every 10.1021 DOI to pubs.acs.org, which 403s bots.
+    r"https://doi\.org/10\.1021/.*",
     r"https://pubs\.acs\.org/doi/10\.1021/jacs\.5c19960",
 ]
 
