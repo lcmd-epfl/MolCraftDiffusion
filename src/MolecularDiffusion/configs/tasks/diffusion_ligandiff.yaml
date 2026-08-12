@@ -1,0 +1,54 @@
+# LigandDiff: ligand-regeneration diffusion for 3D transition-metal complexes.
+# See docs/model_integrations/ligandiff/INTEGRATION_PLAN.md for the integration
+# plan and docs/adding_new_models.md §2.3 for this file's role.
+_target_: MolecularDiffusion.modules.tasks.diffusion_ligandiff.LigandDiffTaskFactory
+task_type: diffusion_ligandiff
+
+# Model feature width. MUST stay 8 -- upstream's heavy-atom vocab
+# {C,N,O,S,Br,Cl,P,F} (LigandDiff src/const.py:11), with the metal carried as
+# an all-zero row and its element travelling out of band. The released
+# checkpoint's edm.dynamics.h_embedding.weight is (192, 8); widening this
+# makes the load a silent no-op under cli/generate.py:322's strict=False.
+in_node_nf: 8
+n_dims: 3
+ligand_group_node_nf: 6
+
+# Backbone. Values are the released checkpoint's own embedded
+# `hyper_parameters` (the authoritative architecture spec -- upstream's
+# config.yml disagrees and is the toy-run config, not the trained one).
+hidden_nf: 192
+n_layers: 5
+activation: silu
+attention: true
+tanh: true
+norm_constant: 1
+inv_sublayers: 1
+sin_embedding: false
+normalization_factor: 100
+aggregation_method: sum
+model: gvp_dynamics
+normalization: batch_norm
+condition_time: true
+drop_rate: 0.2
+
+# Diffusion. `polynomial_2` is upstream's fresh-training default
+# (config.yml:21). Generation FROM THE RELEASED CHECKPOINT must override this
+# to `learned` -- that checkpoint carries eight edm.gamma.* tensors which are
+# otherwise unexpected keys and get silently dropped by strict=False. See
+# configs/ligandiff_generate.yaml.
+diffusion_steps: 500
+diffusion_noise_schedule: polynomial_2
+diffusion_noise_precision: 1.0e-5
+diffusion_loss_type: vlb
+normalize_factors: [1, 4, 10]
+center_of_mass: context
+
+# Decode-side symbol table ONLY -- 8 heavy atoms at indices 0..7 (upstream
+# order, preserved so argmax decoding is unchanged) then the 10 supported
+# metals at 8..17. It sizes no tensor. It is mandatory because
+# runmodes/generate/tasks_generate.py:1463 calls
+# `onehot(atom.element, atom_vocab, allow_unknown=False)`, which raises on
+# every transition-metal complex against an 8-entry vocab.
+# cli/generate.py:95 `_task_config_defines_atom_vocab` lets this win over the
+# generate config's atom_vocab.
+atom_vocab: [C, N, O, S, Br, Cl, P, F, Cr, Mn, Fe, Co, Ni, Cu, Zn, Ru, Pd, Pt]

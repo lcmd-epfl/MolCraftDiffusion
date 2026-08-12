@@ -1,0 +1,82 @@
+# multi-LigandDiff: MULTI-ligand regeneration diffusion for 3D
+# transition-metal complexes ("partial to total generation" -- up to every
+# ligand, from a bare metal).
+# See docs/model_integrations/ligandiff_multi/INTEGRATION_PLAN.md for the
+# integration plan and docs/adding_new_models.md §2.3 for this file's role.
+#
+# The network is the ALREADY-INTEGRATED ligandiff one, imported unmodified and
+# built with ligand_group_node_nf: 7. Nothing under
+# modules/models/ligandiff/ was touched; configs/tasks/diffusion_ligandiff.yaml
+# keeps its own 6 and the two checkpoints stay non-interchangeable.
+_target_: MolecularDiffusion.modules.tasks.diffusion_ligandiff_multi.LigandDiffMultiTaskFactory
+task_type: diffusion_ligandiff_multi
+
+# Model feature width. MUST stay 8 -- upstream's heavy-atom vocab
+# {C,N,O,S,Br,Cl,P,F} (src/const.py:11, byte-identical to LigandDiff's), with
+# the metal carried as an all-zero row and its element travelling out of band.
+in_node_nf: 8
+n_dims: 3
+
+# The conditioning channel: cat([ligand_group(6), coord_site(1)])
+# (src/lightning.py:126). NOT a widened ligand_group -- coord_site is a new
+# per-atom "coordinates the metal" flag. The released checkpoint's
+# h_embedding_out.weight is (16, 192) = in_node_nf(8) + 7 + time(1), so this
+# must stay 7; the task raises rather than let strict=False drop everything.
+ligand_group_node_nf: 7
+
+# Backbone. Values are the released checkpoint's own embedded
+# `hyper_parameters` (the authoritative architecture spec -- upstream's
+# config.yml disagrees, exactly as it did for ligandiff).
+hidden_nf: 192
+n_layers: 5
+activation: silu
+attention: true
+tanh: true
+norm_constant: 1
+inv_sublayers: 1
+sin_embedding: false
+normalization_factor: 100
+aggregation_method: sum
+model: gvp_dynamics
+normalization: batch_norm
+condition_time: true
+drop_rate: 0.2
+
+# Diffusion. Unlike ligandiff's task config, `learned` is the DEFAULT here:
+# it is what the released checkpoint was trained with, and it carries eight
+# edm.gamma.* tensors that cli/generate.py:322's strict=False load would drop
+# silently under any other schedule.
+diffusion_steps: 500
+diffusion_noise_schedule: learned
+diffusion_noise_precision: 1.0e-5
+diffusion_loss_type: vlb
+
+# [coords, h, ligand_site]. REVERSED relative to ligandiff's [1, 4, 10].
+# Index 2 MUST stay 1: it scales the ligand_site conditioning channel, and the
+# imported (unmodified) LigandDiff EDM does not apply that scaling at all --
+# which is only equivalent to upstream's edm.py:50 at a divisor of 1. The task
+# raises if it is anything else.
+normalize_factors: [10, 4, 1]
+center_of_mass: context
+
+# Denticity partition of the metal's FREE octahedral coordination sites among
+# the ligands to be generated (upstream const.cn_oct / generate.py:183).
+# null = pick a feasible partition at random per sample, which is how the
+# platform's num_generate draws cover upstream's enumerate-every-partition
+# loop. Override per run via
+# interference.condition_configs.outpaint_cfgs.denticity_split.
+denticity_split: null
+
+# Decode-side symbol table ONLY -- 8 heavy atoms at indices 0..7 (upstream
+# order, preserved so argmax decoding is unchanged) then the 20 supported
+# metals at 8..27 (src/const.py:17 order). It sizes no tensor. It is mandatory
+# because runmodes/generate/tasks_generate.py:1463 calls
+# `onehot(atom.element, atom_vocab, allow_unknown=False)`, which raises on
+# every transition-metal complex against an 8-entry vocab.
+#
+# HONEST LIMIT: the released weights have only ever seen Cr, Mn, Fe, Co, Ni,
+# Cu, Zn (Z 24-30) -- that is every metal in all three Zenodo splits. The
+# other thirteen entries let such complexes be PARSED, not generated well.
+atom_vocab: [C, N, O, S, Br, Cl, P, F,
+             Ti, V, Cr, Mn, Fe, Co, Ni, Cu, Zn, Zr,
+             Mo, Ru, Rh, Pd, Cd, W, Re, Os, Ir, Pt]
