@@ -1,0 +1,55 @@
+# Pocket-conditioned generation for Apo2Mol.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
+# "which pocket", so this points at a dedicated generator, exactly as
+# gen_kgdiff_pocket.yaml / gen_ipdiff_pocket.yaml / gen_pmdm_pocket.yaml do.
+# cli/generate.py only calls `instantiate(cfg.interference, task=task)` then
+# `.run()`.
+#
+# There is no unconditional mode: Apo2Mol's network cannot run without
+# protein_pos/protein_v, and its prior needs a real complex.
+#
+# OUTPUTS (one more than the other pocket generators):
+#   molecule_<i>.xyz    the generated ligand, in the input pocket's frame
+#   pocket_<i>.pdb      the CO-GENERATED holo-like pocket for that sample
+#   pocket_metrics.csv  per-sample pocket RMSD / TM-score vs the reference
+_target_: MolecularDiffusion.modules.tasks.diffusion_apo2mol.Apo2MolPocketGenerator
+
+# A converted ASE db (docs/model_integrations/apo2mol/scripts/convert_dataset.py).
+# Coordinates are never re-centred at load time: the model subtracts the apo
+# pocket centroid internally (center_pos_mode: protein) and the sampler adds
+# it back, so ligands and pockets come back in this row's own frame.
+pocket_db: ???
+pocket_index: 0
+
+num_generate: 20
+# The prior builds a dense complex graph and the pocket update loops over
+# residues in Python, so keep this small. Upstream samples at 5 on an A100.
+batch_size: 2
+
+# Reverse-process steps. null => the model's full schedule
+# (tasks.num_diffusion_timesteps, 1000). NB the pocket is only updated on 5
+# steps spread across the full schedule, so shortening this drops pocket
+# updates fast -- below ~200 steps the pocket barely moves.
+num_steps: null
+
+# Empty => draw ligand sizes from the pocket-size-conditioned prior (the
+# static atom_num_config table -- no training data and no checkpoint buffer
+# needed). A list => sample uniformly from it instead. Hard cap 150.
+mol_size: []
+
+# What the emitted pocket RMSD / TM-score is measured against.
+#   false (default) -- against the INPUT APO pocket, reproducing upstream's
+#     custom-inference behaviour (sample_custom_pocket.py:686-690). The number
+#     is then DISPLACEMENT, not accuracy.
+#   true -- against the row's real holo pocket. Only meaningful on a db row
+#     converted from a genuine apo/holo pair, and it leaks the answer into the
+#     diagnostic only, never into the model input.
+use_holo_reference: false
+
+# No guidance knobs on purpose: Apo2Mol has no classifier, no CFG and no
+# property head. Its conditioning IS the apo pocket plus the frozen prior.
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_apo2mol

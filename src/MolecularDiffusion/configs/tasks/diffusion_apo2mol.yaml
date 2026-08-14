@@ -1,0 +1,104 @@
+# Apo2Mol: 3D ligand generation conditioned on an APO (ligand-free) pocket,
+# co-generating a holo-like pocket conformation.
+# See docs/model_integrations/apo2mol/INTEGRATION_PLAN.md.
+#
+# Defaults below are the RELEASED Apo2Mol settings, read out of
+# others/Apo2Mol/configs/training.yaml. Do not change the architecture block
+# if you intend to load the released checkpoint -- the converter asserts every
+# shape and will refuse.
+#
+# Relationship to the other pocket models in-tree:
+#   - the backbone is the same TargetDiff `uni_o2` lineage as KGDiff/IPDiff,
+#     plus a per-residue aggregation head and a 5-wide (rather than 4-wide)
+#     edge-type channel;
+#   - KGDiff guides sampling with its own affinity head, IPDiff injects a
+#     pretrained prior into the noising schedule. Apo2Mol does neither: it
+#     adds a THIRD generative channel, the pocket conformation itself.
+_target_: MolecularDiffusion.modules.tasks.diffusion_apo2mol.ModelTaskFactory
+
+task_type: diffusion_apo2mol
+
+# --- the interaction prior (PMINet) ------------------------------------ #
+# Apo2Mol's PMINet, NOT IPDiff's IPNet: different architecture (GATConv vs
+# EGNN) and disjoint weights (0 of 45 same-named tensors byte-identical).
+# Only consulted when TRAINING FROM SCRATCH. When loading Apo2Mol's released
+# checkpoint the prior arrives with it under net_cond.*, so a missing file
+# here is a warning, not an error.
+net_cond_ckpt: docs/model_integrations/apo2mol/checkpoints/pminet
+# Width of the prior's per-node output, concatenated into every token
+# embedding. Must match the checkpoint (128).
+cond_dim: 128
+# Retrieval-augmented prompting. 0 in the release, which makes the retrieval
+# branch dead (prompt_ligand_attn degenerates to self-attention). Not ported
+# above 0.
+topk_prompt: 0
+
+# --- node feature widths ---
+# [element one-hot (6: H,C,N,O,S,Se) | amino acid one-hot (20) | is_backbone]
+protein_atom_feature_dim: 27
+# 13-class (element, is_aromatic) ligand vocabulary ("add_aromatic"),
+# covering H, C, N, O, F, P, S, Cl. Collapsed to 8 elements on output.
+ligand_atom_feature_dim: 13
+
+# --- ligand diffusion ---
+model_mean_type: C0            # the net predicts x0, not the noise
+beta_schedule: sigmoid         # position channel
+beta_start: 1.0e-7
+beta_end: 2.0e-3
+pos_beta_s: 0.01               # only used if beta_schedule == cosine
+v_beta_schedule: cosine        # atom-type channel (D3PM, log space)
+v_beta_s: 0.01
+num_diffusion_timesteps: 1000
+sample_time_method: symmetric  # [importance, symmetric]
+
+# --- pocket "diffusion" ---
+# NOT a DDPM: a sigmoid-weighted interpolant from holo towards apo, with
+# SLERP on the rotation channel. Only 'sigmoid' is implemented upstream.
+lambda_schedule: sigmoid
+# The pocket is moved on only this many of the 1000 reverse steps (each move
+# runs a Python loop over residues). 5 => {799, 599, 399, 199, 10}.
+num_protein_update_steps: 5
+
+# --- loss ---
+# loss_ligand_pos + loss_v_weight*loss_v + loss_tr + loss_rot
+#                 + loss_chi_weight*loss_chi
+loss_v_weight: 100.0
+loss_chi_weight: 5.0
+
+# Gaussian jitter added to the APO pocket during training only
+# (configs/training.yaml:65 pos_noise_std). The holo target stays clean.
+# 0 disables it.
+pos_noise_std: 0.1
+
+# --- architecture (uni_o2 SE(3) attention transformer) ---
+model_type: uni_o2
+num_blocks: 1
+num_layers: 9
+hidden_dim: 128
+n_heads: 16
+# NOT bond orders: a one-hot of five node-incidence categories -- ll, lp, pl,
+# pp-within-residue, pp-across-residues. No bond information reaches the
+# network. This is the one place Apo2Mol differs from KGDiff's 4.
+edge_feat_dim: 5
+num_r_gaussian: 20
+knn: 32                        # graph is knn over the joint point cloud
+cutoff_mode: knn
+num_node_types: 8
+act_fn: relu
+norm: true
+ew_net_type: global            # [r, m, global, none]
+num_x2h: 1
+num_h2x: 1
+r_max: 10.0
+x2h_out_fc: false
+sync_twoup: false
+node_indicator: true           # 1 extra dim flagging ligand vs pocket tokens
+
+# time_emb_dim: 0 means NO timestep reaches the backbone at all -- the
+# schedule enters only through how much noise the inputs already carry.
+time_emb_dim: 0
+time_emb_mode: simple
+
+# Positions are centred on the APO pocket centroid, not zero-CoM; the sampler
+# adds the offset back, so samples land in the input pocket's frame.
+center_pos_mode: protein

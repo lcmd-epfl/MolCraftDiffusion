@@ -1,0 +1,29 @@
+# Apo2Mol apo/holo/ligand complexes: a diffused ligand point cloud, an apo
+# pocket, the holo pocket that is the pocket channel's target, and the
+# per-residue rigid transforms + chi angles relating them. Read from an ASE db
+# written by docs/model_integrations/apo2mol/scripts/convert_dataset.py.
+_target_: MolecularDiffusion.data.component.apo2mol_data.Apo2MolDataModule
+
+root: ???
+train_file: apo2mol_smoke.db
+# null => reuse train_file. There is no split in the converted smoke set;
+# point these at real val/test dbs for a full run.
+val_file: null
+test_file: null
+
+# null = all complexes; set an int to cap each split (debugging).
+limit: null
+
+# NB the PMINet prior builds a DENSE complex graph, so memory scales with
+# (pocket atoms x batch_size)^2, and every pocket update runs a Python loop
+# over residues. Upstream trains at 2.
+batch_size: 2
+num_workers: 0
+
+# There is no `center` knob on purpose: ScorePosNet3D centres on the APO
+# pocket centroid itself (center_pos_mode: protein) in both the loss and the
+# sampler, and the sampler adds the offset back.
+
+# Output atom vocabulary -- the 8 distinct elements behind the model's
+# 13-class (element, is_aromatic) vocabulary.
+atom_vocab: [H, C, N, O, F, P, S, Cl]
