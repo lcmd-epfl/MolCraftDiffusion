@@ -11,6 +11,8 @@ Submodules
    :maxdepth: 1
 
    /autoapi/MolecularDiffusion/modules/tasks/diffusion/index
+   /autoapi/MolecularDiffusion/modules/tasks/diffusion_apo2mol/index
+   /autoapi/MolecularDiffusion/modules/tasks/diffusion_diffint/index
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_difflinker/index
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_diffpharma/index
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_diffsbdd/index
@@ -21,6 +23,8 @@ Submodules
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_ipdiff/index
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_kgdiff/index
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_ldm/index
+   /autoapi/MolecularDiffusion/modules/tasks/diffusion_ligandiff/index
+   /autoapi/MolecularDiffusion/modules/tasks/diffusion_ligandiff_multi/index
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_pmdm/index
    /autoapi/MolecularDiffusion/modules/tasks/diffusion_tabasco/index
    /autoapi/MolecularDiffusion/modules/tasks/metrics/index
