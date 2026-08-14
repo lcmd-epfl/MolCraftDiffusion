@@ -388,6 +388,21 @@ def _collect_defaults(out_dir: Path) -> dict[str, Any]:
     """Built-in collection rules for the standard workflow eval script outputs."""
     m: dict[str, Any] = {}
 
+    # `analyze metrics` writes a summary next to its CSV; prefer it over
+    # re-deriving the same numbers from the per-file rows.
+    for summary_path in sorted(out_dir.glob("*_summary.json")):
+        try:
+            with summary_path.open() as f:
+                summary = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for key in ("validity", "validity_geom", "validity_connected",
+                    "fully_connected", "atom_stability", "uniqueness",
+                    "novelty", "diversity", "n_failed"):
+            value = summary.get(key)
+            if value is not None:
+                m[key] = round(value, 4) if isinstance(value, float) else value
+
     mh = out_dir / "optimized_xyz" / "merged_hits.csv"
     if mh.exists():
         df = pd.read_csv(mh)

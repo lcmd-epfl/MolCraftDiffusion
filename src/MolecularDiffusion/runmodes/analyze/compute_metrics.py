@@ -1,5 +1,10 @@
 import glob
+import json
 import os
+import shutil
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 import torch
 import numpy as np
 import pandas as pd
@@ -13,7 +18,6 @@ try:
     from MolecularDiffusion.utils.geom_metrics import (check_validity_v1,
                                                        check_chem_validity,
                                                        run_postbuster,
-                                                       smilify_wrapper,
                                                        load_molecules_from_xyz,
                                                        check_neutrality,
                                                        xyz_to_rdkit_mol,
@@ -51,6 +55,208 @@ SCORES_THRESHOLD = 3.0
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+@dataclass
+class _MetricsInput:
+    input_path: Path
+    xyz_dir: Path
+    xyzs: list[str]
+    source_by_xyz: dict[str, Path]
+    row_by_xyz: dict[str, object]
+    temp_dir: tempfile.TemporaryDirectory | None = None
+
+    @property
+    def is_db(self):
+        return self.input_path.is_file() and self.input_path.suffix.lower() == ".db"
+
+    def cleanup(self):
+        if self.temp_dir is not None:
+            self.temp_dir.cleanup()
+
+
+def _prepare_metrics_input(input_path, portion):
+    path = Path(input_path)
+    if path.is_dir():
+        xyzs = [
+            str(p)
+            for p in sorted(path.glob("*.xyz"))
+            if "opt" not in p.name
+        ]
+        if portion < 1.0:
+            random.shuffle(xyzs)
+            xyzs = xyzs[:int(len(xyzs) * portion)]
+        return _MetricsInput(
+            input_path=path,
+            xyz_dir=path,
+            xyzs=xyzs,
+            source_by_xyz={xyz: Path(xyz) for xyz in xyzs},
+            row_by_xyz={},
+        )
+
+    if path.is_file() and path.suffix.lower() == ".db":
+        from ase import io
+        from ase.db import connect
+
+        temp_dir = tempfile.TemporaryDirectory(prefix="molcraft_metrics_")
+        temp_path = Path(temp_dir.name)
+        xyzs = []
+        source_by_xyz = {}
+        row_by_xyz = {}
+        with connect(str(path)) as db:
+            for row in db.select():
+                xyz_path = temp_path / f"row_{row.id}.xyz"
+                io.write(str(xyz_path), row.toatoms())
+                xyz = str(xyz_path)
+                xyzs.append(xyz)
+                source_by_xyz[xyz] = path
+                row_by_xyz[xyz] = row
+        if portion < 1.0:
+            random.shuffle(xyzs)
+            xyzs = xyzs[:int(len(xyzs) * portion)]
+        return _MetricsInput(
+            input_path=path,
+            xyz_dir=temp_path,
+            xyzs=xyzs,
+            source_by_xyz=source_by_xyz,
+            row_by_xyz=row_by_xyz,
+            temp_dir=temp_dir,
+        )
+
+    raise ValueError(
+        f"Unsupported metrics input '{input_path}'. Expected an XYZ directory or ASE .db file."
+    )
+
+
+def _add_db_row_ids(df, metrics_input):
+    if not metrics_input.is_db or df is None or df.empty:
+        return df
+    df = df.copy()
+    df["ase_db_row_id"] = [
+        _row_id_for_result(row, metrics_input) for _, row in df.iterrows()
+    ]
+    return df
+
+
+def _result_xyz_path(row, metrics_input):
+    for column in ("file", "filename"):
+        if column in row and pd.notna(row[column]):
+            value = str(row[column])
+            candidate = Path(value)
+            if candidate.is_absolute() or candidate.parent != Path("."):
+                if str(candidate) in metrics_input.source_by_xyz or candidate.exists():
+                    return str(candidate)
+            for xyz in metrics_input.xyzs:
+                if Path(xyz).name == value:
+                    return xyz
+    return None
+
+
+def _row_id_for_result(row, metrics_input):
+    xyz_path = _result_xyz_path(row, metrics_input)
+    row_obj = metrics_input.row_by_xyz.get(xyz_path)
+    return getattr(row_obj, "id", None)
+
+
+def _is_truthy_filter_value(value):
+    if pd.isna(value):
+        return False
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(value)
+
+
+def _default_filtered_output(metrics_input):
+    if metrics_input.is_db:
+        return metrics_input.input_path.with_name(
+            f"{metrics_input.input_path.stem}_filtered.db"
+        )
+    return metrics_input.input_path / "filtered_xyz"
+
+
+def _default_metric_path(metrics_input, filename):
+    if metrics_input.is_db:
+        return str(
+            metrics_input.input_path.with_name(
+                f"{metrics_input.input_path.stem}_{filename}"
+            )
+        )
+    return str(metrics_input.input_path / filename)
+
+
+def _write_filtered_structures(filtered_df, metrics_input, output_path):
+    output_path = Path(output_path)
+    if metrics_input.is_db:
+        from ase.db import connect
+
+        if output_path.exists():
+            output_path.unlink()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with connect(str(output_path)) as db_out:
+            for _, result_row in filtered_df.iterrows():
+                xyz_path = _result_xyz_path(result_row, metrics_input)
+                row = metrics_input.row_by_xyz.get(xyz_path)
+                if row is None:
+                    continue
+                db_out.write(
+                    row.toatoms(),
+                    key_value_pairs=dict(row.key_value_pairs),
+                    data=dict(row.data),
+                )
+        return
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    for _, result_row in filtered_df.iterrows():
+        xyz_path = _result_xyz_path(result_row, metrics_input)
+        source = metrics_input.source_by_xyz.get(xyz_path)
+        if source is None:
+            continue
+        shutil.copy2(source, output_path / source.name)
+
+
+def _apply_result_filter(result_tables, metrics_input, filter_column, filtered_output):
+    if not filter_column:
+        return
+
+    matches = [
+        (name, df, output_path)
+        for name, df, output_path in result_tables
+        if df is not None and filter_column in df.columns
+    ]
+    if not matches:
+        available = sorted(
+            {
+                column
+                for _, df, _ in result_tables
+                if df is not None
+                for column in df.columns
+            }
+        )
+        raise ValueError(
+            f"Filter column '{filter_column}' was not found in generated metrics. "
+            f"Available columns: {', '.join(available)}"
+        )
+    if len(matches) > 1:
+        table_names = ", ".join(name for name, _, _ in matches)
+        raise ValueError(
+            f"Filter column '{filter_column}' appears in multiple result tables "
+            f"({table_names}). Run one metric type or choose a unique column."
+        )
+
+    name, df, output_path = matches[0]
+    mask = df[filter_column].map(_is_truthy_filter_value)
+    filtered_df = df[mask].copy()
+    filtered_df.to_csv(output_path, index=False)
+    structure_output = filtered_output or _default_filtered_output(metrics_input)
+    _write_filtered_structures(filtered_df, metrics_input, structure_output)
+    logging.info(
+        f"Filtered {len(filtered_df)}/{len(df)} rows from {name} metrics to {output_path}"
+    )
+    logging.info(f"Filtered structures saved to {structure_output}")
+
+
 def _get_split_stats(data_list, n_splits, scale=100.0):
     if len(data_list) == 0:
         return 0.0, 0.0
@@ -62,6 +268,102 @@ def _get_split_stats(data_list, n_splits, scale=100.0):
         return 0.0, 0.0
     return float(np.mean(split_means)), float(np.std(split_means))
 
+def _perceive_mol(xyz, converter="xyz2mol", timeout=10):
+    """Convert one .xyz to (smiles, mol), trying the other converter as backup.
+
+    Returns ``(None, None)`` when both fail -- never raises, and never leaks
+    state from a previous file.
+    """
+    order = ["xyz2mol", "openbabel"]
+    if converter == "openbabel":
+        order.reverse()
+
+    for name in order:
+        try:
+            if name == "xyz2mol":
+                smiles, mol = smilify_xyz2mol(xyz, timeout=timeout)
+            else:
+                smiles, mol = smilify_openbabel(xyz)
+                # openbabel returns lists; take the single-molecule case
+                if isinstance(smiles, (list, tuple)):
+                    if len(smiles) != 1:
+                        continue
+                    smiles, mol = smiles[0], mol[0] if isinstance(mol, (list, tuple)) else mol
+            if smiles and mol is not None:
+                return smiles, mol
+        except Exception:  # noqa: BLE001 -- a failed conversion is data, not an error
+            continue
+    return None, None
+
+
+def _rdkit_valid(mol):
+    """Standard validity: the molecule sanitizes and its SMILES round-trips."""
+    if mol is None:
+        return False
+    from rdkit import Chem  # noqa: PLC0415
+
+    try:
+        probe = Chem.Mol(mol)
+        Chem.SanitizeMol(probe)
+        smiles = Chem.MolToSmiles(probe)
+        return bool(smiles) and Chem.MolFromSmiles(smiles) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _set_level_metrics(smiles, train_smiles=None):
+    """Uniqueness, novelty and diversity over the valid molecules."""
+    from rdkit import Chem  # noqa: PLC0415
+    from rdkit.Chem import AllChem, DataStructs  # noqa: PLC0415
+
+    smiles = [s for s in smiles if s]
+    out = {"n_valid_smiles": len(smiles), "uniqueness": None,
+           "novelty": None, "diversity": None}
+    if not smiles:
+        return out
+
+    unique = sorted(set(smiles))
+    out["uniqueness"] = len(unique) / len(smiles)
+
+    if train_smiles:
+        known = set(train_smiles)
+        out["novelty"] = sum(s not in known for s in unique) / len(unique)
+
+    mols = [m for m in (Chem.MolFromSmiles(s) for s in unique) if m is not None]
+    if len(mols) > 1:
+        gen = AllChem.GetMorganGenerator(radius=2, fpSize=2048)
+        fps = [gen.GetFingerprint(m) for m in mols]
+        sims = [
+            s
+            for i in range(1, len(fps))
+            for s in DataStructs.BulkTanimotoSimilarity(fps[i], fps[:i])
+        ]
+        out["diversity"] = 1.0 - float(np.mean(sims))
+    return out
+
+
+def _load_train_smiles(path):
+    """Read reference SMILES for novelty from a .txt (one per line) or .csv."""
+    if path is None:
+        return None
+    if path.endswith(".csv"):
+        df = pd.read_csv(path)
+        col = "smiles" if "smiles" in df.columns else df.columns[0]
+        return set(df[col].dropna().astype(str))
+    with open(path) as f:
+        return {line.split()[0] for line in f if line.strip()}
+
+
+def _write_summary(output_path, payload):
+    """Write the run summary next to the CSV as JSON."""
+    base, _ = os.path.splitext(output_path)
+    summary_path = f"{base}_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+    logging.info(f"Summary written to {summary_path}")
+    return summary_path
+
+
 def runner(args):
     split = getattr(args, "split", 1)
     if split < 1:
@@ -70,8 +372,6 @@ def runner(args):
         logging.warning(str(_IMPORT_ERROR))
         raise SystemExit(1) from _IMPORT_ERROR
     required_modules = {"torch", "torch_geometric", "ase", "rdkit"}
-    if args.metrics in ["all", "core", "geom_revised"]:
-        required_modules.add("cosymlib")
     if args.metrics in ["all", "posebuster", "geom_revised"]:
         required_modules.update({"openbabel", "posebusters"})
     if args.metrics in ["all", "shepherd"]:
@@ -82,8 +382,16 @@ def runner(args):
         logging.warning(str(exc))
         raise SystemExit(1) from exc
     
-    xyz_dir = args.input
+    metrics_input = _prepare_metrics_input(args.input, args.portion)
+    result_tables = []
+    xyz_dir = str(metrics_input.xyz_dir)
     recheck_topo = args.recheck_topo
+    # the neutrality check shells out to xTB once per molecule; off by default
+    check_neutral = getattr(args, "check_neutrality", False)
+    # every metric set derives its output paths from args.output, so make the
+    # destination once here rather than in each branch
+    if args.output:
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     # check_strain = args.check_strain # Kept as a separate flag
     # check_postbuster = args.check_postbuster # Removed, controlled by --metrics
     skip_idx = args.skip_atoms
@@ -91,114 +399,120 @@ def runner(args):
     if skip_idx is None:
         skip_idx = []
 
-    xyzs = [
-    path for path in glob.glob(f"{xyz_dir}/*.xyz")
-    if 'opt' not in os.path.basename(path)
-]
-    
-    if args.portion < 1.0:
-        random.shuffle(xyzs)
-        xyzs = xyzs[:int(len(xyzs) * args.portion)]
+    xyzs = list(metrics_input.xyzs)
 
     df_res_dict = {
         "file": [],
         "percent_atom_valid": [],
         "valid": [],
+        "valid_geom": [],
         "valid_connected": [],
         "num_graphs": [],
         "bad_atom_distort": [],
         "bad_atom_chem": [],
+        "n_bad_atom_distort": [],
+        "n_bad_atom_chem": [],
         "neutral_molecule": [],
         "smiles": [],
         "num_atoms": [],
     }
-    
+
     if args.metrics in ["all", "core"]:
+        n_failed = 0
         for xyz in tqdm(xyzs, desc="Processing XYZ files", total=len(xyzs)):
-            num_atoms = 0
+            # every per-file value is reset here: a failure below must never
+            # inherit the previous molecule's result
+            num_atoms = None
+            data = None
+            coords = None
+            smiles = None
+            mol = None
+            valid_geom = False
+            percent_atom_valid = 0.0
+            num_components = 100
+            bad_atom_chem, bad_atom_distort = [], []
+
             try:
-                cartesian_coordinates_tensor, atomic_numbers_tensor = read_xyz_file(xyz)
-                num_atoms = cartesian_coordinates_tensor.size(0)
-                data = create_pyg_graph(cartesian_coordinates_tensor, 
+                coords, atomic_numbers_tensor = read_xyz_file(xyz)
+                num_atoms = int(coords.size(0))
+                data = create_pyg_graph(coords,
                                             atomic_numbers_tensor,
                                             xyz_filename=xyz,
                                             r=EDGE_THRESHOLD)
-                data = correct_edges(data, scale_factor=SCALE_FACTOR)           
-                (is_valid, percent_atom_valid, num_components, bad_atom_chem, bad_atom_distort) = \
-                    check_validity_v1(data, score_threshold=SCORES_THRESHOLD, 
+                data = correct_edges(data, scale_factor=SCALE_FACTOR)
+                (valid_geom, percent_atom_valid, num_components, bad_atom_chem, bad_atom_distort) = \
+                    check_validity_v1(data, score_threshold=SCORES_THRESHOLD,
                                       skip_indices=skip_idx,
                                       verbose=False)
-
             except Exception as e:
+                n_failed += 1
                 logging.error(f"Error processing {xyz}: {e}")
-                is_valid = False
-                percent_atom_valid = 0
-                num_components = 100
-                bad_atom_chem = torch.arange(0, data.num_nodes) if 'data' in locals() and hasattr(data, 'num_nodes') else []
-                bad_atom_distort = torch.arange(0, data.num_nodes) if 'data' in locals() and hasattr(data, 'num_nodes') else []
-    
-            try:
-                smiles_list, mol_list = smilify_openbabel(xyz)
-            except:
-                # logging.warning(f"fail to convert xyz to mol with openbabel, retry with xyz2mol")
-                mol_list = None
-            
-            to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
-            neutral_mol = check_neutrality(xyz)
-            if mol_list is None and num_components < 3:
-                xyz2mol_fn = smilify_xyz2mol
-                try:
-                    _, smiles_list, mol_list, _ = smilify_wrapper([xyz], xyz2mol_fn)
-                    mol_list = mol_list[0]
-                except Exception as e:
-                    # logging.warning(f"fail to convert xyz to mol with v0, skip and assign invalid")
-                    to_recheck = False
-                    is_valid = False   
+                if data is not None and hasattr(data, "num_nodes"):
+                    bad_atom_chem = list(range(data.num_nodes))
+                    bad_atom_distort = list(range(data.num_nodes))
+
+            smiles, mol = _perceive_mol(xyz, args.mol_converter, args.timeout)
+            is_valid = _rdkit_valid(mol)
+
+            to_recheck = (
+                recheck_topo
+                and len(bad_atom_distort) > 0
+                and len(bad_atom_chem) == 0
+                and mol is not None
+                and coords is not None
+            )
+            neutral_mol = check_neutrality(xyz) if check_neutral else None
 
             if to_recheck:
                 try:
-                    (natom_stability_dicts,
-                        _,
-                        _,
-                        _,
-                        bad_smiles_chem) = check_chem_validity([mol_list], skip_idx=skip_idx)
+                    (natom_stability_dicts, _, _, _, bad_smiles_chem) = \
+                        check_chem_validity([mol], skip_idx=skip_idx)
                     natom_stable = sum(natom_stability_dicts.values())
-                    percent_atom_valid = natom_stable/cartesian_coordinates_tensor.size(0)
-        
+                    percent_atom_valid = natom_stable / coords.size(0)
                     if len(bad_smiles_chem) == 0:
-                    
-                        is_valid = True
+                        valid_geom = True
                     else:
-                        logging.warning("Detect bad smiles in ", xyz, bad_smiles_chem)
+                        logging.warning(f"Detect bad smiles in {xyz}: {bad_smiles_chem}")
                 except Exception as e:
-                    logging.error(f"Fail to check on {xyz} due to {e}, asssign invalid")
-                    is_valid = False
-                    percent_atom_valid = 0
-                    
-            if is_valid and num_components == 1:
-                is_valid_connected = True   
-            else:
-                is_valid_connected = False         
-                
-            df_res_dict["smiles"].append(smiles_list[0] if len(smiles_list) == 1 else smiles_list)
+                    logging.error(f"Fail to check on {xyz} due to {e}, assign invalid")
+                    valid_geom = False
+                    percent_atom_valid = 0.0
+
+            is_valid_connected = bool(is_valid and num_components == 1)
+
+            df_res_dict["smiles"].append(smiles)
             df_res_dict["file"].append(xyz)
             df_res_dict["percent_atom_valid"].append(percent_atom_valid)
             df_res_dict["valid"].append(is_valid)
+            df_res_dict["valid_geom"].append(bool(valid_geom))
             df_res_dict["valid_connected"].append(is_valid_connected)
             df_res_dict["neutral_molecule"].append(neutral_mol)
             df_res_dict["num_graphs"].append(num_components)
-            df_res_dict["bad_atom_distort"].append(bad_atom_distort)
-            df_res_dict["bad_atom_chem"].append(bad_atom_chem)
+            df_res_dict["bad_atom_distort"].append(" ".join(str(int(i)) for i in bad_atom_distort))
+            df_res_dict["bad_atom_chem"].append(" ".join(str(int(i)) for i in bad_atom_chem))
+            df_res_dict["n_bad_atom_distort"].append(len(bad_atom_distort))
+            df_res_dict["n_bad_atom_chem"].append(len(bad_atom_chem))
             df_res_dict["num_atoms"].append(num_atoms)
 
         df = pd.DataFrame(df_res_dict)
         df = df.sort_values(by="file")
+        df = _add_db_row_ids(df, metrics_input)
         fully_connected = [1 if num == 1 else 0 for num in df_res_dict["num_graphs"]]
 
+        set_level = _set_level_metrics(
+            df.loc[df["valid"], "smiles"].tolist(),
+            _load_train_smiles(getattr(args, "train_smiles", None)),
+        )
+
         logging.info(f"{df['percent_atom_valid'].mean() * 100:.2f}% of atoms are stable")
-        logging.info(f"{df['valid'].mean() * 100:.2f}% of 3D molecules are valid")
+        logging.info(f"{df['valid'].mean() * 100:.2f}% of 3D molecules are valid (RDKit sanitize)")
+        logging.info(f"{df['valid_geom'].mean() * 100:.2f}% of 3D molecules are valid (geometry+valency)")
         logging.info(f"{df['valid_connected'].mean() * 100:.2f}% of 3D molecules are valid and fully-connected")
         logging.info(f"{sum(fully_connected) / len(fully_connected) * 100:.2f}% of 3D molecules are fully connected")
+        logging.info(f"{n_failed} of {len(xyzs)} files failed to process")
+        for name in ("uniqueness", "novelty", "diversity"):
+            value = set_level[name]
+            logging.info(f"{name.capitalize()}: " + ("n/a" if value is None else f"{value * 100:.2f}%"))
         if split > 1:
             atom_mean, atom_std = _get_split_stats(df["percent_atom_valid"].values, split, scale=100.0)
             valid_mean, valid_std = _get_split_stats(df["valid"].values, split, scale=100.0)
@@ -222,8 +536,8 @@ def runner(args):
             logging.info(f"{sum(intact_topology) / len(intact_topology) * 100:.2f}% of 3D molecules have intact topology after the optimization")
         
         if args.output is None:
-            output_path = f"{xyz_dir}/output_metrics.csv"
-            hist_path = f"{xyz_dir}/molecular_size_histogram.png"
+            output_path = _default_metric_path(metrics_input, "output_metrics.csv")
+            hist_path = _default_metric_path(metrics_input, "molecular_size_histogram.png")
         else:
             output_path = args.output
             base, _ = os.path.splitext(output_path)
@@ -240,6 +554,32 @@ def runner(args):
 
         df.to_csv(output_path, index=False)
 
+        summary = {
+            "metrics": args.metrics,
+            "input": xyz_dir,
+            "n_files": len(xyzs),
+            "n_failed": n_failed,
+            "atom_stability": float(df["percent_atom_valid"].mean()),
+            "validity": float(df["valid"].mean()),
+            "validity_geom": float(df["valid_geom"].mean()),
+            "validity_connected": float(df["valid_connected"].mean()),
+            "fully_connected": sum(fully_connected) / len(fully_connected) if fully_connected else 0.0,
+            "num_atoms_mean": float(df["num_atoms"].mean()),
+            "num_atoms_std": float(df["num_atoms"].std()),
+            "num_atoms_max": (None if df["num_atoms"].isna().all() else int(df["num_atoms"].max())),
+            **set_level,
+        }
+        if split > 1:
+            summary["split"] = {
+                "n_splits": split,
+                "atom_stability": [atom_mean, atom_std],
+                "validity": [valid_mean, valid_std],
+                "validity_connected": [conn_mean, conn_std],
+                "fully_connected": [full_mean, full_std],
+            }
+        _write_summary(output_path, summary)
+        result_tables.append(("core", df, output_path))
+
     if args.metrics in ["all", "posebuster"]:
         mols, xyz_passed = load_molecules_from_xyz(xyz_dir)
         
@@ -253,10 +593,17 @@ def runner(args):
              else:
                  mols, xyz_passed = [], []
         
-        neutral_mols = []
-        for xyz in tqdm(xyz_passed, desc="Checking neutrality of molecules", total=len(xyz_passed)):
-            neutral_mols.append(check_neutrality(xyz))
-      
+        # one xTB call per molecule -- opt in via --check-neutrality
+        if check_neutral:
+            neutral_mols = [
+                check_neutrality(xyz)
+                for xyz in tqdm(xyz_passed, desc="Checking neutrality of molecules",
+                                total=len(xyz_passed))
+            ]
+        else:
+            neutral_mols = [None] * len(xyz_passed)
+
+
         postbuster_results = run_postbuster(mols, timeout=3000)
         if postbuster_results is not None:
             num_atoms_list = [mol.GetNumAtoms() for mol in mols]
@@ -271,8 +618,8 @@ def runner(args):
             posebuster_checks_connected = posebuster_checks + ['all_atoms_connected']
             postbuster_results['valid_posebuster_connected'] = postbuster_results[posebuster_checks_connected].all(axis=1)
             if args.output is None:
-                postbuster_output_path = f"{xyz_dir}/postbuster_metrics.csv"
-                hist_path = f"{xyz_dir}/postbuster_molecular_size_histogram.png"
+                postbuster_output_path = _default_metric_path(metrics_input, "postbuster_metrics.csv")
+                hist_path = _default_metric_path(metrics_input, "postbuster_molecular_size_histogram.png")
             else:
                 base, ext = os.path.splitext(args.output)
                 postbuster_output_path = f"{base}_postbuster{ext}"
@@ -280,7 +627,9 @@ def runner(args):
 
             postbuster_results['neutral_molecule'] = neutral_mols
             postbuster_results["filename"] = [os.path.basename(xyz) for xyz in xyz_passed]
+            postbuster_results = _add_db_row_ids(postbuster_results, metrics_input)
             postbuster_results.to_csv(postbuster_output_path, index=False)
+            result_tables.append(("posebuster", postbuster_results, postbuster_output_path))
 
             logging.info(f"Molecular size mean: {postbuster_results['num_atoms'].mean():.2f}")
             logging.info(f"Molecular size max: {postbuster_results['num_atoms'].max()}")
@@ -307,20 +656,22 @@ def runner(args):
             logging.info(f"Internal Energy: {postbuster_results['internal_energy'].mean():.2f}")
             logging.info(f"Valid Posebuster: {postbuster_results['valid_posebuster'].mean() * 100:.2f}%")
             logging.info(f"Valid Posebuster Connected: {postbuster_results['valid_posebuster_connected'].mean() * 100:.2f}%")
-            logging.info(f"Neutral Molecule: {sum(neutral_mols) / len(neutral_mols) * 100:.2f}%")
+            if check_neutral and neutral_mols:
+                logging.info(f"Neutral Molecule: {sum(neutral_mols) / len(neutral_mols) * 100:.2f}%")
             if split > 1:
                 sanit_mean, sanit_std = _get_split_stats(postbuster_results["sanitization"].values, split, scale=100.0)
                 inchi_mean, inchi_std = _get_split_stats(postbuster_results["inchi_convertible"].values, split, scale=100.0)
                 conn_mean, conn_std = _get_split_stats(postbuster_results["all_atoms_connected"].values, split, scale=100.0)
                 valid_pb_mean, valid_pb_std = _get_split_stats(postbuster_results["valid_posebuster"].values, split, scale=100.0)
                 valid_pb_conn_mean, valid_pb_conn_std = _get_split_stats(postbuster_results["valid_posebuster_connected"].values, split, scale=100.0)
-                neutral_mean, neutral_std = _get_split_stats(neutral_mols, split, scale=100.0)
                 logging.info(f"Split Sanitization mean ± std: {sanit_mean:.2f} ± {sanit_std:.2f}%")
                 logging.info(f"Split InChI Convertible mean ± std: {inchi_mean:.2f} ± {inchi_std:.2f}%")
                 logging.info(f"Split All Atoms Connected mean ± std: {conn_mean:.2f} ± {conn_std:.2f}%")
                 logging.info(f"Split Valid Posebuster mean ± std: {valid_pb_mean:.2f} ± {valid_pb_std:.2f}%")
                 logging.info(f"Split Valid Posebuster Connected mean ± std: {valid_pb_conn_mean:.2f} ± {valid_pb_conn_std:.2f}%")
-                logging.info(f"Split Neutral Molecule mean ± std: {neutral_mean:.2f} ± {neutral_std:.2f}%")
+                if check_neutral and neutral_mols:
+                    neutral_mean, neutral_std = _get_split_stats(neutral_mols, split, scale=100.0)
+                    logging.info(f"Split Neutral Molecule mean ± std: {neutral_mean:.2f} ± {neutral_std:.2f}%")
 
     # =========================================================================
     # GEOM_REVISED: Aromatic-aware molecule stability
@@ -525,12 +876,14 @@ def runner(args):
             
             # Determine output path
             if args.output is None:
-                revised_output_path = f"{xyz_dir}/geom_revised_metrics.csv"
+                revised_output_path = _default_metric_path(metrics_input, "geom_revised_metrics.csv")
             else:
                 base, ext = os.path.splitext(args.output)
                 revised_output_path = f"{base}_geom_revised{ext}"
             
+            df_revised = _add_db_row_ids(df_revised, metrics_input)
             df_revised.to_csv(revised_output_path, index=False)
+            result_tables.append(("geom_revised", df_revised, revised_output_path))
             logging.info(f"Geom revised metrics saved to {revised_output_path}")
             
             # Print summary statistics
@@ -600,10 +953,11 @@ def runner(args):
         ref_data = None
         # 1. Prepare reference data source
         data_source = None
+        # bound unconditionally: it is read below before the data_source guard
+        mol_idx = getattr(args, "mol_idx", 0)
         if hasattr(args, "reference_mol") and args.reference_mol is not None:
             import pickle
             path = str(args.reference_mol)
-            mol_idx = getattr(args, "mol_idx", 0)
             try:
                 if path.endswith('.pkl'):
                     with open(path, 'rb') as f:
@@ -802,12 +1156,14 @@ def runner(args):
         
         # Save output
         if args.output is None:
-            shepherd_output_path = f"{xyz_dir}/shepherd_metrics.csv"
+            shepherd_output_path = _default_metric_path(metrics_input, "shepherd_metrics.csv")
         else:
             base, ext = os.path.splitext(args.output)
             shepherd_output_path = f"{base}_shepherd{ext}"
             
+        df_shepherd = _add_db_row_ids(df_shepherd, metrics_input)
         df_shepherd.to_csv(shepherd_output_path, index=False)
+        result_tables.append(("shepherd", df_shepherd, shepherd_output_path))
         logging.info(f"ShEPhERD metrics saved to {shepherd_output_path}")
         
         # Summary
@@ -834,6 +1190,15 @@ def runner(args):
             logging.info(f"Split ESP Similarity mean ± std: {esp_mean:.4f} ± {esp_std:.4f}")
             logging.info(f"Split Pharm Similarity mean ± std: {pharm_mean:.4f} ± {pharm_std:.4f}")
 
+    try:
+        _apply_result_filter(
+            result_tables,
+            metrics_input,
+            getattr(args, "filter", None),
+            getattr(args, "filtered_output", None),
+        )
+    finally:
+        metrics_input.cleanup()
 
 
 if __name__ == "__main__":

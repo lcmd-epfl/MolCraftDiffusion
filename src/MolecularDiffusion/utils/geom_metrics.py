@@ -44,13 +44,9 @@ from .geom_constant import (
 from .geom_utils import correct_edges, create_pyg_graph, read_xyz_file
 from .sascore import calculateScore
 
-try:
-    from cosymlib import Geometry
-    is_cosymlib_available = True
-except Exception:
-    is_cosymlib_available = False
-    Geometry = None
-    
+from .shape_measure import shape_measure
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -163,20 +159,26 @@ def check_neutrality(filename):
         filename (str): Path to the XYZ file containing the molecule.
         
     Returns:
-        bool: True if the molecule is neutral (no mismatch found), False otherwise.
+        bool: True if the molecule is neutral (no mismatch found), False
+        otherwise, or None when xTB is unavailable or failed.
     """
     neutral_mol = True
     execution = ["xtb", filename, "--ptb"]
+    lines = []
     try:
         with open("xtb.log", "w") as f:
             sp.call(execution, stdout=f, stderr=sp.STDOUT, timeout=60)
-    except sp.TimeoutExpired:           
+    except sp.TimeoutExpired:
         print("xTB calculation timed out.")
-    
+    except (FileNotFoundError, OSError) as e:
+        # no xtb on PATH -- report unknown rather than killing the whole run
+        print(f"xTB unavailable ({e}), skipping neutrality check.")
+        return None
+
     if os.path.exists("xtb.log"):
         with open("xtb.log", "r") as f:
             lines = f.readlines()
-    
+
     for line in lines:
         if "Number of electrons and spin multiplicity do not match" in line:
             neutral_mol = False
@@ -394,8 +396,6 @@ def check_validity_v1(data,
     """
     
     _require_optional("ase", covalent_radii)
-    if not(is_cosymlib_available):
-        raise ImportError("Cosymlib is not available, do use different metrics")
     atomic_numbers = data.x.view(-1).int().tolist()
     edge_index = data.edge_index
     good_atoms = []
@@ -442,17 +442,17 @@ def check_validity_v1(data,
                 
         # 3 check the shape of the molecule
         if is_valid_node:
-            nodes_all = [node] + adjacent_nodes      
-            symbols = [atomic_numbers[i] for i in nodes_all] 
-            
+            nodes_all = [node] + adjacent_nodes
+
             positions = data.pos[nodes_all].tolist()
-            geometry = Geometry(positions=positions, symbols=symbols)
             if len(adjacent_nodes) > 1:
                 shp_types = vertices_labels[len(adjacent_nodes)]
                 for shp_type in shp_types:
-                    shp_measure = geometry.get_shape_measure(shp_type, central_atom=1)
-                    shp_scores[shp_type] = shp_measure 
-                        
+                    shp_scores[shp_type] = shape_measure(
+                        positions, shp_type, central_atom=1
+                    )
+
+
                 shp_type = min(shp_scores, key=shp_scores.get)
                 shp_score = shp_scores[shp_type]
                 ref_shp = allowed_shape[atomic_numbers[node]]
@@ -465,7 +465,12 @@ def check_validity_v1(data,
                     good_atoms.append(node)
             else:
                 good_atoms.append(node)
-    percent_atom_valid = len(good_atoms) / len(atomic_numbers)
+    # denominator counts only the atoms actually examined, otherwise every
+    # skipped atom is scored as invalid (biases --skip-atoms runs low)
+    n_examined = len(atomic_numbers) - len(
+        {i for i in skip_indices if 0 <= i < len(atomic_numbers)}
+    )
+    percent_atom_valid = len(good_atoms) / n_examined if n_examined > 0 else 0.0
     if len(bad_atom_chem) == 0  and len(bad_atom_distort) == 0:
         is_valid = True   
     else:
@@ -762,147 +767,6 @@ def run_postbuster(mols, timeout=60, batch_size=1):
         logger.error(f"Error concatenating batch results: {e}")
         return None
 
-
-#%% All
-def runner(args):
-    """
-    Main runner function to process a directory of XYZ files, compute geometric metrics, 
-    check validity, and optionally run strain and diversity checks.
-    
-    Args:
-        args (argparse.Namespace): Arguments containing:
-            - input (str): Input directory path containing .xyz files.
-            - output (str, optional): Output CSV file path.
-            - recheck_topo (bool): Whether to recheck topology.
-            - check_strain (bool): Whether to check strain energy.
-            - check_diversity (bool): Whether to compute diversity scores.
-            - skip_atoms (list of int, optional): Atom indices to skip during checks.
-    """
-    xyz_dir = args.input
-    recheck_topo = args.recheck_topo
-    check_strain = args.check_strain
-    check_diversity = args.check_diversity
-    skip_idx = args.skip_atoms
-    
-    if skip_idx is None:
-        skip_idx = []
-
-    xyzs = [
-    path for path in glob.glob(f"{xyz_dir}/*.xyz")
-    if 'opt' not in os.path.basename(path)
-]
-
-    df_res_dict = {
-        "file": [],
-        "percent_atom_valid": [],
-        "valid": [],
-        "valid_connected": [],
-        "num_graphs": [],
-        "bad_atom_distort": [],
-        "bad_atom_chem": [],
-        "smiles": []
-    }
-    
-    if check_diversity:
-        
-        similarity_3ds, = diversity_score(
-            xyzs,
-            type_3d="euclidean",
-        )
-        
-
-        
-    for xyz in tqdm(xyzs, desc="Processing XYZ files", total=len(xyzs)):
-
-        try:
-            cartesian_coordinates_tensor, atomic_numbers_tensor = read_xyz_file(xyz)
-            data = create_pyg_graph(cartesian_coordinates_tensor, 
-                                        atomic_numbers_tensor,
-                                        xyz_filename=xyz,
-                                        r=EDGE_THRESHOLD)
-            data = correct_edges(data, scale_factor=SCALE_FACTOR)           
-            (is_valid, percent_atom_valid, num_components, bad_atom_chem, bad_atom_distort) = \
-                check_validity_v1(data, score_threshold=SCORES_THRESHOLD, 
-                                  skip_indices=skip_idx,
-                                  verbose=False)
-
-        except Exception as e:
-            print(f"Error processing {xyz}: {e}")
-            is_valid = False
-            percent_atom_valid = 0
-            num_components = 100
-            bad_atom_chem = torch.arange(0,data.num_nodes)
-            bad_atom_distort = torch.arange(0,data.num_nodes)
- 
-        from .smilify import smilify_xyz2mol, smilify_openbabel
-        
-        smiles_list, mol_list = smilify_openbabel(xyz)
-        to_recheck = recheck_topo and (len(bad_atom_distort) > 0) and (len(bad_atom_chem) == 0)
-        
-        if mol_list is None and num_components < 3:
-            xyz2mol_fn = smilify_xyz2mol
-            try:
-                _, smiles_list, mol_list, _ = smilify_wrapper([xyz], xyz2mol_fn)
-                mol_list = mol_list[0]
-            except Exception as e:
-                print(f"fail to convert xyz to mol with v0, skip and assign invalid")
-                to_recheck = False
-                is_valid = False   
-
-        if to_recheck:
-            try:
-                (natom_stability_dicts,
-                    _,
-                    _,
-                    _,
-                    bad_smiles_chem) = check_chem_validity([mol_list], skip_idx=skip_idx)
-                natom_stable = sum(natom_stability_dicts.values())
-                percent_atom_valid = natom_stable/cartesian_coordinates_tensor.size(0)
-    
-                if len(bad_smiles_chem) == 0:
-                
-                    is_valid = True
-                else:
-                    print("Detect bad smiles in ", xyz, bad_smiles_chem)
-            except Exception as e:
-                print(f"Fail to check on {xyz} due to {e}, asssign invalid")
-                is_valid = False
-                percent_atom_valid = 0
-                
-        if is_valid and num_components == 1:
-            is_valid_connected = True   
-        else:
-            is_valid_connected = False                 
-        df_res_dict["smiles"].append(smiles_list[0] if len(smiles_list) == 1 else smiles_list)
-        df_res_dict["file"].append(xyz)
-        df_res_dict["percent_atom_valid"].append(percent_atom_valid)
-        df_res_dict["valid"].append(is_valid)
-        df_res_dict["valid_connected"].append(is_valid_connected)
-        df_res_dict["num_graphs"].append(num_components)
-        df_res_dict["bad_atom_distort"].append(bad_atom_distort)
-        df_res_dict["bad_atom_chem"].append(bad_atom_chem)  
-    df = pd.DataFrame(df_res_dict)
-    df = df.sort_values(by="file")
-    fully_connected = [1 if num == 1 else 0 for num in df_res_dict["num_graphs"]]
-
-    print(f"{df['percent_atom_valid'].mean() * 100:.2f}% of atoms are stable")
-    print(f"{df['valid'].mean() * 100:.2f}% of 3D molecules are valid")
-    print(f"{df['valid_connected'].mean() * 100:.2f}% of 3D molecules are valid and fully-connected")
-    print(f"{sum(fully_connected) / len(fully_connected) * 100:.2f}% of 3D molecules are fully connected")
-    
-    if check_strain:
-        rmsd_mean = df["rmsd"].dropna().mean()
-        delta_energy_mean = df["delta_energy"].dropna().mean()
-        intact_topology = [1 if top else 0 for top in df_res_dict["same_topology"] if not pd.isna(top)]
-        print(f"RMSD mean: {rmsd_mean:.2f}")
-        print(f"Delta Energy mean: {delta_energy_mean:.2f}")
-        print(f"{sum(intact_topology) / len(intact_topology) * 100:.2f}% of 3D molecules have intact topology after the optimization")
-    
-    if args.output is None:
-        output_path = f"{xyz_dir}/output_metrics.csv"
-    else:
-        output_path = args.output
-    df.to_csv(output_path, index=False)
 
 def xyz_to_rdkit_mol(xyz_path: str):
     """

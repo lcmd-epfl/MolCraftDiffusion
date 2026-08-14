@@ -16,13 +16,9 @@ from rdkit.Chem import AllChem
 
 from MolecularDiffusion.utils.xyz2mol import ElementData
 
-try:
-    from cosymlib import Geometry
-    is_cosymlib_available = True
-except ImportError:
-    is_cosymlib_available = False
-    Geometry = None
-    
+from MolecularDiffusion.utils.shape_measure import shape_measure
+
+
 # less than 4 bonds
 # 0 for S, 180 for SP, 120 for SP2, 109.5 for SP3
 hybridization_dicts = {
@@ -47,7 +43,7 @@ vertices_labels = {
     5: ["PP-5", "TBPY-5", "SPY-5"],
     6: ["HP-6", "PPY-6","TPR-6"],
     7: ["HPY-7", "PBPY-7",],
-    8: ["HPY-8," "HBPY-8", "SAPR-8"],
+    8: ["HPY-8", "HBPY-8", "SAPR-8"],
 }
 
 
@@ -879,8 +875,6 @@ def atom_geom_opt(z, coords, scale_factor = 1.3):
 
 def atom_geom_shape(z, coords, scale_factor = 1.3):
 
-    if not(is_cosymlib_available):
-        raise ImportError("Cosymlib is not available, do use different featurizer")
     device = coords.device
     N = coords.size(0)
 
@@ -905,15 +899,14 @@ def atom_geom_shape(z, coords, scale_factor = 1.3):
         adjacent_nodes = np.where(connectivity_matrix[node] == 1)[0]
         n_degree = len(adjacent_nodes)
         nodes_all = np.array([node] + adjacent_nodes.tolist())
-        symbols = [ase.data.chemical_symbols[z[i]] for i in nodes_all]
-        positions = coords[nodes_all]
-        geometry = Geometry(positions=positions, symbols=symbols)
+        positions = coords[nodes_all].detach().cpu().numpy()
         if n_degree > 1 and n_degree < 9:
             shp_types = vertices_labels[n_degree]
 
             for shp_type in shp_types:
-                shp_measure = geometry.get_shape_measure(shp_type, central_atom=1)
-                shp_scores[shp_type] = shp_measure
+                shp_scores[shp_type] = shape_measure(
+                    positions, shp_type, central_atom=1
+                )
             shp_type = min(shp_scores, key=shp_scores.get)
         elif n_degree == 1:
             shp_type = "L-0"

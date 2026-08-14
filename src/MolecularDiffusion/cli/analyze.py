@@ -1,10 +1,12 @@
 """Analyze CLI subcommands for 3D molecule analysis.
 
 Provides subcommands for:
-- optimize: XTB geometry optimization
+- optimize: xTB geometry optimization
 - metrics: Validity/connectivity metrics
 - compare: RMSD, energy, and optional bond analysis
 - xyz2mol: XYZ to SMILES conversion + fingerprints
+- featurize: fixed-size feature vectors for XYZ molecules
+- xtb-electronic: xTB electronic properties
 """
 
 import os
@@ -29,13 +31,15 @@ def _load_analyze_module(module_name: str):
 @click.group(context_settings=CONTEXT_SETTINGS)
 def analyze():
     """Analyze 3D molecular structures.
-    
+
     \b
     Subcommands:
-      optimize  XTB geometry optimization
-      metrics   Validity/connectivity metrics
-      compare   RMSD, energy, and bond analysis
-      xyz2mol   Convert XYZ to SMILES + fingerprints
+      optimize        xTB geometry optimization
+      metrics         Validity/connectivity metrics
+      compare         RMSD, energy, and bond analysis
+      xyz2mol         Convert XYZ to SMILES + fingerprints
+      featurize       Fixed-size feature vectors for XYZ molecules
+      xtb-electronic  xTB electronic properties
     """
     pass
 
@@ -104,7 +108,7 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
 @click.option("--output", "-o", "--o", "--output-csv", default=None, type=click.Path(),
               help="Output CSV file for results")
 @click.option("--filter", "filter_column", default=None, type=str,
-              help="Filter structures by a truthy column in the generated metrics")
+              help="Keep only structures whose column is truthy (any metrics column)")
 @click.option("--filtered-output", default=None, type=click.Path(),
               help="Output ASE DB path or XYZ directory for filtered structures")
 @click.option("--metrics", "-m", "--m", "metrics_type", default="all",
@@ -114,6 +118,8 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="Recheck topology using RDKit")
 @click.option("--check-strain", is_flag=True, default=False,
               help="Check strain via XTB optimization")
+@click.option("--check-neutrality", is_flag=True, default=False,
+              help="Check electron/spin neutrality with xTB (one call per molecule; slow)")
 @click.option("--portion", "-p", "--p", default=1.0, type=float,
               help="Portion of XYZ files to process (default: 1.0 = all)")
 @click.option("--mol-converter", default="xyz2mol",
@@ -129,21 +135,25 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="Reference .pkl or .sdf for conditional similarity metrics (shepherd mode)")
 @click.option("--mol-idx", default=0, type=int,
               help="Molecule index in reference .pkl (default: 0)")
-def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx):
+@click.option("--train-smiles", default=None, type=click.Path(exists=True),
+              help="Reference SMILES (.txt one per line, or .csv) to score novelty against")
+def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, check_neutrality, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx, train_smiles):
     """Compute validity and connectivity metrics for XYZ files or ASE DB rows.
-    
+
     \b
     Metrics types:
       all          Run all metrics (core + posebuster + geom_revised + shepherd)
-      core         Basic validity checks (connectivity, atom stability)
+      core         Validity (RDKit + geometry), connectivity, atom stability,
+                   uniqueness/novelty/diversity
       posebuster   PoseBusters checks (bond lengths, angles, clashes)
       geom_revised Aromatic-aware stability metrics
       shepherd     Drug-likeness and conditional similarity metrics
-    
+
     \b
     Examples:
         MolCraftDiff analyze metrics gen_xyz/
-        MolCraftDiff analyze metrics molecules.db --metrics core --filter valid_connected
+        MolCraftDiff analyze metrics molecules.db --metrics core
+        MolCraftDiff analyze metrics gen_xyz/ --metrics core --filter valid_connected --filtered-output kept/
         MolCraftDiff analyze metrics gen_xyz/ --metrics posebuster
         MolCraftDiff analyze metrics gen_xyz/ --metrics geom_revised --mol-converter openbabel
         MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd
@@ -161,6 +171,7 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         metrics=metrics_type,
         recheck_topo=recheck_topo,
         check_strain=check_strain,
+        check_neutrality=check_neutrality,
         portion=portion,
         mol_converter=mol_converter,
         skip_atoms=list(skip_atoms) if skip_atoms else None,
@@ -168,6 +179,7 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         timeout=timeout,
         reference_mol=reference_mol,
         mol_idx=mol_idx,
+        train_smiles=train_smiles,
     )
     
     click.echo(f"Computing {metrics_type} metrics for: {input_path}")
