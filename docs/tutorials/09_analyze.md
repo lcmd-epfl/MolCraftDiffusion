@@ -82,7 +82,8 @@ so rows can be joined back to the source database.
 | `core` | Validity, connectivity, atom stability, and set-level uniqueness/novelty/diversity |
 | `posebuster` | Bond lengths, angles, clashes |
 | `geom_revised` | Aromatic-aware stability metrics |
-| `shepherd` | ShEPhERD conditional-similarity metrics (needs `--reference-mol`) |
+| `druglike` | QED, SA, LogP, fsp3, MW, HBD, HBA, Lipinski, PAINS, ring statistics (+ optional `--rdkit-rmsd`) |
+| `similarity3d` | Shape / ESP / pharmacophore similarity to `--reference-mol` |
 | `sbdd` | AutoDock Vina binding affinity against a protein pocket (needs `--receptor` and the `[sbdd]` extra) |
 | `all` | All of the above **except `sbdd`**, which needs a receptor and is opt-in |
 
@@ -123,9 +124,43 @@ to process). Sweeps pick this file up automatically.
 | `--ref-ligand` | None | Reference ligand `.sdf`; its own affinity becomes the bar for `high_affinity` |
 | `--dock-mode` | `dock` | `score` (in place) / `min` (+ local optimisation) / `dock` (full redock) |
 | `--exhaustiveness` | `8` | Vina search effort for `--dock-mode dock` |
-| `-r, --reference-mol` / `--mol-idx` | None / `0` | Reference `.pkl`/`.sdf` (and index) for `shepherd` metrics |
+| `-r, --reference-mol` / `--mol-idx` | None / `0` | Reference `.pkl`/`.sdf` (and index) for `similarity3d`; `--mol-idx -1` picks a random reference per molecule |
+| `--rdkit-rmsd` / `--rmsd-n-conf` | off / `20` | `druglike`: RMSD of the pose against UFF-optimised RDKit conformers (slow) |
 | `--skip-atoms` | — | Atom indices to skip in validation |
 | `-t, --timeout` | `10` | Timeout per xyz2mol conversion (s) |
+
+### What `druglike` and `similarity3d` report
+
+These two were one set called `shepherd` until they were split, because they
+answer different questions and need different inputs.
+
+`druglike` needs nothing but the structures:
+
+| Column | Meaning |
+|--------|---------|
+| `QED`, `SA_score`, `LogP`, `fsp3`, `MW`, `HBD`, `HBA` | standard RDKit descriptors |
+| `lipinski` | how many of the five Lipinski rules the molecule obeys, 0–5 |
+| `pains_pass` | free of PAINS-A alerts |
+| `ring_filter_pass` | no non-aromatic ring larger than 6 |
+| `n_rings`, `n_aromatic_rings`, `n_aliphatic_rings` | ring counts |
+| `ring_size_3` … `ring_size_9` | per molecule a boolean; the summary reports the **fraction of molecules containing** each size, which is the form the SBDD papers print |
+| `rdkit_rmsd_min` / `_median` / `_max` | only with `--rdkit-rmsd`; embeds `--rmsd-n-conf` conformers per molecule, so it is far slower than the rest |
+
+`similarity3d` needs `--reference-mol` and reports `shape_sim`, `esp_sim` and
+`pharm_sim` — Gaussian-overlap scores after alignment.
+
+> **Reproducibility:** `shape_sim` and `esp_sim` are **not deterministic**. The
+> molecular surface is sampled randomly and the overlay uses 45 random restarts,
+> so re-running the same input moves them by up to ~0.05. Compare them within a
+> run, and treat small differences between runs as noise. `pharm_sim` is
+> deterministic.
+
+> **Migration:** `--metrics shepherd` no longer exists. Use `--metrics druglike`
+> for the descriptors and `--metrics similarity3d` for the reference
+> comparison. `--metrics all` runs `druglike` always, and `similarity3d` only
+> when `--reference-mol` is given.
+
+---
 
 ### What `sbdd` reports
 

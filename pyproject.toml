@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molcraftdiffusion"
-version = "1.8.0"
+version = "1.8.1"
 description = "A unified generative AI framework for 3D molecular generation using diffusion models"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -85,6 +85,22 @@ analyze = [
     "open3d",
     "openbabel>=3.2.0",
     "posecheck",
+]
+# AutoDock Vina scoring for the `sbdd` metric set (binding affinity against a
+# protein pocket). Pure pip, no external binaries and no conda: meeko builds
+# the PDBQT inputs, vina scores them. All three install without touching
+# anything else in a numpy-2 / pandas-2.3 environment -- deliberately NOT
+# pulling in pdb2pqr (it downgrades docutils below the floor Sphinx and
+# myst-parser require) or AutoDockTools (meeko's mk_prepare_receptor
+# replaces it).
+#
+# gemmi is listed explicitly because meeko 0.7 declares NO dependencies in its
+# wheel metadata, yet `import meeko` fails without gemmi
+# (meeko.polymer -> meeko.chemtempgen -> gemmi).
+sbdd = [
+    "vina",
+    "meeko",
+    "gemmi",
 ]
 # FlowMol backbone (coordinate-only GVP flow matching) needs DGL for its
 # batched-graph message passing. Install the CUDA build manually from the DGL

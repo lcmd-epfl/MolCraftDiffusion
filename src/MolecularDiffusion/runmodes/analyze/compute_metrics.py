@@ -374,7 +374,7 @@ def runner(args):
     required_modules = {"torch", "torch_geometric", "ase", "rdkit"}
     if args.metrics in ["all", "posebuster", "geom_revised"]:
         required_modules.update({"openbabel", "posebusters"})
-    if args.metrics in ["all", "shepherd"]:
+    if args.metrics in ["all", "similarity3d"]:
         required_modules.add("open3d")
     if args.metrics == "sbdd":
         try:
@@ -947,254 +947,156 @@ def runner(args):
                     logging.info(f"  Split Torsion Angle mean ± std: {tor_mean:.4f} ± {tor_std:.4f}°")
 
     # =========================================================================
-    # SHEPHERD: Drug-likeness and conditional similarity
+    # DRUGLIKE / SIMILARITY3D: descriptors, and similarity to a reference
+    # (these two used to be one `shepherd` set; they have different inputs)
     # =========================================================================
-    if args.metrics in ["all", "shepherd"]:
-        from rdkit import Chem
-        logging.info("Computing ShEPhERD-style metrics...")
-        # If the standard list excluded all files (e.g. only *_opt.xyz present), use all xyz
-        _shepherd_xyzs = xyzs if xyzs else glob.glob(f"{xyz_dir}/*.xyz")
+    want_druglike = args.metrics in ["all", "druglike"]
+    reference_path = getattr(args, "reference_mol", None)
+    want_similarity = args.metrics == "similarity3d" or (
+        args.metrics == "all" and reference_path is not None
+    )
+    if args.metrics == "similarity3d" and reference_path is None:
+        raise ValueError(
+            "--metrics similarity3d needs --reference-mol (a .pkl or .sdf "
+            "holding the molecule to compare against)"
+        )
+    if args.metrics == "all" and reference_path is None:
+        logging.info("Skipping similarity3d metrics: no --reference-mol given")
 
-        # 1. Load reference molecule if provided (for similarity metrics)
-        ref_data = None
-        # 1. Prepare reference data source
-        data_source = None
-        # bound unconditionally: it is read below before the data_source guard
+    if want_druglike or want_similarity:
+        from rdkit import Chem  # noqa: PLC0415
+
+        from MolecularDiffusion.runmodes.analyze import druglike as druglike_mod  # noqa: PLC0415
+        from MolecularDiffusion.runmodes.analyze import similarity3d as sim_mod  # noqa: PLC0415
+
+        # if the standard list excluded everything (e.g. only *_opt.xyz), fall back
+        _xyzs = xyzs if xyzs else glob.glob(f"{xyz_dir}/*.xyz")
         mol_idx = getattr(args, "mol_idx", 0)
-        if hasattr(args, "reference_mol") and args.reference_mol is not None:
-            import pickle
-            path = str(args.reference_mol)
+        with_rmsd = getattr(args, "rdkit_rmsd", False)
+        n_conf = getattr(args, "rmsd_n_conf", 20)
+
+        data_source = None
+        fixed_ref_data = None
+        if want_similarity and reference_path:
             try:
-                if path.endswith('.pkl'):
-                    with open(path, 'rb') as f:
-                        data_source = pickle.load(f)
-                elif path.endswith('.sdf'):
-                    data_source = Chem.SDMolSupplier(path, removeHs=False)
-                else:
-                    raise ValueError(f"Unsupported format (expected .pkl or .sdf): {path}")
-            except Exception as e:
+                data_source = sim_mod.load_reference_source(reference_path)
+            except Exception as e:  # noqa: BLE001
                 logging.error(f"Failed to load reference data source: {e}")
                 data_source = None
+            if data_source is not None and mol_idx != -1:
+                try:
+                    fixed_ref_data = sim_mod.extract_profiles(
+                        sim_mod.reference_mol(data_source, mol_idx)
+                    )
+                    if fixed_ref_data:
+                        logging.info(
+                            f"Loaded fixed reference mol [{mol_idx}] from {reference_path}: "
+                            f"{fixed_ref_data['num_atoms']} atoms, "
+                            f"{len(fixed_ref_data['pharm_types'])} pharmacophores"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    logging.error(f"Failed to load fixed reference molecule: {e}")
 
-        # Helper to extract profiles from a moleucle
-        def extract_shepherd_profiles(mol):
-            if mol is None: return None
-            # Extract surface, pharmacophore and ESP using ported shepherd-score
-            _pos   = mol.GetConformer().GetPositions().astype(np.float32)
-            _radii = get_atomic_vdw_radii(mol)
-            from rdkit.Chem import AllChem as _AllChem
-            _AllChem.ComputeGasteigerCharges(mol)
-            _charges = np.nan_to_num(
-                np.array([float(a.GetProp('_GasteigerCharge')) for a in mol.GetAtoms()],
-                         dtype=np.float32), nan=0.0)
-            surf = get_molecular_surface(_pos, _radii, num_points=75,
-                                             probe_radius=1.2, num_samples_per_atom=25)
-            esp  = get_electrostatic_potential(mol, _charges, surf)
-            p_types, p_pts, p_vecs = get_pharmacophores(
-                mol, multi_vector=False, exclude=[], check_access=False, scale=1.0)
-            return dict(surface=surf, pharm_pts=p_pts,
-                            pharm_types=p_types, pharm_vecs=p_vecs, esp=esp, num_atoms=mol.GetNumAtoms())
-
-        # Precompute reference if not random
-        fixed_ref_data = None
-        if data_source is not None and mol_idx != -1:
-            try:
-                if isinstance(data_source, list): # PKL
-                    entry = data_source[mol_idx]
-                    ref_mol = Chem.MolFromMolBlock(entry[0], removeHs=False)
-                else: # SDF
-                    ref_mol = data_source[mol_idx]
-                
-                fixed_ref_data = extract_shepherd_profiles(ref_mol)
-                if fixed_ref_data:
-                    logging.info(f"Loaded fixed reference mol [{mol_idx}] from {path}: "
-                                 f"{fixed_ref_data['num_atoms']} atoms, {len(fixed_ref_data['pharm_types'])} pharmacophores")
-            except Exception as e:
-                logging.error(f"Failed to load fixed reference molecule: {e}")
-
-        shepherd_results = []
-        for xyz in tqdm(_shepherd_xyzs, desc="Computing Shepherd metrics"):
-            res = {
-                "file": os.path.basename(xyz),
-                "valid_rdkit": False,
-                "smiles": None,
-                "SA_score": 0.0, "QED": 0.0, "LogP": 0.0, "fsp3": 0.0, "MW": 0.0, "HBD": 0, "HBA": 0,
-                "shape_sim": 0.0, "pharm_sim": 0.0, "esp_sim": 0.0
-            }
-            
-            # Validity & Drug-likeness
+        druglike_rows, similarity_rows = [], []
+        desc = "Computing druglike + similarity3d" if (want_druglike and want_similarity) else (
+            "Computing druglike metrics" if want_druglike else "Computing similarity3d metrics"
+        )
+        for xyz in tqdm(_xyzs, desc=desc):
+            name = os.path.basename(xyz)
             mol = xyz_to_rdkit_mol(xyz)
-            res["valid_rdkit"] = mol is not None
-            if mol:
-                res["smiles"] = Chem.MolToSmiles(mol)
-                drug_likeness = compute_drug_likeness(mol)
-                res.update(drug_likeness)
-                
-                # 2. Determine reference data for this entry
-                ref_data = fixed_ref_data
-                if mol_idx == -1 and data_source is not None:
-                    try:
-                        curr_idx = random.randrange(len(data_source))
-                        if isinstance(data_source, list): # PKL
-                            ref_mol = Chem.MolFromMolBlock(data_source[curr_idx][0], removeHs=False)
-                        else: # SDF
-                            ref_mol = data_source[curr_idx]
-                        ref_data = extract_shepherd_profiles(ref_mol)
-                        logging.info(f"Randomly selected ref mol [{curr_idx}] for {os.path.basename(xyz)}")
-                    except Exception as e:
-                        logging.warning(f"Failed to load random reference for {os.path.basename(xyz)}: {e}")
-                        ref_data = None
+            smiles = Chem.MolToSmiles(mol) if mol else None
 
-                # 3. Conditional similarities
-                if ref_data:
-                    try:
-                        # Try to load modalities from unified .npz or individual files
-                        npz_path = xyz.replace(".xyz", ".npz")
-                        surf_path = xyz.replace(".xyz", "_surface.npy")
-                        esp_path = xyz.replace(".xyz", "_esp.npz")
-                        pharm_path = xyz.replace(".xyz", "_pharm.npz")
-                        
-                        gen_surf, gen_esp, gen_pharm_pts, gen_pharm_types, gen_pharm_vecs = None, None, None, None, None
-                        
-                        if os.path.exists(npz_path):
-                            try:
-                                sidecar = np.load(npz_path)
-                                gen_surf = sidecar.get("surf_pts", None)
-                                gen_esp = sidecar.get("esp_vals", None)
-                                gen_pharm_pts = sidecar.get("pharm_pts", None)
-                                gen_pharm_types = sidecar.get("pharm_types", None)
-                                # Note: Unified .npz doesn't currently store pharm_vecs in Generation code
-                            except: pass
-                        
-                        # Fallback to individual files
-                        if gen_surf is None and os.path.exists(surf_path):
-                             try: gen_surf = np.load(surf_path)
-                             except: pass
-                        if gen_esp is None and os.path.exists(esp_path):
-                             try: gen_esp = np.load(esp_path).get("charges", None)
-                             except: pass
-                        if gen_pharm_pts is None and os.path.exists(pharm_path):
-                             try:
-                                 p_data = np.load(pharm_path)
-                                 gen_pharm_pts = p_data.get("positions", None)
-                                 gen_pharm_types = p_data.get("types", None)
-                                 gen_pharm_vecs = p_data.get("directions", None)
-                             except: pass
+            if want_druglike:
+                row = {"file": name, "valid_rdkit": mol is not None, "smiles": smiles}
+                if mol:
+                    row.update(druglike_mod.compute(
+                        mol, with_rdkit_rmsd=with_rmsd, n_conf=n_conf,
+                    ))
+                druglike_rows.append(row)
 
-                        # --- Fallback: recompute gen profiles from RDKit mol ---
-                        if gen_surf is None:
-                            _gen_pos   = mol.GetConformer().GetPositions().astype(np.float32)
-                            _gen_radii = get_atomic_vdw_radii(mol)
-                            gen_surf = get_molecular_surface(_gen_pos, _gen_radii, num_points=75,
-                                                             probe_radius=1.2, num_samples_per_atom=25)
-                        if gen_pharm_pts is None:
-                            gen_pharm_types, gen_pharm_pts, gen_pharm_vecs = get_pharmacophores(
-                                mol, multi_vector=False, exclude=[], check_access=False, scale=1.0)
-                        if gen_esp is None:
-                            from rdkit.Chem import AllChem as _AllChem2
-                            _AllChem2.ComputeGasteigerCharges(mol)
-                            _gen_charges = np.nan_to_num(
-                                np.array([float(a.GetProp('_GasteigerCharge')) for a in mol.GetAtoms()],
-                                         dtype=np.float32), nan=0.0)
-                            gen_esp = get_electrostatic_potential(mol, _gen_charges, gen_surf)
+            if want_similarity:
+                row = {"file": name, "valid_rdkit": mol is not None, "smiles": smiles,
+                       "shape_sim": 0.0, "pharm_sim": 0.0, "esp_sim": 0.0}
+                if mol:
+                    ref_data = fixed_ref_data
+                    if mol_idx == -1 and data_source is not None:
+                        try:
+                            curr_idx = random.randrange(len(data_source))
+                            ref_data = sim_mod.extract_profiles(
+                                sim_mod.reference_mol(data_source, curr_idx)
+                            )
+                            logging.info(f"Randomly selected ref mol [{curr_idx}] for {name}")
+                        except Exception as e:  # noqa: BLE001
+                            logging.warning(f"Failed to load random reference for {name}: {e}")
+                            ref_data = None
+                    if ref_data:
+                        try:
+                            row.update(sim_mod.compare(mol, ref_data, xyz_path=xyz))
+                        except Exception as e:  # noqa: BLE001
+                            logging.warning(f"Failed to compute similarity for {name}: {e}")
+                similarity_rows.append(row)
 
-                        # Compute similarity metrics using ported shepherd-score
-                        def _alpha(n):
-                            try: return float(ALPHA(np.clip(n, 50, 400)))
-                            except: return 0.81
+        def _emit(rows, name, filename):
+            """Write one of the two tables and log its summary."""
+            df_out = pd.DataFrame(rows)
+            if args.output is None:
+                out_path = _default_metric_path(metrics_input, filename)
+            else:
+                base, ext = os.path.splitext(args.output)
+                out_path = f"{base}_{name}{ext}"
+            df_out = _add_db_row_ids(df_out, metrics_input)
+            df_out.to_csv(out_path, index=False)
+            result_tables.append((name, df_out, out_path))
+            logging.info(f"{name} metrics saved to {out_path}")
+            return df_out, out_path
 
-                        # Shape
-                        if gen_surf is not None and len(gen_surf) > 0 and ref_data["surface"] is not None:
-                            _n = len(gen_surf)
-                            _a = _alpha(_n)
-                            _gs = (gen_surf - gen_surf.mean(axis=0)).astype(np.float32)
-                            _rs = (ref_data["surface"] - ref_data["surface"].mean(axis=0)).astype(np.float32)
-                            _aligned, _, _ = optimize_ROCS_overlay(
-                                torch.from_numpy(_rs), torch.from_numpy(_gs), _a, num_repeats=45)
-                            res["shape_sim"] = float(get_overlap_np(_rs, _aligned.numpy(), alpha=_a))
+        if want_druglike:
+            df_druglike, druglike_path = _emit(druglike_rows, "druglike", "druglike_metrics.csv")
+            summary = {"metrics": "druglike", "input": xyz_dir, "n_files": len(_xyzs)}
+            for col in ("valid_rdkit", "QED", "SA_score", "LogP", "fsp3", "MW", "HBD", "HBA",
+                        "lipinski", "pains_pass", "ring_filter_pass",
+                        "n_rings", "n_aromatic_rings", "n_aliphatic_rings"):
+                if col in df_druglike.columns:
+                    value = float(df_druglike[col].mean())
+                    summary[f"{col}_mean"] = value
+                    logging.info(f"Average {col}: {value:.4f}")
+            for size in druglike_mod.RING_SIZES:
+                col = f"ring_size_{size}"
+                if col in df_druglike.columns:
+                    ratio = float(df_druglike[col].mean())
+                    summary[col] = ratio
+                    logging.info(f"Ring size {size} ratio: {ratio:.3f}")
+            for col in ("rdkit_rmsd_min", "rdkit_rmsd_median", "rdkit_rmsd_max"):
+                if col in df_druglike.columns and df_druglike[col].notna().any():
+                    value = float(df_druglike[col].mean())
+                    summary[f"{col}_mean"] = value
+                    logging.info(f"Average {col}: {value:.4f}")
+            if split > 1 and len(df_druglike) > 0:
+                for col in ("valid_rdkit", "SA_score", "QED"):
+                    scale = 100.0 if col == "valid_rdkit" else 1.0
+                    mean, std = _get_split_stats(df_druglike[col].values, split, scale=scale)
+                    summary[f"split_{col}"] = [mean, std]
+                    logging.info(f"Split {col} mean ± std: {mean:.4f} ± {std:.4f}")
+            _write_summary(druglike_path, summary)
 
-                        # Pharmacophore
-                        if gen_pharm_pts is not None and len(gen_pharm_pts) > 0 and ref_data["pharm_pts"] is not None:
-                            _rpa = (ref_data["pharm_pts"] - ref_data["pharm_pts"].mean(axis=0)).astype(np.float32)
-                            _gpa = (gen_pharm_pts - gen_pharm_pts.mean(axis=0)).astype(np.float32)
-                            _rpv = ref_data["pharm_vecs"].astype(np.float32)
-                            _gpv = (gen_pharm_vecs.astype(np.float32) if gen_pharm_vecs is not None
-                                    else np.zeros_like(_gpa))
-                            _rpt = ref_data["pharm_types"].astype(np.int64)
-                            _gpt = gen_pharm_types.astype(np.int64)
-                            _ga_t, _gv_t, _, _ = optimize_pharm_overlay(
-                                torch.from_numpy(_rpt), torch.from_numpy(_gpt),
-                                torch.from_numpy(_rpa), torch.from_numpy(_gpa),
-                                torch.from_numpy(_rpv), torch.from_numpy(_gpv),
-                                similarity='tanimoto', num_repeats=45)
-                            res["pharm_sim"] = float(get_overlap_pharm_np(
-                                ptype_1=_rpt, ptype_2=_gpt,
-                                anchors_1=_rpa, anchors_2=_ga_t.numpy(),
-                                vectors_1=_rpv, vectors_2=_gv_t.numpy(),
-                                similarity='tanimoto'))
-
-                        # ESP
-                        ref_esp = ref_data["esp"]
-                        if gen_esp is not None and ref_esp is not None and gen_surf is not None and ref_data["surface"] is not None:
-                            _n   = len(gen_surf)
-                            _a   = _alpha(_n)
-                            _lam = 0.3 * LAM_SCALING
-                            _gs  = (gen_surf - gen_surf.mean(axis=0)).astype(np.float32)
-                            _rs  = (ref_data["surface"] - ref_data["surface"].mean(axis=0)).astype(np.float32)
-                            _ge  = gen_esp.astype(np.float32)
-                            _re  = ref_esp.astype(np.float32)
-                            _aligned_e, _, _ = optimize_ROCS_esp_overlay(
-                                torch.from_numpy(_rs), torch.from_numpy(_gs),
-                                torch.from_numpy(_re), torch.from_numpy(_ge),
-                                _a, _lam, num_repeats=45)
-                            res["esp_sim"] = float(get_overlap_esp_np(
-                                _rs, _aligned_e.numpy(), _re, _ge, alpha=_a, lam=_lam))
-                        else:
-                            res["esp_sim"] = 0.0
-
-                    except Exception as e:
-                        import traceback
-                        logging.warning(f"Failed to compute similarity for {os.path.basename(xyz)}: {e}")
-            
-            shepherd_results.append(res)
-            
-        df_shepherd = pd.DataFrame(shepherd_results)
-        
-        # Save output
-        if args.output is None:
-            shepherd_output_path = _default_metric_path(metrics_input, "shepherd_metrics.csv")
-        else:
-            base, ext = os.path.splitext(args.output)
-            shepherd_output_path = f"{base}_shepherd{ext}"
-            
-        df_shepherd = _add_db_row_ids(df_shepherd, metrics_input)
-        df_shepherd.to_csv(shepherd_output_path, index=False)
-        result_tables.append(("shepherd", df_shepherd, shepherd_output_path))
-        logging.info(f"ShEPhERD metrics saved to {shepherd_output_path}")
-        
-        # Summary
-        if "SA_score" in df_shepherd.columns:
-            logging.info(f"Average SA_score: {df_shepherd['SA_score'].mean():.4f}")
-            logging.info(f"Average QED: {df_shepherd['QED'].mean():.4f}")
-        if "shape_sim" in df_shepherd.columns:
-            logging.info(f"Average Shape Similarity: {df_shepherd['shape_sim'].mean():.4f}")
-        if "esp_sim" in df_shepherd.columns:
-            logging.info(f"Average ESP Similarity: {df_shepherd['esp_sim'].mean():.4f}")
-        if "pharm_sim" in df_shepherd.columns:
-            logging.info(f"Average Pharm Similarity: {df_shepherd['pharm_sim'].mean():.4f}")
-        if split > 1 and len(df_shepherd) > 0:
-            valid_rdkit_mean, valid_rdkit_std = _get_split_stats(df_shepherd["valid_rdkit"].values, split, scale=100.0)
-            sa_mean, sa_std = _get_split_stats(df_shepherd["SA_score"].values, split, scale=1.0)
-            qed_mean, qed_std = _get_split_stats(df_shepherd["QED"].values, split, scale=1.0)
-            shape_mean, shape_std = _get_split_stats(df_shepherd["shape_sim"].values, split, scale=1.0)
-            esp_mean, esp_std = _get_split_stats(df_shepherd["esp_sim"].values, split, scale=1.0)
-            pharm_mean, pharm_std = _get_split_stats(df_shepherd["pharm_sim"].values, split, scale=1.0)
-            logging.info(f"Split valid RDKit mean ± std: {valid_rdkit_mean:.2f} ± {valid_rdkit_std:.2f}%")
-            logging.info(f"Split SA_score mean ± std: {sa_mean:.4f} ± {sa_std:.4f}")
-            logging.info(f"Split QED mean ± std: {qed_mean:.4f} ± {qed_std:.4f}")
-            logging.info(f"Split Shape Similarity mean ± std: {shape_mean:.4f} ± {shape_std:.4f}")
-            logging.info(f"Split ESP Similarity mean ± std: {esp_mean:.4f} ± {esp_std:.4f}")
-            logging.info(f"Split Pharm Similarity mean ± std: {pharm_mean:.4f} ± {pharm_std:.4f}")
+        if want_similarity:
+            df_sim, sim_path = _emit(similarity_rows, "similarity3d", "similarity3d_metrics.csv")
+            summary = {
+                "metrics": "similarity3d", "input": xyz_dir,
+                "reference_mol": str(reference_path), "mol_idx": mol_idx,
+                "n_files": len(_xyzs),
+            }
+            for col in ("shape_sim", "esp_sim", "pharm_sim"):
+                if col in df_sim.columns:
+                    value = float(df_sim[col].mean())
+                    summary[f"{col}_mean"] = value
+                    logging.info(f"Average {col}: {value:.4f}")
+            if split > 1 and len(df_sim) > 0:
+                for col in ("shape_sim", "esp_sim", "pharm_sim"):
+                    mean, std = _get_split_stats(df_sim[col].values, split, scale=1.0)
+                    summary[f"split_{col}"] = [mean, std]
+                    logging.info(f"Split {col} mean ± std: {mean:.4f} ± {std:.4f}")
+            _write_summary(sim_path, summary)
 
     # =========================================================================
     # SBDD: AutoDock Vina affinity against the pocket the ligands were made for

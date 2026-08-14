@@ -112,7 +112,8 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
 @click.option("--filtered-output", default=None, type=click.Path(),
               help="Output ASE DB path or XYZ directory for filtered structures")
 @click.option("--metrics", "-m", "--m", "metrics_type", default="all",
-              type=click.Choice(["all", "core", "posebuster", "geom_revised", "shepherd", "sbdd"]),
+              type=click.Choice(["all", "core", "posebuster", "geom_revised",
+                                 "druglike", "similarity3d", "sbdd"]),
               help="Which metrics to compute (default: all)")
 @click.option("--recheck-topo", is_flag=True, default=False,
               help="Recheck topology using RDKit")
@@ -132,7 +133,7 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
 @click.option("--timeout", "-t", "--t", default=10, type=int,
               help="Timeout per xyz2mol conversion in seconds (default: 10)")
 @click.option("--reference-mol", "-r", default=None, type=click.Path(),
-              help="Reference .pkl or .sdf for conditional similarity metrics (shepherd mode)")
+              help="Reference .pkl or .sdf to compare against (required by --metrics similarity3d)")
 @click.option("--mol-idx", default=0, type=int,
               help="Molecule index in reference .pkl (default: 0)")
 @click.option("--train-smiles", default=None, type=click.Path(exists=True),
@@ -145,7 +146,11 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="sbdd cost/fidelity: score (in place), min (+local opt), dock (full redock, default)")
 @click.option("--exhaustiveness", default=8, type=int,
               help="Vina search exhaustiveness for --dock-mode dock (default: 8)")
-def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, check_neutrality, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx, train_smiles, receptor, ref_ligand, dock_mode, exhaustiveness):
+@click.option("--rdkit-rmsd", is_flag=True, default=False,
+              help="druglike: RMSD of the pose vs UFF-optimised RDKit conformers (slow)")
+@click.option("--rmsd-n-conf", default=20, type=int,
+              help="Conformers embedded per molecule for --rdkit-rmsd (default: 20)")
+def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, check_neutrality, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx, train_smiles, receptor, ref_ligand, dock_mode, exhaustiveness, rdkit_rmsd, rmsd_n_conf):
     """Compute validity and connectivity metrics for XYZ files or ASE DB rows.
 
     \b
@@ -155,7 +160,9 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
                    uniqueness/novelty/diversity
       posebuster   PoseBusters checks (bond lengths, angles, clashes)
       geom_revised Aromatic-aware stability metrics
-      shepherd     Drug-likeness and conditional similarity metrics
+      druglike     Drug-likeness descriptors: QED, SA, LogP, Lipinski, PAINS,
+                   ring statistics (+ --rdkit-rmsd)
+      similarity3d Shape / ESP / pharmacophore similarity to --reference-mol
       sbdd         AutoDock Vina affinity against a protein pocket
                    (needs --receptor and the [sbdd] extra)
 
@@ -166,9 +173,9 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         MolCraftDiff analyze metrics gen_xyz/ --metrics core --filter valid_connected --filtered-output kept/
         MolCraftDiff analyze metrics gen_xyz/ --metrics posebuster
         MolCraftDiff analyze metrics gen_xyz/ --metrics geom_revised --mol-converter openbabel
-        MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd
+        MolCraftDiff analyze metrics gen_xyz/ --metrics druglike
         MolCraftDiff analyze metrics gen_xyz/ --split 4
-        MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd -r data/shepherd_data/gdb/molblock_charges_9_test100.pkl --mol-idx 0
+        MolCraftDiff analyze metrics gen_xyz/ --metrics similarity3d -r reference.sdf --mol-idx 0
         MolCraftDiff analyze metrics gen_xyz/ --metrics sbdd --receptor pocket.pdbqt --ref-ligand ref.sdf
     """
     import argparse
@@ -195,6 +202,8 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         ref_ligand=ref_ligand,
         dock_mode=dock_mode,
         exhaustiveness=exhaustiveness,
+        rdkit_rmsd=rdkit_rmsd,
+        rmsd_n_conf=rmsd_n_conf,
     )
     
     click.echo(f"Computing {metrics_type} metrics for: {input_path}")
