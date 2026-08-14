@@ -83,7 +83,8 @@ so rows can be joined back to the source database.
 | `posebuster` | Bond lengths, angles, clashes |
 | `geom_revised` | Aromatic-aware stability metrics |
 | `shepherd` | ShEPhERD conditional-similarity metrics (needs `--reference-mol`) |
-| `all` | All of the above |
+| `sbdd` | AutoDock Vina binding affinity against a protein pocket (needs `--receptor` and the `[sbdd]` extra) |
+| `all` | All of the above **except `sbdd`**, which needs a receptor and is opt-in |
 
 ### What `core` reports
 
@@ -118,9 +119,47 @@ to process). Sweeps pick this file up automatically.
 | `-p, --portion` | `1.0` | Fraction of XYZ files to process |
 | `--filter` / `--filtered-output` | None | Keep only structures whose column is truthy (e.g. `--filter valid_connected`), from any metric set. Writes an XYZ directory, or an ASE `.db` when the input was a database. |
 | `--train-smiles` | None | Reference SMILES (`.txt` one per line, or `.csv`) to score novelty against; without it novelty is reported as `n/a` |
+| `--receptor` | None | Protein receptor for `sbdd`: a `.pdbqt`, or a `.pdb` that meeko prepares |
+| `--ref-ligand` | None | Reference ligand `.sdf`; its own affinity becomes the bar for `high_affinity` |
+| `--dock-mode` | `dock` | `score` (in place) / `min` (+ local optimisation) / `dock` (full redock) |
+| `--exhaustiveness` | `8` | Vina search effort for `--dock-mode dock` |
 | `-r, --reference-mol` / `--mol-idx` | None / `0` | Reference `.pkl`/`.sdf` (and index) for `shepherd` metrics |
 | `--skip-atoms` | — | Atom indices to skip in validation |
 | `-t, --timeout` | `10` | Timeout per xyz2mol conversion (s) |
+
+### What `sbdd` reports
+
+Binding affinity for pocket-conditioned models, the numbers the SBDD
+literature quotes. Requires the `[sbdd]` extra (`pip install
+'molcraftdiffusion[sbdd]'`).
+
+```bash
+MolCraftDiff analyze metrics gen_xyz/ --metrics sbdd \
+    --receptor pocket.pdbqt --ref-ligand reference.sdf
+```
+
+| Column / metric | Meaning |
+|-----------------|---------|
+| `vina_score` | Affinity of the generated pose exactly as produced, no relaxation |
+| `vina_min` | After local minimisation in the pocket |
+| `vina_dock` | After a full redock — the number most papers report |
+| `high_affinity` | Fraction of molecules beating `--ref-ligand`'s own affinity |
+| `success_rate` | QED > 0.25 ∧ SA > 0.59 ∧ `vina_dock` < −8.18 |
+
+The search box is centred on each molecule's own bounding box plus a 5 Å
+buffer, matching the reference implementations — generated ligands already sit
+in the pocket frame.
+
+Two things worth knowing:
+
+* **Poses are perceived with OpenBabel, not xyz2mol.** xyz2mol returns a
+  topology with no conformer, which would silently discard the coordinates the
+  model generated. Structures that cannot be perceived, that lose their
+  conformer, or that come back as several fragments are reported with an
+  `error` and no affinity rather than being skipped silently — check `n_scored`
+  in the summary against your input count.
+* `sbdd` is **not** part of `--metrics all`, because it needs a receptor and
+  costs seconds per molecule (`--dock-mode score` is far cheaper than `dock`).
 
 ---
 

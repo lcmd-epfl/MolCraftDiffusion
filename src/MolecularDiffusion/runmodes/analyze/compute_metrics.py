@@ -376,6 +376,12 @@ def runner(args):
         required_modules.update({"openbabel", "posebusters"})
     if args.metrics in ["all", "shepherd"]:
         required_modules.add("open3d")
+    if args.metrics == "sbdd":
+        try:
+            require_modules("sbdd", {"vina", "meeko"})
+        except OptionalDependencyError as exc:
+            logging.warning(str(exc))
+            raise SystemExit(1) from exc
     try:
         require_modules("analyze", required_modules)
     except OptionalDependencyError as exc:
@@ -1189,6 +1195,117 @@ def runner(args):
             logging.info(f"Split Shape Similarity mean ± std: {shape_mean:.4f} ± {shape_std:.4f}")
             logging.info(f"Split ESP Similarity mean ± std: {esp_mean:.4f} ± {esp_std:.4f}")
             logging.info(f"Split Pharm Similarity mean ± std: {pharm_mean:.4f} ± {pharm_std:.4f}")
+
+    # =========================================================================
+    # SBDD: AutoDock Vina affinity against the pocket the ligands were made for
+    # =========================================================================
+    if args.metrics == "sbdd":
+        from MolecularDiffusion.runmodes.analyze import docking  # noqa: PLC0415
+
+        receptor = getattr(args, "receptor", None)
+        if not receptor:
+            raise ValueError(
+                "--metrics sbdd needs --receptor (a .pdbqt, or a .pdb that "
+                "meeko can prepare)"
+            )
+        mode = getattr(args, "dock_mode", "dock")
+        exhaustiveness = getattr(args, "exhaustiveness", 8)
+        ref_ligand = getattr(args, "ref_ligand", None)
+
+        receptor_pdbqt = docking.prepare_receptor(receptor)
+        logging.info(f"Receptor: {receptor_pdbqt}")
+
+        ref_scores = None
+        if ref_ligand:
+            ref_scores = docking.score_reference(
+                ref_ligand, receptor_pdbqt, mode=mode,
+                exhaustiveness=exhaustiveness,
+            )
+            logging.info(f"Reference ligand {os.path.basename(ref_ligand)}: " + ", ".join(
+                f"{k}={v:.3f}" for k, v in ref_scores.items()))
+
+        rows = []
+        for xyz in tqdm(xyzs, desc="Docking", total=len(xyzs)):
+            row = {"file": xyz}
+            smiles, mol = docking.load_pose(xyz)
+            row["smiles"] = smiles
+            if mol is None:
+                row["error"] = "perception failed or no 3D pose"
+                rows.append(row)
+                continue
+            try:
+                row.update(docking.score_pose(
+                    mol, receptor_pdbqt, mode=mode,
+                    exhaustiveness=exhaustiveness,
+                ))
+                row.update({
+                    k: v for k, v in compute_drug_likeness(mol).items()
+                    if k in ("QED", "SA_score")
+                })
+            except Exception as e:  # noqa: BLE001 -- a failed pose is data
+                row["error"] = f"{type(e).__name__}: {e}"
+            rows.append(row)
+
+        df_sbdd = pd.DataFrame(rows)
+        df_sbdd = _add_db_row_ids(df_sbdd, metrics_input)
+
+        if args.output is None:
+            sbdd_output_path = _default_metric_path(metrics_input, "sbdd_metrics.csv")
+        else:
+            base, ext = os.path.splitext(args.output)
+            sbdd_output_path = f"{base}_sbdd{ext}"
+        df_sbdd.to_csv(sbdd_output_path, index=False)
+        result_tables.append(("sbdd", df_sbdd, sbdd_output_path))
+        logging.info(f"SBDD metrics saved to {sbdd_output_path}")
+
+        summary = {
+            "metrics": "sbdd",
+            "input": xyz_dir,
+            "receptor": receptor_pdbqt,
+            "dock_mode": mode,
+            "exhaustiveness": exhaustiveness,
+            "n_files": len(xyzs),
+            "n_scored": int(df_sbdd["vina_score"].notna().sum()) if "vina_score" in df_sbdd else 0,
+        }
+        score_cols = [c for c in ("vina_score", "vina_min", "vina_dock") if c in df_sbdd]
+        logging.info(f"Scored {summary['n_scored']}/{len(xyzs)} structures")
+        for col in score_cols:
+            values = df_sbdd[col].dropna()
+            if values.empty:
+                continue
+            summary[f"{col}_mean"] = float(values.mean())
+            summary[f"{col}_median"] = float(values.median())
+            summary[f"{col}_best"] = float(values.min())
+            logging.info(
+                f"{col}: mean {values.mean():.3f}  median {values.median():.3f}  "
+                f"best {values.min():.3f}"
+            )
+
+        # the affinity column the literature aggregates on
+        best_col = score_cols[-1] if score_cols else None
+        if best_col and ref_scores:
+            reference = ref_scores.get(best_col)
+            summary["reference_affinity"] = reference
+            scored = df_sbdd[best_col].dropna()
+            if reference is not None and not scored.empty:
+                high = float((scored < reference).mean())
+                summary["high_affinity"] = high
+                logging.info(f"High affinity (beats reference {reference:.3f}): {high * 100:.2f}%")
+
+        if best_col and {"QED", "SA_score"}.issubset(df_sbdd.columns):
+            # SA_score is the raw 1-10 RDKit score; the papers threshold the
+            # normalised (10 - SA) / 9 form
+            sa_norm = (10.0 - df_sbdd["SA_score"]) / 9.0
+            success = (
+                (df_sbdd["QED"] > 0.25) & (sa_norm > 0.59) & (df_sbdd[best_col] < -8.18)
+            )
+            summary["success_rate"] = float(success.mean())
+            logging.info(
+                f"Success rate (QED>0.25, SA>0.59, {best_col}<-8.18): "
+                f"{success.mean() * 100:.2f}%"
+            )
+
+        _write_summary(sbdd_output_path, summary)
 
     try:
         _apply_result_filter(

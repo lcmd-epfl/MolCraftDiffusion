@@ -112,7 +112,7 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
 @click.option("--filtered-output", default=None, type=click.Path(),
               help="Output ASE DB path or XYZ directory for filtered structures")
 @click.option("--metrics", "-m", "--m", "metrics_type", default="all",
-              type=click.Choice(["all", "core", "posebuster", "geom_revised", "shepherd"]),
+              type=click.Choice(["all", "core", "posebuster", "geom_revised", "shepherd", "sbdd"]),
               help="Which metrics to compute (default: all)")
 @click.option("--recheck-topo", is_flag=True, default=False,
               help="Recheck topology using RDKit")
@@ -137,7 +137,15 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="Molecule index in reference .pkl (default: 0)")
 @click.option("--train-smiles", default=None, type=click.Path(exists=True),
               help="Reference SMILES (.txt one per line, or .csv) to score novelty against")
-def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, check_neutrality, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx, train_smiles):
+@click.option("--receptor", default=None, type=click.Path(exists=True),
+              help="Protein receptor (.pdbqt, or .pdb to prepare) -- required by --metrics sbdd")
+@click.option("--ref-ligand", default=None, type=click.Path(exists=True),
+              help="Reference ligand .sdf; its own affinity becomes the bar for high_affinity")
+@click.option("--dock-mode", default="dock", type=click.Choice(["score", "min", "dock"]),
+              help="sbdd cost/fidelity: score (in place), min (+local opt), dock (full redock, default)")
+@click.option("--exhaustiveness", default=8, type=int,
+              help="Vina search exhaustiveness for --dock-mode dock (default: 8)")
+def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, check_neutrality, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx, train_smiles, receptor, ref_ligand, dock_mode, exhaustiveness):
     """Compute validity and connectivity metrics for XYZ files or ASE DB rows.
 
     \b
@@ -148,6 +156,8 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
       posebuster   PoseBusters checks (bond lengths, angles, clashes)
       geom_revised Aromatic-aware stability metrics
       shepherd     Drug-likeness and conditional similarity metrics
+      sbdd         AutoDock Vina affinity against a protein pocket
+                   (needs --receptor and the [sbdd] extra)
 
     \b
     Examples:
@@ -159,6 +169,7 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd
         MolCraftDiff analyze metrics gen_xyz/ --split 4
         MolCraftDiff analyze metrics gen_xyz/ --metrics shepherd -r data/shepherd_data/gdb/molblock_charges_9_test100.pkl --mol-idx 0
+        MolCraftDiff analyze metrics gen_xyz/ --metrics sbdd --receptor pocket.pdbqt --ref-ligand ref.sdf
     """
     import argparse
     runner = _load_analyze_module("compute_metrics").runner
@@ -180,6 +191,10 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         reference_mol=reference_mol,
         mol_idx=mol_idx,
         train_smiles=train_smiles,
+        receptor=receptor,
+        ref_ligand=ref_ligand,
+        dock_mode=dock_mode,
+        exhaustiveness=exhaustiveness,
     )
     
     click.echo(f"Computing {metrics_type} metrics for: {input_path}")
