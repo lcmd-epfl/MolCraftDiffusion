@@ -87,7 +87,10 @@ class MolecularDiffusionDataModule(pl.LightningDataModule):
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
             prefetch_factor=self.prefetch_factor,
-            shuffle=False,  # Lightning handles shuffling with DDP via DistributedSampler
+            # Lightning only injects a sampler under a distributed strategy; with
+            # shuffle=False a single-device run replays the same order every epoch.
+            # Under DDP this becomes DistributedSampler(shuffle=True).
+            shuffle=True,
         )
 
     def val_dataloader(self):

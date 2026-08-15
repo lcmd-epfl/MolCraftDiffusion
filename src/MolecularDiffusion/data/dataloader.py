@@ -1,4 +1,3 @@
-from collections import deque
 from collections.abc import Mapping, Sequence
 
 import torch
@@ -242,22 +241,4 @@ class DataLoader(torch.utils.data.DataLoader):
             collate_fn,
             **kwargs
         )
-
-
-class DataQueue(torch.utils.data.Dataset):
-
-    def __init__(self):
-        self.queue = deque()
-
-    def append(self, item):
-        self.queue.append(item)
-
-    def pop(self):
-        self.queue.popleft()
-
-    def __getitem__(self, index):
-        return self.queue[index]
-
-    def __len__(self):
-        return len(self.deque)
 

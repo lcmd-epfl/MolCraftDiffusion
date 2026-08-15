@@ -143,7 +143,6 @@ class LazyChunkedDataset(torch_data.Dataset):
             local_idx = int(index) - self._offsets[chunk_idx]
             grouped[chunk_idx].append((out_idx, local_idx))
 
-        values: List[float] = []
         values = [0.0] * sum(len(v) for v in grouped.values())
         for chunk_idx, positions in grouped.items():
             path = self.chunk_paths[chunk_idx]
@@ -411,7 +410,6 @@ class LazyChunkedGraphDataset(torch_data.Dataset):
             local_idx = int(index) - self._offsets[chunk_idx]
             grouped[chunk_idx].append((out_idx, local_idx))
 
-        values: List[float] = []
         values = [0.0] * sum(len(v) for v in grouped.values())
         for chunk_idx, positions in grouped.items():
             path = self.chunk_paths[chunk_idx]
@@ -578,12 +576,12 @@ def _drop_hydrogens(
 
 
 def _check_any_loaded(
-    db_path: str,
+    source: str,
     total_rows: int,
     n_loaded: int,
     last_error: Optional[Exception],
 ) -> None:
-    """Fail loudly when every row of a non-empty db was discarded.
+    """Fail loudly when every entry of a non-empty source was discarded.
 
     Silently returning an empty dataset only surfaces much later as an
     ``IndexError`` in an unrelated file, so a config/data mismatch is
@@ -591,7 +589,7 @@ def _check_any_loaded(
     """
     if total_rows and not n_loaded:
         raise ValueError(
-            f"No entries could be loaded from {db_path}: all {total_rows} "
+            f"No entries could be loaded from {source}: all {total_rows} "
             f"rows were discarded. Check `atom_vocab`, `with_hydrogen`, "
             f"`max_atom` and `forbidden_atoms` against the data "
             f"(last error: {last_error})"
@@ -804,6 +802,7 @@ class GraphDataset(torch_data.Dataset):
         skipped_too_large = 0
         skipped_forbidden = 0
         skipped_nan = 0
+        last_error: Optional[Exception] = None
         for i, xyz in enumerate(xyz_list):
             try:
                 if os.path.exists(xyz):
@@ -862,6 +861,12 @@ class GraphDataset(torch_data.Dataset):
                 else:
                     raise ValueError("Unknown edge type %s" % edge_type)
 
+                if torch.isnan(coords).any() or (
+                    node_features is not None and torch.isnan(node_features).any()
+                ):
+                    skipped_nan += 1
+                    continue
+
                 graph_data, _ohe_sz = _compact_build_pyg(
                     node_features=node_features,
                     coords=coords,
@@ -901,6 +906,7 @@ class GraphDataset(torch_data.Dataset):
                         self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
+                last_error = e
                 logger.error(f"Error in loading {xyz}: {e}")
                 continue
 
@@ -923,8 +929,17 @@ class GraphDataset(torch_data.Dataset):
                 f"in {len(_chunk_paths)} chunks → {chunk_dir}"
             )
 
-        if skipped_too_large or skipped_forbidden:
-            logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms")
+        if skipped_too_large or skipped_forbidden or skipped_nan:
+            logger.warning(
+                f"Discarded entries: {skipped_too_large} too large, "
+                f"{skipped_forbidden} forbidden atoms, {skipped_nan} NaN values"
+            )
+
+        _check_any_loaded(
+            "the XYZ file list", num_sample,
+            sum(_chunk_sizes) if _chunking else len(self.graph_data_list),
+            last_error,
+        )
 
     def load_npy(
         self,
@@ -1010,6 +1025,8 @@ class GraphDataset(torch_data.Dataset):
 
         skipped_too_large = 0
         skipped_forbidden = 0
+        skipped_nan = 0
+        last_error: Optional[Exception] = None
         start_index = 0
         for i, natom in enumerate(natoms):
             try:
@@ -1073,6 +1090,12 @@ class GraphDataset(torch_data.Dataset):
                 else:
                     raise ValueError("Unknown edge type %s" % edge_type)
 
+                if torch.isnan(coords_mol).any() or (
+                    node_features is not None and torch.isnan(node_features).any()
+                ):
+                    skipped_nan += 1
+                    continue
+
                 graph_data, _ohe_sz = _compact_build_pyg(
                     node_features=node_features,
                     coords=coords_mol,
@@ -1112,6 +1135,7 @@ class GraphDataset(torch_data.Dataset):
                         self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
+                last_error = e
                 logger.error(f"Error in loading molecule {i}: {e}")
                 continue
 
@@ -1134,8 +1158,17 @@ class GraphDataset(torch_data.Dataset):
                 f"in {len(_chunk_paths)} chunks → {chunk_dir}"
             )
 
-        if skipped_too_large or skipped_forbidden:
-            logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms")
+        if skipped_too_large or skipped_forbidden or skipped_nan:
+            logger.warning(
+                f"Discarded entries: {skipped_too_large} too large, "
+                f"{skipped_forbidden} forbidden atoms, {skipped_nan} NaN values"
+            )
+
+        _check_any_loaded(
+            "the npy coordinate arrays", num_sample,
+            sum(_chunk_sizes) if _chunking else len(self.graph_data_list),
+            last_error,
+        )
 
     def load_db(
         self,
@@ -1335,7 +1368,7 @@ class GraphDataset(torch_data.Dataset):
                             else:
                                 node_features = row_feat
                         elif verbose:
-                            _logger.warning(
+                            logger.warning(
                                 f"row id={i}: row.data['node_features'] shape {row_feat.shape} "
                                 f"mismatches n_nodes={n_nodes}, skipping."
                             )
@@ -1496,8 +1529,15 @@ class GraphDataset(torch_data.Dataset):
                 self.n_atoms.append(graph_data.natoms)
                 for task, value in zip(tasks, values):
                     self.targets[task].append(float(value))
-            self.atom_vocab, self.with_hydrogen = pickle.load(fin)
-            
+            trailer = pickle.load(fin)
+            self.atom_vocab, self.with_hydrogen = trailer[0], trailer[1]
+            # ponytail: 3rd slot added later; pickles written before it have none.
+            compact_meta = trailer[2] if len(trailer) > 2 else {}
+            self._compact = compact_meta.get("compact") or {}
+            self._ohe_size = compact_meta.get("ohe_size")
+            self._edge_type = compact_meta.get("edge_type", "fully_connected")
+
+
             if skipped_too_large:
                 logger.warning(f"Discarded {skipped_too_large} entries because they exceed max_atom limit")
 
@@ -1531,10 +1571,17 @@ class GraphDataset(torch_data.Dataset):
                 (
                     self.atom_vocab,
                     self.with_hydrogen,
+                    # Without this, a compacted dataset reloads as slim Data and
+                    # get_item silently hands the model packed ints, not OHE.
+                    {
+                        "compact": self._compact,
+                        "ohe_size": self._ohe_size,
+                        "edge_type": self._edge_type,
+                    },
                 ),
                 fout,
             )
-    
+
     def _standarize_index(self, index, count):
         if isinstance(index, slice):
             start = index.start or 0
@@ -1584,12 +1631,6 @@ class GraphDataset(torch_data.Dataset):
             atom_types.discard(0)
         atom_types = sorted(atom_types)
         return atom_types
- 
-    @property
-    def num_atom_type(self):
-        """Number of different atom types."""
-        return len(self.atom_types)
-       
 
     def __len__(self):
         return len(self.graph_data_list)
@@ -1698,6 +1739,7 @@ class PointCloudDataset(torch_data.Dataset):
         skipped_too_large = 0
         skipped_forbidden = 0
         skipped_nan = 0
+        last_error: Optional[Exception] = None
         for i, xyz in enumerate(xyz_list):
             try:
                 if os.path.exists(xyz):
@@ -1790,6 +1832,7 @@ class PointCloudDataset(torch_data.Dataset):
                         self.targets[field].append(float(targets[field][i]))
 
             except Exception as e:
+                last_error = e
                 logger.error(f"Error in loading {xyz}: {e}")
                 continue
 
@@ -1812,6 +1855,12 @@ class PointCloudDataset(torch_data.Dataset):
 
         if skipped_too_large or skipped_forbidden or skipped_nan:
             logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, {skipped_nan} NaN values")
+
+        _check_any_loaded(
+            "the XYZ file list", num_sample,
+            sum(_chunk_sizes) if _chunking else len(self.coords_list),
+            last_error,
+        )
 
     def load_npy(
         self,
@@ -2011,6 +2060,12 @@ class PointCloudDataset(torch_data.Dataset):
 
         if skipped_too_large or skipped_forbidden or skipped_nan:
             logger.warning(f"Discarded entries: {skipped_too_large} too large, {skipped_forbidden} forbidden atoms, {skipped_nan} NaN values")
+
+        _check_any_loaded(
+            "the npy coordinate arrays", num_sample,
+            sum(_chunk_sizes) if _chunking else len(self.coords_list),
+            None,
+        )
 
     def load_csv(
         self,
@@ -2301,7 +2356,7 @@ class PointCloudDataset(torch_data.Dataset):
                             else:
                                 node_features = row_feat
                         elif verbose:
-                            _logger.warning(
+                            logger.warning(
                                 f"row id={i}: row.data['node_features'] shape {row_feat.shape} "
                                 f"mismatches n_nodes={n_nodes}, skipping."
                             )
@@ -2398,8 +2453,9 @@ class PointCloudDataset(torch_data.Dataset):
                             if value == "":
                                 value = math.nan
                             self.targets[field].append(float(value))
-                    if mol_rdkit is not None:
-                        self.smiles_list.append(smiles)
+                    # Append unconditionally (`smiles` is None without RDKit) so
+                    # smiles_list stays index-aligned with coords_list.
+                    self.smiles_list.append(smiles)
 
             except Exception as e:
                 failed += 1
@@ -2621,11 +2677,6 @@ class PointCloudDataset(torch_data.Dataset):
             atom_types.discard(0)
         atom_types = sorted(atom_types)
         return atom_types
-
-    @property
-    def num_atom_type(self):
-        """Number of different atom types."""
-        return len(self.atom_types)
 
     @property
     def num_atoms(self):
