@@ -1,0 +1,44 @@
+# De-novo pocket-conditioned generation for DiffInt.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
+# "which pocket", so this points at a dedicated generator, exactly as
+# gen_diffsbdd_pocket.yaml / gen_diffpharma_pocket.yaml do. cli/generate.py
+# only calls `instantiate(cfg.interference, task=task)` then `.run()`, so
+# every key here goes straight to that generator's __init__.
+#
+# There is no unconditional mode: ConditionalDDPM.sample() raises without a
+# pocket.
+#
+# Set EXACTLY ONE pocket source:
+#   pocket_db + pocket_index -- a row of a converted ASE db (center=false),
+#                               particles already baked in
+#   pocket_pdb + ref_sdf     -- a novel protein + reference ligand pose,
+#                               preprocessed on the fly (needs the [bio]
+#                               extra: biopython, oddt, openbabel, rdkit)
+#
+# The reference SDF is MANDATORY on the pocket_pdb path: hydrogen bonds are
+# protein<->ligand, so without a bound pose there are no DD/AC particles to
+# place and the run silently degrades to plain DiffSBDD (which is exactly the
+# bug in upstream's own lightning_modules.py:852-890 -- not reproduced here).
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffint.DiffIntPocketGenerator
+
+pocket_db: null
+pocket_index: 0
+
+pocket_pdb: null
+ref_sdf: null
+dist_cutoff: 8.0     # A, pocket residue selection around the reference ligand
+
+num_generate: 20
+batch_size: 4
+
+# Reverse-process steps. null => the model's full schedule (500).
+num_steps: null
+
+# Empty => draw ligand sizes from the 2D joint histogram CONDITIONED on this
+# pocket's RESIDUE count (the native behaviour). A list => sample uniformly.
+mol_size: []
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_diffint

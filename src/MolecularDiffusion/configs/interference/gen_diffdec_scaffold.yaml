@@ -1,0 +1,36 @@
+# Scaffold decoration inside a fixed pocket (DiffDec, single R-group).
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
+# "which scaffold, which anchor atom, which pocket", so this points at a
+# dedicated generator, exactly as gen_diffsbdd_pocket.yaml / gen_kgdiff_pocket
+# .yaml do. cli/generate.py:673 only calls `instantiate(cfg.interference,
+# task=task)` then `.run()`, so every key here goes straight to that
+# generator's __init__ -- nothing needs registering.
+#
+# There is no unconditional mode: DiffDecTask.sample() raises with a pointer
+# back to this config.
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffdec.DiffDecScaffoldGenerator
+
+# Upstream's preprocessed .pt. The scaffold, its anchor atom and the pocket
+# are all read from ONE row of it.
+data_file: ???
+complex_index: 0
+
+# Decorations sampled for that one scaffold/pocket (upstream's --n_samples).
+num_generate: 20
+batch_size: 4
+
+# Reverse-process steps. null => the model's full schedule
+# (tasks.diffusion_steps, 500). Lowering it subsamples the SAME schedule the
+# weights were trained on (upstream sample_single.py --n_steps); it trades
+# sample quality for speed.
+num_steps: null
+
+# Also write scaffold_000.xyz (the fixed input) and reference_000.xyz (the
+# ground-truth decorated molecule) next to the samples, as upstream does.
+# Without them there is nothing to judge a decoration against.
+save_reference: true
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_diffdec

@@ -1,0 +1,35 @@
+# DiffDec scaffold + pocket + R-group complexes, read from upstream's OWN
+# preprocessed .pt (Zenodo record 10527451) -- not an ASE db.
+#
+# Each example is three node sets (fixed scaffold, fixed pocket, diffused
+# R-group) flat-concatenated into one padded node set with five per-atom
+# masks. Those masks have no home in the PointCloud db's node-feature columns,
+# so round-tripping through it would be lossy for no gain; the DataModule
+# reads the published list[dict] directly and uses a port of upstream's own
+# collate. See data/component/diffdec_data.py.
+#
+# PREREQUISITE -- fetch the data (939 KB test split; the train split is 1.6 GB):
+#
+#   python docs/model_integrations/diffdec/scripts/convert_dataset.py
+#
+_target_: MolecularDiffusion.data.component.diffdec_data.DiffDecDataModule
+
+root: ???
+train_file: crossdocksingle_test_full.pt
+# null => reuse train_file. The published test split has no internal split, so
+# validation loss is not a held-out number; point these at
+# crossdocksingle_train_full.pt / your own split for a real run.
+val_file: null
+test_file: null
+
+# null = all complexes; set an int to cap each split (debugging).
+limit: null
+
+batch_size: 4
+num_workers: 0
+
+# const.ATOM2IDX order (src/const.py l. 9). '#' is the FAKE atom the model
+# emits into unused R-group slots -- it is a real class of this vocabulary,
+# and the generator strips those rows before writing .xyz. Reordering this
+# list silently invalidates every converted checkpoint.
+atom_vocab: [C, O, N, F, S, Cl, Br, I, P, "#"]

@@ -1,0 +1,52 @@
+# DiffDec: pocket-aware scaffold decoration (single R-group).
+# See docs/model_integrations/diffdec/INTEGRATION_PLAN.md for the integration
+# plan and docs/adding_new_models.md §2.3 for this file's role.
+#
+# Values are DiffDec configs/single.yml + train_single.py argparse defaults,
+# cross-checked against the released diffdec_single.ckpt's own
+# `hyper_parameters` (Zenodo record 10527451). Changing ANY of them makes that
+# converted checkpoint unloadable -- leave them alone unless you are training
+# from scratch.
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffdec.DiffDecTaskFactory
+task_type: diffusion_diffdec
+
+# Must equal len(atom_vocab): const.ATOM2IDX has 10 classes including the fake
+# '#' padding atom. No charges channel (single.yml `include_charges: False`).
+in_node_nf: 10
+n_dims: 3
+
+# EGNN backbone -- modules/models/difflinker/egnn.py::DynamicsWithPockets,
+# reused as-is (DiffDec's egnn.py is that file modulo renames). The task pins
+# graph_type="4A": edges are a 4 A radius graph rebuilt every forward pass,
+# not a fully-connected graph, which is what makes 250-atom pocket complexes
+# tractable.
+hidden_nf: 128
+n_layers: 6
+activation: silu
+attention: false
+tanh: false
+norm_constant: 1.0e-06
+inv_sublayers: 2
+sin_embedding: false
+normalization_factor: 100
+aggregation_method: sum
+model: egnn_dynamics
+normalization: batch_norm
+condition_time: true
+
+# Per-atom context = [anchors, scaffold_only_mask, pocket_only_mask] when
+# true (context_node_nf=3), else [scaffold_only_mask, pocket_only_mask] (2).
+# The anchor is the single scaffold atom the R-group grows from; dropping it
+# is upstream's --remove_anchors_context ablation.
+anchors_context: true
+
+# Coordinates are centred on the anchor atom, per single.yml
+# (`center_of_mass: anchors`). 'scaffold' centres on the scaffold instead.
+center_of_mass: anchors
+
+# Diffusion -- modules/models/difflinker/edm.py::EDM.
+diffusion_steps: 500
+diffusion_noise_schedule: polynomial_2
+diffusion_noise_precision: 1.0e-05
+diffusion_loss_type: l2
+normalize_factors: [1, 4, 10]

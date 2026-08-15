@@ -1,0 +1,33 @@
+# DiffInt ligand-pocket complexes, read from an ASE db.
+#
+# This is NOT the DiffSBDD/KGDiff db: DiffInt's pocket is CA-only (one node
+# per residue, 20 amino-acid classes) and carries two H-bond pseudo-atoms per
+# detected protein-ligand hydrogen bond (classes DD/AC). Build it with:
+#
+#   python docs/model_integrations/diffint/scripts/convert_dataset.py \
+#       <crossdocked test_set dir> <out.db>
+#
+# The db stores raw integers (element Z, pocket class 0..21); this module owns
+# the vocabulary, so changing it never means reconverting.
+_target_: MolecularDiffusion.data.component.diffint_data.DiffIntDataModule
+
+root: ???
+train_file: diffint_smoke.db
+# null => reuse train_file. There is no split in the converted smoke set.
+val_file: null
+test_file: null
+
+# null = all complexes; set an int to cap each split (debugging).
+limit: null
+
+batch_size: 4
+num_workers: 0
+
+# Joint-centre ligand+pocket per complex at load time, as upstream's
+# ProcessedLigandPocketDataset does (dataset.py:53-61). The generator reads
+# its pocket with center=False instead, so samples come back in the original
+# structure's frame.
+center: true
+
+# Ligand vocabulary (the pocket's 22 classes live in diffint_prep.py).
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]
