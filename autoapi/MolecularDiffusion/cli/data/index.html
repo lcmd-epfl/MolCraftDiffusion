@@ -287,12 +287,14 @@
 <li class="toctree-l4 has-children"><a class="reference internal" href="../../data/component/index.html">MolecularDiffusion.data.component</a><input aria-label="Toggle navigation of MolecularDiffusion.data.component" class="toctree-checkbox" id="toctree-checkbox-11" name="toctree-checkbox-11" role="switch" type="checkbox"/><label for="toctree-checkbox-11"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/apo2mol_data/index.html">MolecularDiffusion.data.component.apo2mol_data</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/dataset/index.html">MolecularDiffusion.data.component.dataset</a></li>
+<li class="toctree-l5"><a class="reference internal" href="../../data/component/diffdec_data/index.html">MolecularDiffusion.data.component.diffdec_data</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/diffint_data/index.html">MolecularDiffusion.data.component.diffint_data</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/diffint_prep/index.html">MolecularDiffusion.data.component.diffint_prep</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/diffpharma_data/index.html">MolecularDiffusion.data.component.diffpharma_data</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/diffpharma_prep/index.html">MolecularDiffusion.data.component.diffpharma_prep</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/diffsbdd_data/index.html">MolecularDiffusion.data.component.diffsbdd_data</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/feature/index.html">MolecularDiffusion.data.component.feature</a></li>
+<li class="toctree-l5"><a class="reference internal" href="../../data/component/graph3d_dataset/index.html">MolecularDiffusion.data.component.graph3d_dataset</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/kgdiff_data/index.html">MolecularDiffusion.data.component.kgdiff_data</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/pharmacophore/index.html">MolecularDiffusion.data.component.pharmacophore</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../data/component/pmdm_data/index.html">MolecularDiffusion.data.component.pmdm_data</a></li>
@@ -311,7 +313,10 @@
 <li class="toctree-l4 has-children"><a class="reference internal" href="../../runmodes/analyze/index.html">MolecularDiffusion.runmodes.analyze</a><input aria-label="Toggle navigation of MolecularDiffusion.runmodes.analyze" class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul>
 <li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/compare_to_optimized/index.html">MolecularDiffusion.runmodes.analyze.compare_to_optimized</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/compute_metrics/index.html">MolecularDiffusion.runmodes.analyze.compute_metrics</a></li>
+<li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/docking/index.html">MolecularDiffusion.runmodes.analyze.docking</a></li>
+<li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/druglike/index.html">MolecularDiffusion.runmodes.analyze.druglike</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/featurize/index.html">MolecularDiffusion.runmodes.analyze.featurize</a></li>
+<li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/similarity3d/index.html">MolecularDiffusion.runmodes.analyze.similarity3d</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/ssl3d_embed/index.html">MolecularDiffusion.runmodes.analyze.ssl3d_embed</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/uma_embeddings/index.html">MolecularDiffusion.runmodes.analyze.uma_embeddings</a></li>
 <li class="toctree-l5"><a class="reference internal" href="../../runmodes/analyze/xtb_electronic/index.html">MolecularDiffusion.runmodes.analyze.xtb_electronic</a></li>
@@ -504,25 +509,28 @@ Exposes data preparation, augmentation, and ASE operations via CLI commands.</p>
 <tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.generate_blocks_cmd" title="MolecularDiffusion.cli.data.generate_blocks_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">generate_blocks_cmd</span></code></a>(source, sdf, natoms, csv, ...)</p></td>
 <td><p>Generate Mol Blocks, SMILES, and properties (SA, SC).</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.inspect_cmd" title="MolecularDiffusion.cli.data.inspect_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">inspect_cmd</span></code></a>(db, output, keys, sample_size, limit, ...)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.import_graph3d_cmd" title="MolecularDiffusion.cli.data.import_graph3d_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">import_graph3d_cmd</span></code></a>(source, raw_dir, out_db, limit, ...)</p></td>
+<td><p>Convert MiDi's raw QM9/GEOM data into a 3D-graph ASE database with explicit bonds.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.inspect_cmd" title="MolecularDiffusion.cli.data.inspect_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">inspect_cmd</span></code></a>(db, output, keys, sample_size, limit, ...)</p></td>
 <td><p>Inspect an ASE database and optionally plot statistics.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.merge_cmd" title="MolecularDiffusion.cli.data.merge_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">merge_cmd</span></code></a>(input, output, recursive, verify)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.merge_cmd" title="MolecularDiffusion.cli.data.merge_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">merge_cmd</span></code></a>(input, output, recursive, verify)</p></td>
 <td><p>Merge multiple ASE databases.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.prepare" title="MolecularDiffusion.cli.data.prepare"><code class="xref py py-obj docutils literal notranslate"><span class="pre">prepare</span></code></a>()</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.prepare" title="MolecularDiffusion.cli.data.prepare"><code class="xref py py-obj docutils literal notranslate"><span class="pre">prepare</span></code></a>()</p></td>
 <td><p>Data preparation commands.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.rename_cmd" title="MolecularDiffusion.cli.data.rename_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rename_cmd</span></code></a>(db, old, new)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.rename_cmd" title="MolecularDiffusion.cli.data.rename_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rename_cmd</span></code></a>(db, old, new)</p></td>
 <td><p>Rename a row attribute in an ASE database.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.sample_cmd" title="MolecularDiffusion.cli.data.sample_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">sample_cmd</span></code></a>(input, output, fmt, fraction, number, seed, ...)</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.sample_cmd" title="MolecularDiffusion.cli.data.sample_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">sample_cmd</span></code></a>(input, output, fmt, fraction, number, seed, ...)</p></td>
 <td><p>Sample entries from an ASE database.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.size_cmd" title="MolecularDiffusion.cli.data.size_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">size_cmd</span></code></a>(input, output, s_start, t_start, s_end, ...)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.size_cmd" title="MolecularDiffusion.cli.data.size_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">size_cmd</span></code></a>(input, output, s_start, t_start, s_end, ...)</p></td>
 <td><p>Augment data to balance molecule sizes.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.split_cmd" title="MolecularDiffusion.cli.data.split_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">split_cmd</span></code></a>(db, output, n)</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#MolecularDiffusion.cli.data.split_cmd" title="MolecularDiffusion.cli.data.split_cmd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">split_cmd</span></code></a>(db, output, n)</p></td>
 <td><p>Split an ASE database.</p></td>
 </tr>
 </tbody>
@@ -595,6 +603,14 @@ Exposes data preparation, augmentation, and ASE operations via CLI commands.</p>
 <dt class="sig sig-object py" id="MolecularDiffusion.cli.data.generate_blocks_cmd">
 <span class="sig-prename descclassname"><span class="pre">MolecularDiffusion.cli.data.</span></span><span class="sig-name descname"><span class="pre">generate_blocks_cmd</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">natoms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">csv</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fraction</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#MolecularDiffusion.cli.data.generate_blocks_cmd" title="Link to this definition">¶</a></dt>
 <dd><p>Generate Mol Blocks, SMILES, and properties (SA, SC).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="MolecularDiffusion.cli.data.import_graph3d_cmd">
+<span class="sig-prename descclassname"><span class="pre">MolecularDiffusion.cli.data.</span></span><span class="sig-name descname"><span class="pre">import_graph3d_cmd</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">raw_dir</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_db</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">limit</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_conformers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">no_sanitize</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">delete_raw</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#MolecularDiffusion.cli.data.import_graph3d_cmd" title="Link to this definition">¶</a></dt>
+<dd><p>Convert MiDi’s raw QM9/GEOM data into a 3D-graph ASE database with explicit bonds.</p>
+<p>Stores upper-triangular real bonds (5-class vocabulary) plus raw signed
+formal charges, for use with <cite>data_type: graph3d</cite>.</p>
 </dd></dl>
 
 <dl class="py function">
@@ -743,6 +759,7 @@ Exposes data preparation, augmentation, and ASE operations via CLI commands.</p>
 <li><a class="reference internal" href="#MolecularDiffusion.cli.data.distortion_cmd"><code class="docutils literal notranslate"><span class="pre">distortion_cmd()</span></code></a></li>
 <li><a class="reference internal" href="#MolecularDiffusion.cli.data.featurize_cmd"><code class="docutils literal notranslate"><span class="pre">featurize_cmd()</span></code></a></li>
 <li><a class="reference internal" href="#MolecularDiffusion.cli.data.generate_blocks_cmd"><code class="docutils literal notranslate"><span class="pre">generate_blocks_cmd()</span></code></a></li>
+<li><a class="reference internal" href="#MolecularDiffusion.cli.data.import_graph3d_cmd"><code class="docutils literal notranslate"><span class="pre">import_graph3d_cmd()</span></code></a></li>
 <li><a class="reference internal" href="#MolecularDiffusion.cli.data.inspect_cmd"><code class="docutils literal notranslate"><span class="pre">inspect_cmd()</span></code></a></li>
 <li><a class="reference internal" href="#MolecularDiffusion.cli.data.merge_cmd"><code class="docutils literal notranslate"><span class="pre">merge_cmd()</span></code></a></li>
 <li><a class="reference internal" href="#MolecularDiffusion.cli.data.prepare"><code class="docutils literal notranslate"><span class="pre">prepare()</span></code></a></li>
