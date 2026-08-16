@@ -1,0 +1,70 @@
+# QM9 as a 3D molecular graph with EXPLICIT BONDS, shaped for MiDi.
+#
+# Modelled on configs/data/graph3d_qm9_dataset.yaml (left untouched) with
+# three deltas, all of them MiDi requirements:
+#   bond_collate: dense    -> padded (B,N,N) integer bond matrix, MiDi's shapes
+#   kekulize: true         -> aromatic bonds become alternating SINGLE/DOUBLE
+#   dataset_name           -> distinct processed-cache key, so the kekulized
+#                             build never collides with the aromatic one
+#
+# Why kekulize: MiDi's published QM9 run reads gdb9 with sanitize=False, so
+# RDKit does no aromatic perception and bond class 4 is NEVER populated -- the
+# released weights are trained on a Kekule distribution. This db was imported
+# sanitized, so class 4 IS populated; kekulize: true reproduces MiDi's
+# distribution via a real Chem.Kekulize round-trip, with no db rebuild. Do not
+# turn it off for a generate run against the released checkpoint: the noise
+# model's bond marginals are rebuilt from these statistics and must match the
+# distribution the weights were trained on.
+#
+# Build the db first (129,011 molecules, MiDi's own split, ~22s of extra
+# kekulization on load):
+#   MolCraftDiff data import-graph3d qm9 data/qm9_raw data/qm9_graph3d.db
+#
+# Bond classes: 0=none 1=SINGLE 2=DOUBLE 3=TRIPLE 4=AROMATIC. MiDi uses exactly
+# these five, in this order -- the mapping is the identity.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/qm9_graph3d.db
+dataset_name: qm9_midi_kekulized
+
+# MiDi's QM9 full_atom_encoder order (qm9_dataset.py:35).
+atom_vocab: [H, C, N, O, F]
+with_hydrogen: True        # the released QM9 checkpoint is the explicit-H one
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 29
+forbidden_atom: []
+
+data_type: graph3d
+
+# --- graph3d-specific ------------------------------------------------------
+bond_collate: dense        # MiDi's PlaceHolder shapes, no PyG round-trip
+center_coords: True        # MiDi centres coordinates at conversion time
+graph3d_stats: True        # marginals + size histogram, needed at build time
+kekulize: True             # see the note above -- load-bearing for MiDi
+use_stored_split: True     # honour MiDi's published 100k/val/10% split
+
+# --- shared DataModule knobs ---------------------------------------------
+train_ratio: 0.8           # ignored while use_stored_split finds labels
+batch_size: 64
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null           # set ~250000 for GEOM
+
+# Present for schema parity with the point-cloud configs; unused here.
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

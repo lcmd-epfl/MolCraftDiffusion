@@ -1,0 +1,42 @@
+# MiDi: mixed graph + 3D denoising diffusion (Vignac et al., ECML 2023,
+# arXiv:2302.09048).
+#
+# The only model here that GENERATES THE MOLECULAR GRAPH: bond orders and
+# formal charges are diffused jointly with the coordinates, so a sample comes
+# with an explicit bond table instead of needing xyz2mol/OpenBabel perception.
+#
+# Requires data_type: graph3d with bond_collate: dense
+# (see configs/data/midi_qm9_dataset.yaml). Unconditional only.
+#
+# Hyperparameters are MiDi's configs/model/discrete.yaml verbatim, and match
+# the released QM9 explicit-H checkpoint's own saved cfg.
+_target_: MolecularDiffusion.modules.tasks.diffusion_midi.ModelTaskFactory
+task_type: diffusion_midi
+
+n_layers: 12
+hidden_mlp_dims: {X: 256, E: 64, y: 256, pos: 64}
+hidden_dims: {dx: 256, de: 64, dy: 128, n_head: 8, dim_ffX: 256, dim_ffE: 64, dim_ffy: 256}
+
+diffusion_steps: 500
+diffusion_noise_schedule: cosine
+# marginal -> limit distribution is the dataset's own class marginals, taken
+# from train_set.graph3d_stats. Every released MiDi config uses this.
+transition: marginal
+
+# Adaptive noise schedule: one cosine exponent per modality. Coordinates (p)
+# are noised fastest, bonds (e) slower, atom types/charges slowest.
+nu: {p: 2.5, x: 1, c: 1, e: 1.5, y: 1}
+
+# [pos_mse, X_ce, charges_ce, E_ce, y_ce]; y is empty (unconditional).
+lambda_train: [3, 0.4, 1, 2, 0]
+
+# Formal charges are stored raw and signed; the offset/class count is applied
+# model-side. QM9 -> +1 / 3 classes ({-1,0,+1}); GEOM -> +2 / 6 classes.
+charge_offset: 1
+n_charge_classes: 3
+
+# Opt-in .sdf sidecar. The platform's writer emits .xyz, which has no bond
+# channel, so generated bonds would otherwise be dropped at write time. Set a
+# path to also append every sampled molecule (atoms + bonds + formal charges +
+# 3D coords) to one .sdf file. null = off, nothing changes.
+sdf_output_path: null

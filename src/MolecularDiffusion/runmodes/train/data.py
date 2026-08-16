@@ -6,6 +6,9 @@ from MolecularDiffusion.data.dataset import pointcloud_dataset, pointcloud_datas
 from MolecularDiffusion.data.component.dataset import (
     PointCloudDataset, LazyChunkedDataset, LazyChunkedGraphDataset,
 )
+from MolecularDiffusion.data.component.graph3d_dataset import (
+    Graph3DDataset, graph3d_dense_collate,
+)
 from MolecularDiffusion.data.dataloader import pointcloud_collate, graph_collate, pointcloud_collate_v0
 from MolecularDiffusion.utils import get_vram_size
 
@@ -86,6 +89,12 @@ class DataModule:
         compact_pack_ohe: bool = False,
         compact_int8_z: bool = False,
         use_row_data_features: bool = False,
+        # --- graph3d (3D molecular graph with bonds) options; ignored by other data_types
+        bond_collate: str = "raw",
+        center_coords: bool = False,
+        graph3d_stats: bool = True,
+        kekulize: bool = False,
+        use_stored_split: bool = False,
     ):
         self.root = root
         self.filename = filename
@@ -118,6 +127,11 @@ class DataModule:
         self.use_ohe_feature = use_ohe_feature
         self.chunk_size = chunk_size
         self.use_row_data_features = use_row_data_features
+        self.bond_collate = bond_collate
+        self.center_coords = center_coords
+        self.graph3d_stats = graph3d_stats
+        self.kekulize = kekulize
+        self.use_stored_split = use_stored_split
         self.compact = dict(
             drop_edge_index=compact_drop_edge_index,
             drop_tags=compact_drop_tags,
@@ -127,9 +141,23 @@ class DataModule:
 
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.root_path = os.path.join(root, f"processed_data_{dataset_name}.pt")
-        self.chunk_dir = os.path.join(root, f"chunks_{dataset_name}")
-        if self.data_type == "pyg":
+        # Cache paths were historically keyed off dataset_name alone. Keep that
+        # exact string for the two original data_types so every cache already on
+        # disk keeps resolving; namespace anything new so it cannot collide.
+        # (The pre-existing pointcloud<->pyg collision is left alone on purpose:
+        # renaming either one would orphan existing caches.)
+        _cache_tag = (
+            dataset_name
+            if self.data_type in ("pointcloud", "pyg")
+            else f"{dataset_name}_{self.data_type}"
+        )
+        self.root_path = os.path.join(root, f"processed_data_{_cache_tag}.pt")
+        self.chunk_dir = os.path.join(root, f"chunks_{_cache_tag}")
+        if self.data_type == "graph3d":
+            self.collate_fn = (
+                graph3d_dense_collate if self.bond_collate == "dense" else graph_collate
+            )
+        elif self.data_type == "pyg":
             self.collate_fn = graph_collate
         else:
             if self.data_efficient_collator:
@@ -153,6 +181,52 @@ class DataModule:
         )
         base_dir = self.chunk_dir if self.chunk_size or os.path.exists(self.chunk_dir) else self.root
         return os.path.join(base_dir, filename)
+
+    def _stored_splits(self, dataset):
+        """Honour a split label carried by the data, when one is present.
+
+        Opt-in via `use_stored_split`. Datasets converted from an upstream with
+        a published split (MiDi's 100k/val/10% at random_state=42) can then
+        reproduce that split exactly, instead of the platform's own
+        `random_split`, which would make published numbers incomparable.
+
+        Returns None -- falling back to `_build_or_load_splits` -- whenever the
+        data carries no usable labels, so turning the flag on can never
+        silently produce an empty or lopsided train set.
+        """
+        splits = getattr(dataset, "splits", None)
+        if not splits or len(splits) != len(dataset):
+            logger.warning(
+                "use_stored_split=True but the dataset carries no split labels; "
+                "falling back to the random split."
+            )
+            return None
+
+        buckets = {"train": [], "val": [], "test": []}
+        aliases = {"valid": "val", "validation": "val"}
+        for idx, label in enumerate(splits):
+            key = aliases.get(str(label).lower(), str(label).lower())
+            if key in buckets:
+                buckets[key].append(idx)
+
+        if not buckets["train"]:
+            logger.warning(
+                "use_stored_split=True but no rows are labelled 'train'; "
+                "falling back to the random split."
+            )
+            return None
+
+        logger.info(
+            "Using stored splits: train=%d valid=%d test=%d (%d unlabelled rows ignored)",
+            len(buckets["train"]),
+            len(buckets["val"]),
+            len(buckets["test"]),
+            len(dataset) - sum(len(v) for v in buckets.values()),
+        )
+        return tuple(
+            torch.utils.data.Subset(dataset, buckets[key])
+            for key in ("train", "val", "test")
+        )
 
     def _build_or_load_splits(self, dataset, lengths):
         cache_path = self._split_cache_path(len(dataset))
@@ -221,6 +295,13 @@ class DataModule:
                         allow_unknown=self.allow_unknown,
                         use_ohe_feature=self.use_ohe_feature,
                     )
+                elif self.data_type == "graph3d":
+                    dataset = Graph3DDataset(
+                        root=self.root,
+                        dataset_name=self.dataset_name,
+                        max_atom=self.max_atom,
+                        load_only=True,
+                    )
                 if is_main_process:
                     print(f"[DataModule] Dataset loaded in {time.perf_counter() - _t:.2f}s ({len(dataset):,} samples)")
 
@@ -237,7 +318,13 @@ class DataModule:
                 _t = time.perf_counter()
                 meta = torch.load(chunk_meta, weights_only=False)
                 kind = meta.get("kind", "pointcloud")
-                if kind == "pyg":
+                if kind == "graph3d":
+                    # graph3d chunks are pyG Data under the hood, so the existing
+                    # lazy reader loads them as-is; it reads its compaction keys
+                    # with .get defaults and stays inert when they are absent.
+                    dataset = LazyChunkedGraphDataset(self.chunk_dir)
+                    dataset.graph3d_stats = meta.get("graph3d_stats")
+                elif kind == "pyg":
                     dataset = LazyChunkedGraphDataset(self.chunk_dir)
                 else:
                     dataset = LazyChunkedDataset(self.chunk_dir)
@@ -260,7 +347,30 @@ class DataModule:
             )
             # Compact flags apply to both chunked and in-memory pyG paths.
             pyg_extra = {"compact": self.compact}
-            if self.data_type == "pyg":
+            if self.data_type == "graph3d":
+                dataset = Graph3DDataset(
+                    root=self.root,
+                    ase_db_path=self.ase_db_path,
+                    dataset_name=self.dataset_name,
+                    atom_vocab=self.atom_vocab,
+                    max_atom=self.max_atom,
+                    with_hydrogen=self.with_hydrogen,
+                    forbidden_atoms=self.forbidden_atom,
+                    target_fields=self.target_fields,
+                    allow_unknown=self.allow_unknown,
+                    use_ohe_feature=self.use_ohe_feature,
+                    center_coords=self.center_coords,
+                    kekulize=self.kekulize,
+                    compute_stats=self.graph3d_stats,
+                    verbose=verbose_level,
+                    **chunk_kwargs,
+                )
+                if chunk_kwargs and os.path.exists(chunk_meta):
+                    _stats = getattr(dataset, "graph3d_stats", None)
+                    dataset = LazyChunkedGraphDataset(self.chunk_dir)
+                    dataset.max_atom = self.max_atom
+                    dataset.graph3d_stats = _stats
+            elif self.data_type == "pyg":
                 dataset = pointcloud_dataset_pyG(
                     root=self.root,
                     df_path=self.filename,
@@ -333,9 +443,13 @@ class DataModule:
         if is_main_process:
             print("[DataModule] Building/loading train/valid/test splits ...")
         _t = time.perf_counter()
-        self.train_set, self.valid_set, self.test_set = self._build_or_load_splits(
-            dataset, lengths
-        )
+        stored = self._stored_splits(dataset) if self.use_stored_split else None
+        if stored is not None:
+            self.train_set, self.valid_set, self.test_set = stored
+        else:
+            self.train_set, self.valid_set, self.test_set = self._build_or_load_splits(
+                dataset, lengths
+            )
         if is_main_process:
             print(f"[DataModule] Splits ready in {time.perf_counter() - _t:.2f}s")
 
@@ -350,6 +464,10 @@ class DataModule:
         for subset in (self.train_set, self.valid_set, self.test_set):
             subset.atom_types = getattr(dataset, "atom_types", [])
             subset.targets = getattr(dataset, "targets", [])
+            # Bond statistics ride along for tasks that declare `train_set`
+            # (the existing declarative seam in cli/train.py) -- None for every
+            # non-graph3d data_type, so nothing existing sees a change.
+            subset.graph3d_stats = getattr(dataset, "graph3d_stats", None)
         if any(self.task_type.startswith(p) for p in ("diffusion", "vae", "ldm")):
             for subset in (self.train_set, self.valid_set, self.test_set):
                 subset.smiles_list = getattr(dataset, "smiles_list", [])

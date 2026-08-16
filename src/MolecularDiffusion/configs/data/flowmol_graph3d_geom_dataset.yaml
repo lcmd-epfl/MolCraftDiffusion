@@ -1,0 +1,83 @@
+# GEOM-Drugs as a 3D molecular graph with EXPLICIT BONDS, for FlowMol3.
+#
+# Build the db first (MiDi's GEOM pickles; FlowMol3 uses the same files --
+# their readme.md:106 and both point at https://bits.csb.pitt.edu/files/geom_raw/):
+#   wget -P data/geom_raw https://bits.csb.pitt.edu/files/geom_raw/val_data.pickle
+#   MolCraftDiff data import-graph3d geom data/geom_raw data/geom_graph3d_val.db \
+#       --max-conformers 1
+#   python docs/model_integrations/flowmol_graph3d/scripts/convert_dataset.py
+#
+# Bond classes: 0=none 1=SINGLE 2=DOUBLE 3=TRIPLE 4=AROMATIC.
+# Class 0 is never stored; absence from bond_index means "no bond".
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/flowmol_graph3d_smoke.db
+dataset_name: geom_flowmol_graph3d
+
+# FlowMol3's OWN atom order, copied from the released checkpoint's
+# `atom_type_map` -- NOT the platform-usual H-first ordering. This is
+# load-bearing: the stored `atom_idx` IS the model's atom-type index, so a
+# different order silently mislabels every atom against the pretrained weights.
+atom_vocab: [C, H, N, O, F, P, S, Cl, Br, I]
+with_hydrogen: True
+use_ohe_feature: True
+# false -> GEOM's off-map elements (As, Hg, Bi, Se) are skipped, reproducing
+# upstream's own rejection at data_processing/geom.py:177-184.
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+# Upstream imposes no per-molecule cap, only a batch-level edge budget.
+max_atom: 200
+forbidden_atom: []
+
+data_type: graph3d
+
+# --- graph3d-specific ------------------------------------------------------
+# raw -> PyG Batch. FlowMol wants a fully-connected DIRECTED edge list built by
+# its own build_edge_idxs, not MiDi's dense (B,N,N) matrix.
+bond_collate: raw
+center_coords: True
+graph3d_stats: True          # supplies the molecule-size histogram for sampling
+
+# MANDATORY, never set this to false. The released FlowMol3 weights have
+# explicit_aromaticity=False: `to_edge_logits` is 4 logits wide and
+# `token_embeddings.e` is 4 classes + 1 mask row, so canonical bond class 4
+# (AROMATIC) has no input row and no output logit. With kekulize: false a
+# class-4 label is an index-out-of-range crash in F.one_hot / CrossEntropyLoss,
+# not a quality regression. Upstream's own processed directory is literally
+# named `data/geom_full_kekulized/`.
+kekulize: True
+
+# Explicit false: a val-derived db labels every row "val", and while
+# runmodes/train/data.py:185-217 does warn and fall back to a random split
+# rather than producing an empty train set, relying on a warning path is sloppy.
+use_stored_split: False
+
+# --- shared DataModule knobs ---------------------------------------------
+train_ratio: 0.8
+# NOT a typo. graph3d materializes fully-connected edges O(N^2) in the
+# dataloader worker, and GEOM molecules reach well over 100 atoms (~32k directed
+# edges at N=180). Upstream's answer is an adaptive edge-budget sampler capped
+# at max_num_edges: 50000 with batch_size: 12; the platform has no size-aware
+# sampler, so a small batch is the only lever. Expect the dataloader worker, not
+# the GPU, to be the bottleneck.
+batch_size: 2
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null           # set ~250000 for the full GEOM train split
+
+# Present for schema parity with the point-cloud configs; unused here.
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

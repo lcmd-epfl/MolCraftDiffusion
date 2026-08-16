@@ -1,0 +1,102 @@
+# FlowMol3 -- bond-generating, CTMC discrete flow matching, GEOM-Drugs scale.
+#
+# Four modalities generated jointly: x (coords, continuous flow matching) and
+# a / c / e (atom types, formal charges, BOND ORDERS -- CTMC discrete flow
+# matching from an all-mask prior). Unconditional de novo generation only.
+#
+# Distinct from the platform's coordinate-only `diffusion_flowmol`, which stays
+# untouched: that one drops the `e` (bond) modality entirely.
+#
+# Every hyperparameter below is copied VERBATIM from the released FlowMol3
+# checkpoint's own `hyper_parameters` (run `fm3_distort_lowt_highp`), which is
+# authoritative -- NOT from the in-repo `configs/flowmol3.yml`, which disagrees
+# on distort_p (0.2 vs 0.7) and distort_t (unset vs 0.25).
+#
+# REQUIRES `kekulize: true` in the data config. The released weights have
+# explicit_aromaticity=False: `to_edge_logits` is 4 logits wide and
+# `token_embeddings.e` is 4 classes + 1 mask row, so canonical bond class 4
+# (AROMATIC) has no input row and no output logit. A class-4 label is a hard
+# index crash. Do not set n_bond_types to 5.
+#
+# Paper: Dunn & Koes, "FlowMol3: Flow Matching for 3D De Novo Small-Molecule
+# Generation", arXiv:2508.12629 (2025).
+_target_: MolecularDiffusion.modules.tasks.diffusion_flowmol_graph3d.ModelTaskFactory
+task_type: diffusion_flowmol_graph3d
+
+# --- categorical vocabularies ---------------------------------------------
+# Formal charges are stored raw and signed; this model offsets by +2 into 6
+# classes, i.e. [-2, +3]. Out-of-range raises rather than clips.
+charge_offset: 2
+n_charge_classes: 6
+# 0=none 1=SINGLE 2=DOUBLE 3=TRIPLE. There is no class 4 at this scope.
+n_bond_types: 4
+
+# --- fake atoms ------------------------------------------------------------
+# The model is handed up to ceil(n*fake_atom_p) decoy atoms per molecule and
+# learns to decline the ones it does not want, so it chooses its own molecule
+# size. Nodes it assigns to the fake class are deleted before decoding, which
+# makes the produced atom count <= the requested one.
+fake_atom_p: 0.3
+fake_atom_std: 1.0
+
+# --- training-time geometry distortion (no effect at sampling) -------------
+distort_p: 0.7
+distort_t: 0.25
+
+# --- coordinate prior ------------------------------------------------------
+prior_std: 1.0
+
+# --- loss ------------------------------------------------------------------
+time_scaled_loss: true
+total_loss_weights:
+  x: 3.0
+  a: 0.4
+  c: 1.0
+  e: 2.0
+
+# --- sampling defaults -----------------------------------------------------
+default_n_timesteps: 250
+stochasticity: 30.0
+high_confidence_threshold: 0.9
+
+# Opt-in bond sidecar: the platform writes .xyz, which has no bond channel, so
+# set this to a path to also get an .sdf with the generated bond orders.
+sdf_output_path: null
+
+# empty -> build() fills num_atoms_histogram from train_set.graph3d_stats
+dataset_stats: {}
+
+interpolant_scheduler_config:
+  # all-linear: the released FlowMol3 config carries no cosine_params at all
+  schedule_type:
+    x: linear
+    a: linear
+    c: linear
+    e: linear
+
+vector_field_config:
+  self_conditioning: true
+  n_vec_channels: 32
+  n_cp_feats: 4
+  n_hidden_scalars: 256
+  n_hidden_edge_feats: 128
+  n_recycles: 1
+  n_molecule_updates: 6
+  convs_per_update: 1
+  n_message_gvps: 3
+  n_update_gvps: 3
+  n_expansion_gvps: 3
+  separate_mol_updaters: true
+  message_norm: sum
+  update_edge_w_distance: true
+  rbf_dmax: 10
+  rbf_dim: 32
+  time_embedding_dim: 64
+  a_token_dim: 64
+  c_token_dim: 64
+  e_token_dim: 64
+  attention: false
+  n_heads: 32
+  s_message_dim: null
+  v_message_dim: null
+  dropout: 0.0

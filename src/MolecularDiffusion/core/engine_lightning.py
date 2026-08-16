@@ -96,6 +96,9 @@ class EngineLightning(pl.LightningModule, core.Configurable):
         self.gradnorm_queue = gradnorm_queue
         self.gradient_clip_algorithm = gradient_clip_algorithm
         self._clipper = gradient_clipping(m=1) if gradnorm_queue is not None else None
+        self._nonfinite_grad_steps = 0
+        self._consecutive_bad_batches = 0
+        self.max_consecutive_bad_batches = 20
 
         # Periodic sleep (e.g., for GPU thermal throttling relief)
         self.sleep_every_N = sleep_every_N
@@ -451,12 +454,34 @@ class EngineLightning(pl.LightningModule, core.Configurable):
         Calls task(batch) which returns (loss, metrics).
         """
         self.task.split = "train"
-        loss, metrics = self.task(batch)
+
+        # Some backbones assert their own invariants mid-forward (MiDi's
+        # masking / finiteness checks). One bad batch shouldn't kill a run that
+        # took hours -- skip it. A run whose weights have actually gone NaN
+        # fails every batch, so still die once the skips stop being isolated.
+        try:
+            loss, metrics = self.task(batch)
+        except ValueError as err:
+            self._consecutive_bad_batches += 1
+            if self._consecutive_bad_batches > self.max_consecutive_bad_batches:
+                msg = (
+                    f"{self._consecutive_bad_batches} consecutive failed "
+                    f"training batches -- the model is not recovering."
+                )
+                raise RuntimeError(msg) from err
+            logger.warning(
+                f"Skipping batch {batch_idx}: {err} "
+                f"({self._consecutive_bad_batches} in a row)"
+            )
+            return None  # Lightning skips None returns
 
         # Skip batches with invalid loss (matches original Engine behavior)
         if torch.isnan(loss) or torch.isinf(loss):
+            self._consecutive_bad_batches += 1
             logger.warning(f"Skipping batch {batch_idx} due to invalid loss: {loss.item()}")
             return None  # Lightning skips None returns
+
+        self._consecutive_bad_batches = 0
 
         # Infer batch size from batch (graph datasets have variable batch sizes)
         batch_size = batch.num_graphs if hasattr(batch, 'num_graphs') else len(batch) if isinstance(batch, (list, tuple)) else 1
@@ -503,6 +528,24 @@ class EngineLightning(pl.LightningModule, core.Configurable):
                 logger.info(f"Sleeping for {self.sleep_time}s at global step {step}")
                 time.sleep(self.sleep_time)
 
+    def _skip_nonfinite_grads(self) -> bool:
+        """Zero the gradients if any is NaN/Inf. True if the step was dropped."""
+        grads = [p.grad for p in self.task.parameters() if p.grad is not None]
+        if not grads:
+            return False
+        # ponytail: one fused check over the flat norm, not a per-tensor scan.
+        total = torch.norm(torch.stack([g.norm() for g in grads]))
+        if torch.isfinite(total):
+            return False
+        self._nonfinite_grad_steps += 1
+        logger.warning(
+            f"Non-finite gradient (norm={total}); skipping optimizer step "
+            f"({self._nonfinite_grad_steps} skipped so far)."
+        )
+        for g in grads:
+            g.zero_()
+        return True
+
     def configure_gradient_clipping(
         self, optimizer, gradient_clip_val, gradient_clip_algorithm
     ):
@@ -513,6 +556,13 @@ class EngineLightning(pl.LightningModule, core.Configurable):
             gradient_clip_val: Value from Trainer config (used for 'lightning' mode)
             gradient_clip_algorithm: Algorithm from Trainer config ('norm' or 'value')
         """
+        # A single non-finite gradient poisons every weight it touches, and
+        # from then on the forward pass is all-NaN -- the run dies on a
+        # masking assert deep in some backbone instead of here. Drop the step
+        # instead: zeroed grads make optimizer.step() a no-op.
+        if self._skip_nonfinite_grads():
+            return
+
         if self.gradient_clip_algorithm == "adaptive" and self._clipper is not None:
             # Use the adaptive Queue-based gradient clipping (matches original Engine)
             self._clipper(self.task, self.gradnorm_queue)

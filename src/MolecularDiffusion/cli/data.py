@@ -343,3 +343,36 @@ def rename_cmd(db, old, new):
     _require_data_modules(["ase"])
     ase_ops = _load_data_module("ase_ops")
     ase_ops.rename_db_attribute(Path(db), old, new)
+
+
+# --- 3D molecular graph (explicit bond) import ---
+
+@data.command("import-graph3d")
+@click.argument("source", type=click.Choice(["qm9", "geom"]))
+@click.argument("raw_dir", type=click.Path(exists=True))
+@click.argument("out_db", type=click.Path())
+@click.option("--limit", "-l", type=int, default=None, help="Stop after N molecules")
+@click.option("--max-conformers", "-m", default=5, show_default=True,
+              help="Conformers per molecule (GEOM only)")
+@click.option("--no-sanitize", is_flag=True,
+              help="Parse without RDKit sanitization (exact MiDi QM9 parity; "
+                   "bond class 4/AROMATIC will never appear)")
+@click.option("--delete-raw", is_flag=True,
+              help="Delete the raw download AFTER the db is written and verified")
+def import_graph3d_cmd(source, raw_dir, out_db, limit, max_conformers,
+                      no_sanitize, delete_raw):
+    """Convert MiDi's raw QM9/GEOM data into a 3D-graph ASE database with explicit bonds.
+
+    Stores upper-triangular real bonds (5-class vocabulary) plus raw signed
+    formal charges, for use with `data_type: graph3d`.
+    """
+    _require_data_modules(["ase", "rdkit"])
+    mod = _load_data_module("graph3d_import")
+    argv = [source, raw_dir, out_db, "--max-conformers", str(max_conformers)]
+    if limit is not None:
+        argv += ["--limit", str(limit)]
+    if no_sanitize:
+        argv.append("--no-sanitize")
+    if delete_raw:
+        argv.append("--delete-raw")
+    raise SystemExit(mod.main(argv))
