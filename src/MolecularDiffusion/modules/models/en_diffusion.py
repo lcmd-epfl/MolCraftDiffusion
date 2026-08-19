@@ -30,6 +30,7 @@ from MolecularDiffusion.utils import (
     sample_center_gravity_zero_gaussian_with_mask,
     sample_gaussian_with_mask
 )
+from MolecularDiffusion.utils.geom_analyzer import symbol2num
 
 
 def _resolve_jitter_scale(config, init_method, forward_noise):
@@ -47,6 +48,75 @@ def _resolve_jitter_scale(config, init_method, forward_noise):
 
 
 logger = logging.getLogger(__name__)
+
+def _n_int(model: torch.nn.Module) -> int:
+    """Width of a model's trailing integer (atomic-number) block.
+
+    ``getattr`` with a ``True`` default so any object that borrows these
+    methods without declaring ``include_charges`` keeps the historical
+    one-column layout.
+    """
+    return int(getattr(model, "include_charges", True))
+
+
+def split_feature_axis(
+    model: torch.nn.Module, t: torch.Tensor, n_cat: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Split ``[..., n_dims | n_cat | n_int]`` along the last axis.
+
+    The integer block is empty for models built with
+    ``include_charges=False``, which keeps every downstream ``cat`` / mask /
+    ``sum_except_batch`` shape-correct without per-site branching. With
+    ``include_charges=True`` these slices are exactly the ``[..., :-1]`` /
+    ``[..., -1:]`` arithmetic they replace.
+    """
+    a = model.n_dims
+    b = a + n_cat
+    return t[..., :a], t[..., a:b], t[..., b : b + _n_int(model)]
+
+
+def split_z(
+    model: torch.nn.Module, z: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Split a normalized latent into ``(x, h_cat (+extra), h_int)``."""
+    return split_feature_axis(model, z, model.num_classes)
+
+
+def split_frame(
+    model: torch.nn.Module, xh: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Split an unnormalized chain frame into ``(x, h_cat, h_int)``.
+
+    ``unnormalize_z`` strips the extra-feature block, so frames carry only
+    the core categorical features.
+    """
+    return split_feature_axis(
+        model, xh, model.num_classes - model.ndim_extra
+    )
+
+
+def atomic_numbers(
+    model: torch.nn.Module, h_int: torch.Tensor, h_cat: torch.Tensor
+) -> torch.Tensor:
+    """Per-atom atomic numbers for the geometry/quality checks.
+
+    Returns the model's integer channel when it has one -- the same tensor
+    object callers used before. Models built with ``include_charges=False``
+    carry no such channel, so the numbers are decoded from the categorical
+    one-hot through ``atom_vocab`` instead, falling back to the empty
+    integer block when no vocabulary was configured.
+    """
+    if getattr(model, "include_charges", True) or not getattr(
+        model, "atom_vocab", None
+    ):
+        return h_int
+    z_table = torch.tensor(
+        [symbol2num.get(sym, 0) for sym in model.atom_vocab],
+        device=h_cat.device,
+        dtype=torch.long,
+    )
+    return z_table[torch.argmax(h_cat, dim=-1)].unsqueeze(-1)
+
 
 class EnVariationalDiffusion(torch.nn.Module):
     """
@@ -374,10 +444,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         Returns:
             Tensor of [B, N, D] with unnormalized (x, h_cat, h_int)
         """
-        x = z[:, :, :self.n_dims]
-        h_cat = z[:, :, self.n_dims : self.n_dims + self.num_classes]
-
-        h_int = z[:, :, -1:].contiguous()
+        x, h_cat, h_int = split_z(self, z)
+        h_int = h_int.contiguous()
         assert h_int.size(2) == self.include_charges
 
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
@@ -501,11 +569,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             eps_t_hint = eps_t[:, :, hint_i:hint_i+1]
             eps_hint   = eps[:, :, hint_i:hint_i+1]
         else:
-            # when no extra dims, hcat runs up to last, hint is last
-            eps_t_hcat = eps_t[:, :, start:-1]
-            eps_hcat   = eps[:, :, start:-1]
-            eps_t_hint = eps_t[:, :, -1:]
-            eps_hint   = eps[:, :, -1:]
+            # when no extra dims, hcat runs up to the integer block, which is
+            # empty for models without an atomic-number channel
+            _, eps_t_hcat, eps_t_hint = split_z(self, eps_t)
+            _, eps_hcat, eps_hint = split_z(self, eps)
 
         # integer (hint) and categorical errors
         errors["integer"]     = sum_except_batch((eps_hint - eps_t_hint) ** 2) / denom
@@ -631,8 +698,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 dim=2)
             
         else:
-            h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-            h_cat = z0[:, :, self.n_dims : -1]
+            _, h_cat, h_int = split_z(self, z0)
 
         if h_int.dim() < 3: 
             h_int = h_int.unsqueeze(-1)
@@ -756,12 +822,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             z_h_cat = z_t[:, :, : self.in_node_nf - self.ndim_extra - 1]
             z_h_extra = z_t[:, :, -self.ndim_extra :]
         else:
-            z_h_cat = z_t[:, :, :-1]
-            z_h_int = (
-                z_t[:, :, -1:]
-                if self.include_charges
-                else torch.zeros(0).to(z_t.device)
-            )
+            n_cat = self.num_classes
+            z_h_cat = z_t[:, :, :n_cat]
+            z_h_int = z_t[:, :, n_cat : n_cat + _n_int(self)]
 
         errors = self.compute_error(net_out, t_int / self.T, eps)
         log_p_x_given_z_without_constants = -0.5 * (errors["pos"])
@@ -898,9 +961,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             z_h_cat     = z_h[:, :hint_i]
             z_h_extra   = z_h[:, -self.ndim_extra:]
         else:
-            z_h_int     = (z_h[:, -1:] if self.include_charges 
-                        else torch.zeros((N_total,0), device=z_h.device))
-            z_h_cat     = z_h[:, :-1]
+            n_cat       = self.num_classes
+            z_h_int     = z_h[:, n_cat : n_cat + _n_int(self)]
+            z_h_cat     = z_h[:, :n_cat]
             z_h_extra   = None
 
         # 4) compute sigma0 for every node
@@ -2776,6 +2839,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             for b in range(zs.size(0)):
                 condition_pos_b = condition_to_use[b, :, : self.n_dims]
 
+                # NOTE: scaffold conditioning reads atomic numbers from the
+                # latent's trailing charge column and so requires
+                # include_charges=True. Left as-is deliberately: this path
+                # is unreachable without a condition_tensor.
                 condition_charge_b = condition_to_use[b, :, -1] * self.norm_values[2]
                 condition_charge_b = torch.round(condition_charge_b).long().clamp(1, 118)
 
@@ -2932,6 +2999,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             for b in range(zs.size(0)):
                 condition_pos_b = condition_to_use[b, :, : self.n_dims]
 
+                # NOTE: scaffold conditioning reads atomic numbers from the
+                # latent's trailing charge column and so requires
+                # include_charges=True. Left as-is deliberately: this path
+                # is unreachable without a condition_tensor.
                 condition_charge_b = condition_to_use[b, :, -1] * self.norm_values[2]
                 condition_charge_b = torch.round(condition_charge_b).long().clamp(1, 118)
 
@@ -3541,6 +3612,10 @@ class EnVariationalDiffusion(torch.nn.Module):
                 condition_tensor = reordered_condition_tensor
 
                 x_ref = condition_tensor[:, :, : self.n_dims].squeeze(0)
+                # NOTE: scaffold conditioning reads atomic numbers from the
+                # latent's trailing charge column and so requires
+                # include_charges=True. Left as-is deliberately: this path
+                # is unreachable without a condition_tensor.
                 h_int_ref = condition_tensor[:, :, -1].squeeze(0) * self.norm_values[2]
 
                 if x_ref.dim() > 2:
@@ -4051,8 +4126,10 @@ class EnVariationalDiffusion(torch.nn.Module):
                 charges_chain = chain[:, :, :, h_int_idx:h_int_idx+1].squeeze(-1)
                 extra_chain = chain[:, :, :, h_int_idx+1:]
             else:
-                one_hot_chain = chain[:, :, :, self.n_dims:-1]
-                charges_chain = chain[:, :, :, -1]
+                _, one_hot_chain, h_int_chain = split_frame(self, chain)
+                charges_chain = atomic_numbers(self,
+                    h_int_chain, one_hot_chain
+                ).squeeze(-1)
                 extra_chain = None
             
             one_hot_chain = F.one_hot(
@@ -4106,7 +4183,12 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # 3 ---------------------------------------------------------------------
         try:
-            is_connected, num_components, n_degrees = check_quality(x.squeeze(0), h["integer"].squeeze(0))
+            is_connected, num_components, n_degrees = check_quality(
+                    x.squeeze(0),
+                    atomic_numbers(self,
+                        h["integer"], h["categorical"]
+                    ).squeeze(0),
+                )
         except:
             # assume errors with check_quality is associated with bad mols
             is_connected = False
@@ -4126,10 +4208,16 @@ class EnVariationalDiffusion(torch.nn.Module):
                 h["integer"] = chain[-2, :, :, h_int_idx:h_int_idx+1].long()
                 h["extra"] = chain[-2, :, :, h_int_idx+1:]
             else:
-                h["integer"] = chain[-2, :, :, -1:].long()  
-                h["categorical"] = chain[-2, :, :, self.n_dims:-1]
+                _, h_cat_m2, h_int_m2 = split_frame(self, chain[-2])
+                h["integer"] = h_int_m2.long()
+                h["categorical"] = h_cat_m2
             try:
-                is_connected, num_components, n_degrees = check_quality(x.squeeze(0), h["integer"].squeeze(0))
+                is_connected, num_components, n_degrees = check_quality(
+                    x.squeeze(0),
+                    atomic_numbers(self,
+                        h["integer"], h["categorical"]
+                    ).squeeze(0),
+                )
             except:
                 # assume errors with check_quality is associated with bad mols
                 is_connected = False
@@ -4251,8 +4339,12 @@ class EnVariationalDiffusion(torch.nn.Module):
                         charges_chain = chain_retry[n_retry][:, :, :, h_int_idx:h_int_idx+1].squeeze(-1)
                         extra_chain_retry = chain_retry[n_retry][:, :, :, h_int_idx+1:]
                     else:
-                        one_hot_chain = chain_retry[n_retry][:, :, :, self.n_dims:-1]
-                        charges_chain = chain_retry[n_retry][:, :, :, -1:].squeeze(-1)
+                        _, one_hot_chain, h_int_chain = split_frame(self,
+                            chain_retry[n_retry]
+                        )
+                        charges_chain = atomic_numbers(self,
+                            h_int_chain, one_hot_chain
+                        ).squeeze(-1)
                         extra_chain_retry = None
                     
                     one_hot_chain = F.one_hot(
@@ -4307,7 +4399,12 @@ class EnVariationalDiffusion(torch.nn.Module):
                     
                 assert_mean_zero_with_mask(x_retry, node_mask)
                 try:
-                    is_connected, num_components, n_degrees = check_quality(x_retry.squeeze(0), h_retry["integer"].squeeze(0))
+                    is_connected, num_components, n_degrees = check_quality(
+                        x_retry.squeeze(0),
+                        atomic_numbers(self,
+                            h_retry["integer"], h_retry["categorical"]
+                        ).squeeze(0),
+                    )
                 except:
                     # assume errors with check_quality is associated with bad mols
                     is_connected = False
@@ -4328,10 +4425,18 @@ class EnVariationalDiffusion(torch.nn.Module):
                         h_retry["integer"] = chain_retry[n_retry][-2, :, :, h_int_idx:h_int_idx+1].long()
                         h_retry["extra"] = chain_retry[n_retry][-2, :, :, h_int_idx+1:]
                     else:
-                        h_retry["integer"] = chain_retry[n_retry][-2, :, :, -1:].long()  
-                        h_retry["categorical"] = chain_retry[n_retry][-2, :, :, self.n_dims:-1]
+                        _, h_cat_m2, h_int_m2 = split_frame(self,
+                            chain_retry[n_retry][-2]
+                        )
+                        h_retry["integer"] = h_int_m2.long()
+                        h_retry["categorical"] = h_cat_m2
                     try:
-                        is_connected, num_components, n_degrees = check_quality(x_retry.squeeze(0), h_retry["integer"].squeeze(0))
+                        is_connected, num_components, n_degrees = check_quality(
+                        x_retry.squeeze(0),
+                        atomic_numbers(self,
+                            h_retry["integer"], h_retry["categorical"]
+                        ).squeeze(0),
+                    )
                     except:
                         # assume errors with check_quality is associated with bad mols
                         is_connected = False
@@ -4638,6 +4743,10 @@ class EnVariationalDiffusion(torch.nn.Module):
                     condition_tensor = reordered_condition_tensor
 
                     x_ref = condition_tensor[:, :, : self.n_dims].squeeze(0)
+                    # NOTE: scaffold conditioning reads atomic numbers from the
+                    # latent's trailing charge column and so requires
+                    # include_charges=True. Left as-is deliberately: this path
+                    # is unreachable without a condition_tensor.
                     h_int_ref = condition_tensor[:, :, -1].squeeze(0) * self.norm_values[2]
                     
                     if x_ref.dim() > 2:
@@ -5162,8 +5271,11 @@ class EnVariationalDiffusion(torch.nn.Module):
                             "extra": h_extra_i,
                         }
                     else:
-                        h_cat_i = chain[-i-1][idx, :, start: -1].unsqueeze(0)
-                        h_int_i = chain[-i-1][idx, :, -1:].unsqueeze(0) 
+                        _, h_cat_i, h_int_i = split_frame(self,
+                            chain[-i-1][idx]
+                        )
+                        h_cat_i = h_cat_i.unsqueeze(0)
+                        h_int_i = h_int_i.unsqueeze(0)
                         h_i = {
                             "categorical": h_cat_i,
                             "integer": h_int_i,

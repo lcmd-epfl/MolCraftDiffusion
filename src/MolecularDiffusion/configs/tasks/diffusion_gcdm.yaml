@@ -1,0 +1,77 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_gcdm.ModelTaskFactory
+task_type: diffusion
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+chkpt_path: null
+
+# GCPNet backbone -- QM9 preset, from bio-diffusion
+# configs/model/{model_cfg,module_cfg,layer_cfg}/qm9_mol_gen_ddpm_gcp_*.yaml
+include_charges: True # QM9 unconditional; False for GEOM / conditional QM9
+num_encoder_layers: 9
+hidden_dims:
+  h_hidden_dim: 256
+  chi_hidden_dim: 32
+  e_hidden_dim: 64
+  xi_hidden_dim: 16
+  chi_input_dim: 2
+  e_input_dim: 1
+  xi_input_dim: 1
+dropout: 0.0
+condition_on_time: True
+self_condition: False # off in every shipped GCDM config; doubles input dims
+
+# GCP block behaviour (module_cfg). Defaults match the shipped QM9/GEOM files.
+module_cfg:
+  gcp_version: GCP2 # GCP | GCP2
+  norm_x_diff: True
+  scalar_gate: 0
+  vector_gate: True
+  vector_residual: False
+  vector_frame_residual: False
+  frame_gate: False
+  sigma_frame_gate: False
+  scalar_nonlinearity: silu
+  vector_nonlinearity: silu
+  bottleneck: 4
+  default_vector_residual: False
+  default_bottleneck: 4
+  node_positions_weight: 1.0
+  update_positions_with_vector_sum: False
+  ablate_frame_updates: False
+  ablate_scalars: False
+  ablate_vectors: False
+
+# Interaction-layer behaviour (layer_cfg + its mp_cfg).
+layer_cfg:
+  pre_norm: False
+  use_gcp_norm: False
+  use_gcp_dropout: False
+  use_scalar_message_attention: True
+  num_feedforward_layers: 1
+  dropout: 0.0
+  num_message_layers: 4
+  self_message: True
+  use_residual_message_gcp: True
+
+# specific to diffusion -- EnVariationalDiffusion's, shared across every §1
+# backbone. diffusion_steps MUST stay 1000 for the published GCDM weights
+# (configs/model/diffusion_cfg/qm9_mol_gen_ddpm.yaml: num_timesteps 1000);
+# a mismatch produces plausible-looking garbage rather than an error.
+diffusion_steps: 1000
+diffusion_noise_schedule: polynomial_2 # learned, cosine_x, polynomial_x, issnr_x, smld_x
+diffusion_noise_precision: 1e-5
+diffusion_loss_type: l2 # GCDM's shipped loss_type
+normalize_factors: [1, 4, 10]
+extra_norm_values: []
+augment_noise: False
+data_augmentation: False
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10 # None | "maxmin" | "mad" | "value_N". NOT a boolean.
+reference_indices: null # indices of core atoms for the outpainting objective
+# evaluator parameters
+use_posebuster: True
+metrics: valid_posebuster # use_posebuster must be true
+n_samples: 24
+generative_analysis: True
+batch_size: 4

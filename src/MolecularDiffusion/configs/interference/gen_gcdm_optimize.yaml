@@ -1,0 +1,33 @@
+# GCDM property optimization: take molecules you already have and push them
+# towards a property value.
+#
+# Requires (a) one of GCDM's six property-conditional QM9 checkpoints and
+# (b) a directory of starting .xyz molecules. Nothing generates those for
+# you -- run `MolCraftDiff generate gcdm_generate` first and point
+# `input_mols_dir` at its output, exactly as GCDM's own README does in two
+# stages.
+_target_: MolecularDiffusion.runmodes.generate.tasks_gcdm_optimize.GCDMOptimizeFactory
+
+# The property target, in the property's own units (alpha in Bohr^3).
+# Normalized through the checkpoint's mean/mad normalizer.
+target_values: [80.0]
+property_names: ["alpha"]
+
+condition_configs:
+  input_mols_dir: ???        # directory of .xyz molecules to optimize
+  iterations: 1              # upstream default (mol_gen_eval_optimization_qm9.yaml:27)
+  # K -- the COMPRESSED trajectory length. This is deliberately NOT the
+  # model's T (1000): the reverse loop's time axis is rescaled by K, so the
+  # first step is presented to the network as t = noise_level. Upstream's
+  # `norm_with_original_timesteps=False`.
+  num_optimization_timesteps: 100
+  # t0: how far the input molecule is forward-diffused (q(z_t0 | x)) before
+  # the reverse walk starts. Low = stays close to the input; 1.0 = full
+  # noise, which is upstream's literal behaviour and is numerically unstable
+  # here (see the DEVIATION note in tasks_gcdm_optimize.py).
+  noise_level: 0.5
+
+batch_size: 8
+seed: 86
+save_every_iteration: true
+output_path: gcdm_optimized

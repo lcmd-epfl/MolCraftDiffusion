@@ -16,6 +16,7 @@ from MolecularDiffusion.modules.tasks.regression import MLPRegressor_padded, MLP
 from MolecularDiffusion.modules.models.en_diffusion import (
     DistributionNodes,
     DistributionProperty,
+    split_frame,
 )
 from MolecularDiffusion.utils import (
     assert_correctly_masked,
@@ -115,6 +116,35 @@ class GeomMolecularGenerative(Task, core.Configurable):
         
         
         
+    def _split_frame(
+        self, frames: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Split unnormalized chain frames along their feature axis.
+
+        Frames are laid out ``[x | h_cat | h_int]``; ``h_int`` is the
+        model's integer (atomic-number) block, which is empty for models
+        built with ``include_charges=False``. Derived from the model's own
+        dimensions rather than assuming the last column is the charge, and
+        kept on the task so it works for every model class this task and
+        its subclasses drive. ``include_charges`` is read with a ``True``
+        default so a model that never declares it keeps the historical
+        one-column layout.
+        """
+        return split_frame(self.model, frames)
+
+    def _charge_channel(self, charges: torch.Tensor) -> torch.Tensor:
+        """Shape ``batch["charges"]`` into the model's integer feature block.
+
+        ``(B, N) -> (B, N, 1)`` for models that carry an atomic-number
+        channel, and ``(B, N, 0)`` for those built with
+        ``include_charges=False`` — an empty block the model concatenates,
+        masks and sums without any further branching.
+        """
+        charges = charges.unsqueeze(2)
+        if getattr(self.model, "include_charges", True):
+            return charges
+        return charges[:, :, :0]
+
     def _compute_mean_scaffold(self, train_set):
         """Find the medoid scaffold from training molecules.
 
@@ -453,7 +483,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             edge_mask = batch["edge_mask"]
             x = batch["coords"]
             h = batch["node_feature"]
-            charges = batch["charges"].unsqueeze(2)
+            charges = self._charge_channel(batch["charges"])
             
 
             x = remove_mean_with_mask(x, node_mask)
@@ -543,7 +573,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             edge_mask = batch["edge_mask"]
             x = batch["coords"]
             h = batch["node_feature"]
-            charges = batch["charges"].unsqueeze(2)
+            charges = self._charge_channel(batch["charges"])
                         
             if self.augment_noise > 0:
                 # Add noise eps ~ N(0, augment_noise) around points.
@@ -638,7 +668,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             if  self.model.ndim_extra > 0:
                 one_hot = chain[-1:, :, start:mid]
             else:
-                one_hot = chain[-1:, :, 3:-1]
+                one_hot = self._split_frame(chain[-1:])[1]
                 
             one_hot = torch.argmax(one_hot, dim=2)
 
@@ -654,11 +684,11 @@ class GeomMolecularGenerative(Task, core.Configurable):
             if  self.model.ndim_extra > 0:
                 one_hot = chain[-1:, :, start:mid]
             else:
-                one_hot = chain[-1:, :, 3:-1]
+                one_hot = self._split_frame(chain[-1:])[1]
             one_hot = F.one_hot(
                 torch.argmax(one_hot, dim=2), num_classes=len(self.atom_decoder)
             )
-            charges = torch.round(chain[:, :, -1:]).long()
+            charges = torch.round(self._split_frame(chain)[2]).long()
 
             if mol_stable:
                 print("ლ(́◉◞౪◟◉‵ლ) Found stable molecule to visualize -(๑☆‿ ☆#)ᕗ")
@@ -781,32 +811,32 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 if  self.model.ndim_extra > 0:
                     one_hot = chain[:, :, :, start:mid]
                 else:
-                    one_hot = chain[:, :, :, 3:-1]
+                    one_hot = self._split_frame(chain)[1]
                     
                 one_hot = F.one_hot(
                     torch.argmax(one_hot, dim=3), num_classes=self.n_atom_types
                 )
-                charges = torch.round(chain[:, :, :, -1:]).long()
+                charges = torch.round(self._split_frame(chain)[2]).long()
                 
             #TODO how to deal with batch in case of retry here
             elif isinstance(chain, list):
                 x_0 = chain[0][:, :, 0:3]
-                one_hot_0 = chain[0][:, :, 3:-1]
+                one_hot_0 = self._split_frame(chain[0])[1]
                 one_hot_0 = F.one_hot(
                     torch.argmax(one_hot_0, dim=2), num_classes=self.n_atom_types
                 )
-                charges_0 = torch.round(chain[0][:, :, -1:]).long()
+                charges_0 = torch.round(self._split_frame(chain[0])[2]).long()
                 
                 x_retrys = []
                 one_hot_retrys = []
                 charges_retrys = []
                 for i in range(chain[1].shape[0]):
                     x_i = chain[1][i][:, :, 0:3]
-                    one_hot_i = chain[1][i][:, :, 3:-1]
+                    one_hot_i = self._split_frame(chain[1][i])[1]
                     one_hot_i = F.one_hot(
                         torch.argmax(one_hot_i, dim=2), num_classes=self.n_atom_types
                     )
-                    charges_i = torch.round(chain[1][i][:, :, -1:]).long()
+                    charges_i = torch.round(self._split_frame(chain[1][i])[2]).long()
                     x_retrys.append(x_i)
                     one_hot_retrys.append(one_hot_i)
                     charges_retrys.append(charges_i)
@@ -1048,12 +1078,12 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 if  self.model.ndim_extra > 0:
                     one_hot = chain[:, :, :, start:mid]
                 else:
-                    one_hot = chain[:, :, :, 3:-1]
+                    one_hot = self._split_frame(chain)[1]
                 x = chain[:, :, :, 0:3]
                 one_hot = F.one_hot(
                     torch.argmax(one_hot, dim=3), num_classes=self.n_atom_types
                 )
-                charges = torch.round(chain[:, :, :, -1:]).long()
+                charges = torch.round(self._split_frame(chain)[2]).long()
                 
             #TODO how to deal with batch in case of retry here
             elif isinstance(chain, list):
@@ -1061,22 +1091,22 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 if  self.model.ndim_extra > 0:
                     one_hot = chain[:, :, :, start:mid]
                 else:
-                    one_hot = chain[:, :, :, 3:-1]
+                    one_hot = self._split_frame(chain)[1]
                 one_hot_0 = F.one_hot(
                     torch.argmax(one_hot_0, dim=2), num_classes=self.n_atom_types
                 )
-                charges_0 = torch.round(chain[0][:, :, -1:]).long()
+                charges_0 = torch.round(self._split_frame(chain[0])[2]).long()
                 
                 x_retrys = []
                 one_hot_retrys = []
                 charges_retrys = []
                 for i in range(chain[1].shape[0]):
                     x_i = chain[1][i][:, :, 0:3]
-                    one_hot_i = chain[1][i][:, :, 3:-1]
+                    one_hot_i = self._split_frame(chain[1][i])[1]
                     one_hot_i = F.one_hot(
                         torch.argmax(one_hot_i, dim=2), num_classes=self.n_atom_types
                     )
-                    charges_i = torch.round(chain[1][i][:, :, -1:]).long()
+                    charges_i = torch.round(self._split_frame(chain[1][i])[2]).long()
                     x_retrys.append(x_i)
                     one_hot_retrys.append(one_hot_i)
                     charges_retrys.append(charges_i)
@@ -1263,31 +1293,31 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 if  self.model.ndim_extra > 0:
                     one_hot = chain[:, :, :, start:mid]
                 else:
-                    one_hot = chain[:, :, :, 3:-1]
+                    one_hot = self._split_frame(chain)[1]
                 one_hot = F.one_hot(
                     torch.argmax(one_hot, dim=3), num_classes=self.n_atom_types
                 )
-                charges = torch.round(chain[:, :, :, -1:]).long()
+                charges = torch.round(self._split_frame(chain)[2]).long()
                 
             #TODO how to deal with batch in case of retry here
             elif isinstance(chain, list):
                 x_0 = chain[0][:, :, 0:3]
-                one_hot_0 = chain[0][:, :, 3:-1]
+                one_hot_0 = self._split_frame(chain[0])[1]
                 one_hot_0 = F.one_hot(
                     torch.argmax(one_hot_0, dim=2), num_classes=self.n_atom_types
                 )
-                charges_0 = torch.round(chain[0][:, :, -1:]).long()
+                charges_0 = torch.round(self._split_frame(chain[0])[2]).long()
                 
                 x_retrys = []
                 one_hot_retrys = []
                 charges_retrys = []
                 for i in range(chain[1].shape[0]):
                     x_i = chain[1][i][:, :, 0:3]
-                    one_hot_i = chain[1][i][:, :, 3:-1]
+                    one_hot_i = self._split_frame(chain[1][i])[1]
                     one_hot_i = F.one_hot(
                         torch.argmax(one_hot_i, dim=2), num_classes=self.n_atom_types
                     )
-                    charges_i = torch.round(chain[1][i][:, :, -1:]).long()
+                    charges_i = torch.round(self._split_frame(chain[1][i])[2]).long()
                     x_retrys.append(x_i)
                     one_hot_retrys.append(one_hot_i)
                     charges_retrys.append(charges_i)
@@ -1515,30 +1545,30 @@ class GeomMolecularGenerative(Task, core.Configurable):
                 if  self.model.ndim_extra > 0:
                     one_hot = chain[:, :, :, start:mid]
                 else:
-                    one_hot = chain[:, :, :, 3:-1]
+                    one_hot = self._split_frame(chain)[1]
                 one_hot = F.one_hot(
                     torch.argmax(one_hot, dim=3), num_classes=self.n_atom_types
                 )
-                charges = torch.round(chain[:, :, :, -1:]).long()
+                charges = torch.round(self._split_frame(chain)[2]).long()
                 
             elif isinstance(chain, list):
                 x_0 = chain[0][:, :, 0:3]
-                one_hot_0 = chain[0][:, :, 3:-1]
+                one_hot_0 = self._split_frame(chain[0])[1]
                 one_hot_0 = F.one_hot(
                     torch.argmax(one_hot_0, dim=2), num_classes=self.n_atom_types
                 )
-                charges_0 = torch.round(chain[0][:, :, -1:]).long()
+                charges_0 = torch.round(self._split_frame(chain[0])[2]).long()
                 
                 x_retrys = []
                 one_hot_retrys = []
                 charges_retrys = []
                 for i in range(chain[1].shape[0]):
                     x_i = chain[1][i][:, :, 0:3]
-                    one_hot_i = chain[1][i][:, :, 3:-1]
+                    one_hot_i = self._split_frame(chain[1][i])[1]
                     one_hot_i = F.one_hot(
                         torch.argmax(one_hot_i, dim=2), num_classes=self.n_atom_types
                     )
-                    charges_i = torch.round(chain[1][i][:, :, -1:]).long()
+                    charges_i = torch.round(self._split_frame(chain[1][i])[2]).long()
                     x_retrys.append(x_i)
                     one_hot_retrys.append(one_hot_i)
                     charges_retrys.append(charges_i)
@@ -1609,7 +1639,7 @@ class GeomMolecularGenerative(Task, core.Configurable):
             # Repeat last frame to see final sample better.
             chain = torch.cat([chain, chain[-1:].repeat(10, 1, 1)], dim=0)
             x = chain[-1:, :, 0:3]
-            one_hot = chain[-1:, :, 3:-1]
+            one_hot = self._split_frame(chain[-1:])[1]
             one_hot = torch.argmax(one_hot, dim=2)
 
             atom_type = one_hot.squeeze(0).cpu().detach().numpy()
@@ -1629,11 +1659,11 @@ class GeomMolecularGenerative(Task, core.Configurable):
             if  self.model.ndim_extra > 0:
                 one_hot = chain[:, :, :, start:mid]
             else:
-                one_hot = chain[:, :, :, 3:-1]
+                one_hot = self._split_frame(chain)[1]
             one_hot = F.one_hot(
                 torch.argmax(one_hot, dim=2), num_classes=len(self.atom_decoder)
             )
-            charges = torch.round(chain[:, :, -1:]).long()
+            charges = torch.round(self._split_frame(chain)[2]).long()
 
             if mol_stable:
                 print("ლ(́◉◞౪◟◉‵ლ) Found stable molecule to visualize -(๑☆‿ ☆#)ᕗ")

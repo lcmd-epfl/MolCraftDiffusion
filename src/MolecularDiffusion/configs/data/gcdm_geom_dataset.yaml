@@ -1,0 +1,25 @@
+# Point-cloud GEOM-Drugs data config matching GCDM's published GEOM
+# featurization exactly.
+#
+# The atom vocabulary below is GCDM's own 16-element list, in its published
+# ORDER (others/bio-diffusion/src/datamodules/components/edm/
+# datasets_config.py:111-114). It is NOT the platform's bundled 17-element
+# mol_dataset vocabulary -- that one inserts Se between As and Br, which would
+# shift every one-hot column past As and silently mis-decode the published
+# GEOM checkpoint. Do not "fix" the missing Se.
+#
+# GCDM's GEOM runs use include_charges: false, so the diffusion latent carries
+# 16 node scalars (one-hot only) rather than 17.
+defaults:
+  - mol_dataset
+  - _self_
+
+dataset_name: geom
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Br, I, Hg, Bi]
+max_atom: 181
+data_type: pointcloud
+
+# GCPNet builds a complete local frame for every ordered atom pair, so cost and
+# memory grow with the square of molecule size. At 181 atoms that is ~33k
+# frames per molecule -- keep batches tiny.
+batch_size: 2
