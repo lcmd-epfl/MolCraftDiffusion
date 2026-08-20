@@ -1,0 +1,85 @@
+# ChEMBL3D-stereo as a 3D molecular graph with EXPLICIT BONDS, for LoQI.
+#
+# Build the db first (ChEMBL3D is not covered by `MolCraftDiff data
+# import-graph3d`, so the task-local converter does it):
+#   curl -sL -o docs/model_integrations/loqi/data/test_rot_bonds_h.pt \
+#       "https://ndownloader.figshare.com/files/62280760"
+#   python docs/model_integrations/loqi/scripts/convert_dataset.py --delete-raw
+#
+# Source: KiltHub/figshare article 31441570, DOI 10.1184/R1/31441570
+# ("LoQI / ChEMBL3D processed release"), file test_rot_bonds_h.pt (56.2 MB).
+#
+# Shared by BOTH LoQI variants (diffusion_loqi and diffusion_loqi_flow).
+#
+# Bond classes on disk: 0=none 1=SINGLE 2=DOUBLE 3=TRIPLE 4=AROMATIC.
+# Class 0 is never stored. LoQI's extra classes 5-8 (E/Z and R/S stereo edges)
+# are NOT stored -- they are directed, asymmetric, and not bonds. The task
+# adapter re-derives them per batch from the geometry with the same
+# AssignStereochemistryFrom3D upstream used to create them.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: docs/model_integrations/loqi/data/loqi_smoke.db
+dataset_name: chembl3d_loqi
+
+# LoQI's own FULL_ATOM_ENCODER, in its own order (utils_data.py:54-58). The
+# task adapter maps this vocabulary onto LoQI's encoder BY SYMBOL, never by
+# position, so any subset would work -- the full list is used because
+# allow_unknown is False and a subset silently drops rows whose elements fall
+# outside it (the converted slice contains B, Br, C, Cl, F, H, N, O, P, S, Si).
+# An element outside these 17 is a hard error at build time.
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Br, I, Hg, Bi, Se]
+with_hydrogen: True
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 200
+forbidden_atom: []
+
+data_type: graph3d
+
+# --- graph3d-specific ------------------------------------------------------
+# raw -> PyG Batch. LoQI builds its own fully-connected DIRECTED edge list with
+# 9 asymmetric classes, which MiDi's dense (B,N,N) matrix cannot express.
+bond_collate: raw
+center_coords: True
+# Cheap, and the molecule-size histogram behind n_node_dist comes from it.
+# LoQI needs NO marginals, valencies or bond counts at construction.
+graph3d_stats: True
+
+# MANDATORY. Both LoQI entry points call Chem.Kekulize(clearAromaticFlags=True)
+# before conversion (process_chembl3d.py:216, sample_conformers.py:84), so the
+# released weights' training and inference distributions are Kekule. Class 4
+# would be an input the pretrained edge_embedder has never seen.
+kekulize: True
+
+# The converter labels every row "train"; split randomly instead of honouring
+# that.
+use_stored_split: False
+
+# --- shared DataModule knobs ---------------------------------------------
+train_ratio: 0.8
+# graph3d materializes O(N^2) fully-connected edges in the dataloader worker,
+# and the adapter additionally rebuilds each molecule in RDKit to derive the
+# stereo edges. Expect the worker, not the GPU, to be the bottleneck. There is
+# no size-aware sampler in the platform, so a small batch is the only lever.
+batch_size: 4
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null
+
+# Present for schema parity with the point-cloud configs; unused here.
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

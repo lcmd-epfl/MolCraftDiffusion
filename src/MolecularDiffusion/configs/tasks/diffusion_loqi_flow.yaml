@@ -1,0 +1,75 @@
+# LoQI -- low-energy conformer generation, FLOW MATCHING variant.
+#
+# Same backbone, same conditioning, same vocabularies as `diffusion_loqi`. It
+# differs in exactly the six ways others/LoQI/scripts/conf/loqi/loqi_flow.yaml
+# differs from loqi.yaml (verified by diff):
+#
+#   1. continuous flow matching with prediction_type: velocity
+#   2. optimal_transport: rigid (Kabsch-align the noise onto the data)
+#   3. continuous time on a linear schedule (no nu, no cosine_adaptive)
+#   4. noise_sigma / inference_noise_sigma 0.0
+#   5. loss_scale 3.0 -> 1.0, and NO effective loss clamp (see loss_clamp)
+#   6. no self-conditioning; sample.return_step_output: true
+#
+# The task_type MUST differ from `diffusion_loqi`: cli/generate.py validates a
+# checkpoint's saved task_type against this config, and loqi.ckpt /
+# loqi_flow.ckpt are not interchangeable.
+#
+# Unlike the diffusion variant, this one may be run at step counts other than
+# 25 (README) -- `timesteps` is only the default.
+#
+# REQUIRES data.data_type: graph3d with bond_collate: raw and kekulize: true.
+_target_: MolecularDiffusion.modules.tasks.diffusion_loqi.ModelTaskFactory
+task_type: diffusion_loqi_flow
+
+timesteps: 25
+
+loss_scale: 1.0
+# Upstream sets use_loss_clamps: true with loss_clamps: {ts_coord: 1.0}. There
+# is no loss variable named `ts_coord` (the only one is `x`), so the lookup
+# misses and the clamp is inert. Ported as the null it effectively is, rather
+# than reproducing a dead config key.
+loss_clamp: null
+
+# true -> sample() returns the STEPPED state, not the network output. This is
+# not cosmetic: with prediction_type: velocity the network emits a velocity,
+# so returning x_hat would return velocities as if they were coordinates.
+return_step_output: true
+
+interpolant:
+  interpolant_type: continuous_flow_matching
+  prior_type: gaussian
+  prediction_type: velocity
+  optimal_transport: rigid
+  vector_field_type: standard
+  time_type: continuous
+  scheduler_type: linear
+  num_classes: 3
+  min_t: 0.0
+  com_free: true
+  noise_sigma: 0.0
+  inference_noise_sigma: 0.0
+  # Upstream's builder passes loss_weight_type: 'standard', which falls through
+  # every branch and yields a None batch weight -- numerically identical to the
+  # all-ones weighting named here, stated explicitly instead of implicitly.
+  loss_weight_type: uniform
+
+# Absent upstream; the task builds no self-conditioning module when null.
+self_conditioning: null
+
+dynamics:
+  atom_classes: 23
+  edge_classes: 9
+  invariant_edge_feat_dim: 64
+  invariant_node_feat_dim: 256
+  n_vector_features: 64
+  equivariant_node_feature_dim: 3
+  num_layers: 10
+  num_heads: 4
+  dist_size: 16
+  prune_edges: false
+
+sample_input: null
+sample_pool_limit: 2000
+
+dataset_stats: {}

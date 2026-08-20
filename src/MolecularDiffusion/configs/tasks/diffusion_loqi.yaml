@@ -1,0 +1,76 @@
+# LoQI -- low-energy conformer generation, VDM diffusion variant.
+#
+# NOT de-novo generation. Only coordinates are noised; atom types, formal
+# charges, bond orders and stereochemistry are supplied un-noised as network
+# input at every step and come back out of sample() unchanged. Every sample
+# therefore needs an input molecule -- see `sample_input` below.
+#
+# Every value is copied from the released run's own config,
+# others/LoQI/scripts/conf/loqi/loqi.yaml (run `chembl3d_stereo_25_v3`), which
+# is what the released loqi.ckpt was trained with.
+#
+# REQUIRES data.data_type: graph3d with bond_collate: raw and kekulize: true.
+# The LoQI pipeline kekulizes (process_chembl3d.py:216), so the released
+# weights have never seen a class-4 (AROMATIC) edge.
+#
+# Paper: Nikitin, Anstine, Zubatyuk, Paliwal, Isayev, "Scalable Low-Energy
+# Molecular Conformer Generation with Quantum Mechanical Accuracy" (2025),
+# DOI 10.26434/chemrxiv-2025-k4h7v. Backbone: Megalodon, arXiv:2505.18392.
+_target_: MolecularDiffusion.modules.tasks.diffusion_loqi.ModelTaskFactory
+task_type: diffusion_loqi
+
+# 25 discrete steps. The README states the released diffusion checkpoint "is
+# not expected to work well for other values"; sample() pins it and warns.
+timesteps: 25
+
+# Single MSE term on x, weighted by clamp(snr(t), 0.05, 1.5), clamped at 10.
+loss_scale: 3.0
+loss_clamp: 10.0
+
+# false -> sample() returns the network's x_hat (data prediction).
+return_step_output: false
+
+interpolant:
+  interpolant_type: continuous_diffusion
+  diffusion_type: vdm
+  prior_type: gaussian
+  time_type: discrete
+  scheduler_type: cosine_adaptive
+  nu: 2.5
+  num_classes: 3
+  com_free: true
+  cut: false
+
+self_conditioning:
+  variables:
+    - variable_name: x
+      hidden_dims: 32
+      fuse_softmax: false
+      vector: true
+      clamp_min: -100
+      clamp_max: 100
+
+dynamics:
+  # 17 atom one-hot + 6 charge one-hot, concatenated
+  atom_classes: 23
+  # 0=none 1=SINGLE 2=DOUBLE 3=TRIPLE 4=AROMATIC 5=E 6=Z 7/8=chirality
+  edge_classes: 9
+  invariant_edge_feat_dim: 64
+  invariant_node_feat_dim: 256
+  n_vector_features: 64
+  equivariant_node_feature_dim: 3
+  num_layers: 10
+  num_heads: 4
+  dist_size: 16
+  prune_edges: false
+
+# Conditioning molecules. null -> drawn from train_set (the honest default for
+# training and for a smoke test). A path to an .sdf / .smi / graph3d ASE .db
+# means "generate conformers for these molecules", the real user-facing mode.
+# .smi inputs get an ETKDG conformer first, because stereochemistry is read
+# FROM 3D -- without it the SMILES' stereo annotations are silently lost.
+sample_input: null
+sample_pool_limit: 2000
+
+# empty -> build() fills num_atoms_histogram from train_set.graph3d_stats
+dataset_stats: {}

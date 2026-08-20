@@ -398,7 +398,6 @@ def runner(args):
     # destination once here rather than in each branch
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-    # check_strain = args.check_strain # Kept as a separate flag
     # check_postbuster = args.check_postbuster # Removed, controlled by --metrics
     skip_idx = args.skip_atoms
     
@@ -533,14 +532,6 @@ def runner(args):
         logging.info(f"Molecular size max: {df['num_atoms'].max()}")
         logging.info(f"Molecular size std: {df['num_atoms'].std():.2f}")
 
-        if args.check_strain: # Only run check_strain if core metrics are computed, as it relies on 'df'
-            rmsd_mean = df["rmsd"].dropna().mean()
-            delta_energy_mean = df["delta_energy"].dropna().mean()
-            intact_topology = [1 if top else 0 for top in df_res_dict["same_topology"] if not pd.isna(top)]
-            logging.info(f"RMSD mean: {rmsd_mean:.2f}")
-            logging.info(f"Delta Energy mean: {delta_energy_mean:.2f}")
-            logging.info(f"{sum(intact_topology) / len(intact_topology) * 100:.2f}% of 3D molecules have intact topology after the optimization")
-        
         if args.output is None:
             output_path = _default_metric_path(metrics_input, "output_metrics.csv")
             hist_path = _default_metric_path(metrics_input, "molecular_size_histogram.png")
@@ -1209,6 +1200,52 @@ def runner(args):
 
         _write_summary(sbdd_output_path, summary)
 
+    # =========================================================================
+    # CONFORMER: paired generated-vs-reference metrics (exclusive, like sbdd)
+    # =========================================================================
+    if args.metrics == "conformer":
+        from MolecularDiffusion.runmodes.analyze import conformer_metrics  # noqa: PLC0415
+
+        df_conf, summary = conformer_metrics.compute_conformer_metrics(
+            args.input,
+            rmsd_threshold=getattr(args, "rmsd_threshold", 0.5),
+            charge=getattr(args, "charge", 0),
+            level=getattr(args, "level", "gfn2"),
+            timeout=getattr(args, "xtb_timeout", 120),
+        )
+        df_conf = _add_db_row_ids(df_conf, metrics_input)
+
+        if args.output is None:
+            conf_output_path = _default_metric_path(
+                metrics_input, "conformer_metrics.csv"
+            )
+        else:
+            base, ext = os.path.splitext(args.output)
+            conf_output_path = f"{base}_conformer{ext}"
+        df_conf.to_csv(conf_output_path, index=False)
+        result_tables.append(("conformer", df_conf, conf_output_path))
+        logging.info(f"Conformer metrics saved to {conf_output_path}")
+
+        for key in (
+            "rs_score", "ez_score", "rmsd_median", "rmsd_best_per_mol_mean",
+            "coverage_at_threshold", "bond_length_mean_mean",
+            "bond_angle_mean_mean", "torsion_angle_mean_mean",
+            "mmff_strain_kcal_mean", "xtb_strain_kcal_mean",
+        ):
+            if summary.get(key) is not None:
+                logging.info(f"{key}: {summary[key]:.4f}")
+
+        if split > 1:
+            for col in ("rmsd", "mmff_strain_kcal"):
+                values = df_conf[col].dropna().to_numpy() if col in df_conf else []
+                if len(values):
+                    mean, std = _get_split_stats(values, split, scale=1.0)
+                    summary[f"split_{col}"] = [mean, std]
+                    logging.info(
+                        f"Split {col} mean \u00b1 std: {mean:.4f} \u00b1 {std:.4f}"
+                    )
+        _write_summary(conf_output_path, summary)
+
     try:
         _apply_result_filter(
             result_tables,
@@ -1218,24 +1255,3 @@ def runner(args):
         )
     finally:
         metrics_input.cleanup()
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", type=str, required=True, help="input directory with xyz files")
-    parser.add_argument("-o", "--output", type=str, default=None, help="output csv file")
-    parser.add_argument("--recheck_topo", action="store_true", help="recheck topology")
-    parser.add_argument("--check_strain", action="store_true", help="check strain")
-    parser.add_argument("--metrics", type=str, default="all",
-                        choices=["all", "core", "posebuster", "geom_revised"],
-                        help="Specify which metrics to compute: 'all', 'core', 'posebuster', or 'geom_revised'.")
-    parser.add_argument("--skip_atoms", type=int, nargs="+", default=None, help="skip atoms")
-    parser.add_argument("--portion", type=float, default=1.0, help="portion of xyz files to process")
-    parser.add_argument("--mol_converter", type=str, default="xyz2mol",
-                        choices=["xyz2mol", "openbabel"],
-                        help="Molecule converter for XYZ to mol: 'xyz2mol' (default) or 'openbabel'")
-    parser.add_argument("--split", type=int, default=1, help="number of deterministic splits for summary mean/std")
-    parser.add_argument("--timeout", type=int, default=10, help="timeout for xyz2mol conversion (default: 10s)")
-    args = parser.parse_args()
-    runner(args)

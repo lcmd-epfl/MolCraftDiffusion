@@ -2,8 +2,7 @@
 
 Provides subcommands for:
 - optimize: xTB geometry optimization
-- metrics: Validity/connectivity metrics
-- compare: RMSD, energy, and optional bond analysis
+- metrics: Validity/connectivity metrics (incl. the paired `conformer` set)
 - xyz2mol: XYZ to SMILES conversion + fingerprints
 - featurize: fixed-size feature vectors for XYZ molecules
 - xtb-electronic: xTB electronic properties
@@ -36,7 +35,6 @@ def analyze():
     Subcommands:
       optimize        xTB geometry optimization
       metrics         Validity/connectivity metrics
-      compare         RMSD, energy, and bond analysis
       xyz2mol         Convert XYZ to SMILES + fingerprints
       featurize       Fixed-size feature vectors for XYZ molecules
       xtb-electronic  xTB electronic properties
@@ -113,12 +111,11 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="Output ASE DB path or XYZ directory for filtered structures")
 @click.option("--metrics", "-m", "--m", "metrics_type", default="all",
               type=click.Choice(["all", "core", "posebuster", "geom_revised",
-                                 "druglike", "similarity3d", "sbdd"]),
+                                 "druglike", "similarity3d", "sbdd",
+                                 "conformer"]),
               help="Which metrics to compute (default: all)")
 @click.option("--recheck-topo", is_flag=True, default=False,
               help="Recheck topology using RDKit")
-@click.option("--check-strain", is_flag=True, default=False,
-              help="Check strain via XTB optimization")
 @click.option("--check-neutrality", is_flag=True, default=False,
               help="Check electron/spin neutrality with xTB (one call per molecule; slow)")
 @click.option("--portion", "-p", "--p", default=1.0, type=float,
@@ -150,7 +147,16 @@ def optimize(input_path, output_path, charge, level, timeout, scale_factor, csv_
               help="druglike: RMSD of the pose vs UFF-optimised RDKit conformers (slow)")
 @click.option("--rmsd-n-conf", default=20, type=int,
               help="Conformers embedded per molecule for --rdkit-rmsd (default: 20)")
-def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_strain, check_neutrality, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx, train_smiles, receptor, ref_ligand, dock_mode, exhaustiveness, rdkit_rmsd, rmsd_n_conf):
+@click.option("--rmsd-threshold", default=0.5, type=float,
+              help="conformer: RMSD cutoff (A) for the coverage metric (default: 0.5)")
+@click.option("--charge", "-c", "--c", default=0, type=int,
+              help="conformer: molecular charge for xTB strain (default: 0)")
+@click.option("--level", "-l", "--l", default="gfn2",
+              type=click.Choice(["gfn1", "gfn2", "gfn-ff"]),
+              help="conformer: xTB level for strain (default: gfn2)")
+@click.option("--xtb-timeout", default=120, type=int,
+              help="conformer: timeout per xTB call in seconds (default: 120)")
+def metrics(input_path, output, filter_column, filtered_output, metrics_type, recheck_topo, check_neutrality, portion, mol_converter, skip_atoms, split, timeout, reference_mol, mol_idx, train_smiles, receptor, ref_ligand, dock_mode, exhaustiveness, rdkit_rmsd, rmsd_n_conf, rmsd_threshold, charge, level, xtb_timeout):
     """Compute validity and connectivity metrics for XYZ files or ASE DB rows.
 
     \b
@@ -165,6 +171,12 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
       similarity3d Shape / ESP / pharmacophore similarity to --reference-mol
       sbdd         AutoDock Vina affinity against a protein pocket
                    (needs --receptor and the [sbdd] extra)
+      conformer    Paired generated-vs-reference conformer metrics: stereo
+                   preservation (R/S, E/Z), RMSD / coverage, bond-length /
+                   angle / torsion deviation, MMFF (and xTB) strain.
+                   Exclusive -- not part of 'all'; needs paired input, either
+                   conformers.csv + mol_XXXX/*.sdf (conformer generation) or
+                   *.xyz + optimized_xyz/<stem>_opt.xyz (analyze optimize).
 
     \b
     Examples:
@@ -177,6 +189,8 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         MolCraftDiff analyze metrics gen_xyz/ --split 4
         MolCraftDiff analyze metrics gen_xyz/ --metrics similarity3d -r reference.sdf --mol-idx 0
         MolCraftDiff analyze metrics gen_xyz/ --metrics sbdd --receptor pocket.pdbqt --ref-ligand ref.sdf
+        MolCraftDiff analyze metrics generated_conformers/ --metrics conformer
+        MolCraftDiff analyze metrics gen_xyz/ --metrics conformer   # after 'analyze optimize'
     """
     import argparse
     runner = _load_analyze_module("compute_metrics").runner
@@ -188,7 +202,6 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         filtered_output=filtered_output,
         metrics=metrics_type,
         recheck_topo=recheck_topo,
-        check_strain=check_strain,
         check_neutrality=check_neutrality,
         portion=portion,
         mol_converter=mol_converter,
@@ -204,6 +217,10 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         exhaustiveness=exhaustiveness,
         rdkit_rmsd=rdkit_rmsd,
         rmsd_n_conf=rmsd_n_conf,
+        rmsd_threshold=rmsd_threshold,
+        charge=charge,
+        level=level,
+        xtb_timeout=xtb_timeout,
     )
     
     click.echo(f"Computing {metrics_type} metrics for: {input_path}")
@@ -211,49 +228,6 @@ def metrics(input_path, output, filter_column, filtered_output, metrics_type, re
         runner(args)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-
-
-# ============================================================================
-# COMPARE: Unified RMSD, energy, and bond analysis
-# ============================================================================
-
-@analyze.command("compare", context_settings=CONTEXT_SETTINGS)
-@click.argument("directory", type=click.Path(exists=True))
-@click.option("--mol-converter", default="openbabel", type=click.Choice(["openbabel", "xyz2mol"]),
-              help="Converter for bond perception (default: openbabel)")
-@click.option("--n-subsets", "-n", "--n", default=5, type=int,
-              help="Number of subsets for std calculation (default: 5)")
-@click.option("--output", "-o", "--o", "--csv", "csv_path", default=None, type=click.Path(),
-              help="Output CSV filename for results")
-@click.option("--charge", "-c", "--c", default=0, type=int,
-              help="Molecular charge for xTB energy (default: 0)")
-@click.option("--level", "-l", "--l", default="gfn2", type=click.Choice(["gfn1", "gfn2", "gfn-ff", "mmff94"]),
-              help="xTB level for energy calculation (default: gfn2)")
-@click.option("--timeout", "-t", "--t", default=120, type=int,
-              help="Timeout per xTB calculation in seconds (default: 120)")
-def compare(directory, mol_converter, n_subsets, csv_path, charge, level, timeout):
-    """Compare XYZ files with their optimized counterparts.
-    
-    Computes RMSD, xTB Energy Difference, and Bond Geometry Metrics.
-    Enforces strict connectivity checks.
-    
-    Requires 'optimized_xyz' subdirectory with *_opt.xyz files.
-    """
-    import argparse
-    run_compare_analysis = _load_analyze_module("compare_to_optimized").run_compare_analysis
-    
-    # Construct args namespace to pass to run_compare_analysis
-    args = argparse.Namespace(
-        directory=directory,
-        mol_converter=mol_converter,
-        n_subsets=n_subsets,
-        csv_path=csv_path,
-        charge=charge,
-        level=level,
-        timeout=timeout
-    )
-    
-    run_compare_analysis(args)
 
 
 # ============================================================================

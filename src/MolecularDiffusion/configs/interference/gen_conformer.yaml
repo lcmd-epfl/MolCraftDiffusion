@@ -1,0 +1,29 @@
+# Conformer generation: k 3D shapes of each molecule you already have.
+#
+# Use this instead of `gen_unconditional` for any model that is handed a
+# molecule and returns geometries OF that molecule (LoQI). The task must
+# expose `conditioning_pool()` and `sample(mols=[...])` -- see the module
+# docstring in runmodes/generate/tasks_conformer.py.
+#
+# There is deliberately NO `mol_size` and NO `num_generate`: the input
+# molecule dictates its own atom count, and the request is per-molecule.
+# Setting either raises rather than being silently ignored.
+_target_: MolecularDiffusion.runmodes.generate.tasks_conformer.ConformerFactory
+
+# How many conformers to generate for EVERY input molecule.
+conformers_per_molecule: 10
+# Conformers sampled per forward pass (of one molecule). Memory knob only.
+batch_size: 8
+# 0 = every molecule in the task's conditioning pool. Set to cap a large input.
+max_molecules: 0
+
+# Metrics. `rmsd` (heavy-atom, symmetry-corrected, vs. the INPUT geometry) is
+# always computed; this is the threshold the reported coverage uses.
+rmsd_threshold: 0.5
+# xTB single-point energy per conformer. Off by default because it is slow and
+# needs the `xtb` binary on PATH; if it is missing the column stays empty
+# rather than being filled with a made-up number.
+xtb_energy: false
+
+seed: 86
+output_path: generated_conformers

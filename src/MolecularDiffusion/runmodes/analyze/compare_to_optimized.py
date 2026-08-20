@@ -1,27 +1,25 @@
-#!/usr/bin/env python3
-"""
-Compute unified comparison metrics (RMSD, xTB Energy, Bond Geometry) between
-initial XYZ files and their optimized counterparts in the `optimized_xyz` subdirectory.
+"""Helpers for comparing an initial geometry with an optimized counterpart.
 
-Features:
-- Validates connectivity (skip disjoint graphs)
-- Computes RMSD and Energy difference (via xTB)
-- Computes Bond Length, Angle, and Torsion differences (via OpenBabel/xyz2mol)
+This is an internal helper library, not a command. The directory-walking
+front end that used to live here is now the ``xyz+optimized`` layout of
+``--metrics conformer`` (see ``conformer_metrics.py``).
+
+Two consumers depend on it:
+
+* ``conformer_metrics.py`` -- ``compute_all_metrics`` for the legacy layout;
+* ``runmodes/generate/tasks_conformer.py`` -- ``get_xtb_energy`` for the
+  optional energy column. Removing that function breaks conformer
+  *generation*, not just analysis.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess as sp
-import shutil
-from collections import defaultdict
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Optional
 
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
 from rdkit import Chem
 
 try:
@@ -174,80 +172,3 @@ def compute_all_metrics(
          return {"error": f"Bond analysis failed: {e}"}
 
     return results
-
-
-def run_compare_analysis(args: argparse.Namespace):
-    directory = Path(args.directory).resolve()
-    optimized_dir = directory / "optimized_xyz"
-    csv_path = args.csv_path if args.csv_path else directory / "compare_results.csv"
-
-    if not optimized_dir.is_dir():
-        print(f"Error: {optimized_dir} does not exist.")
-        return
-
-    xyz_files = sorted(directory.glob("*.xyz"))
-    pairs = []
-    
-    for f in xyz_files:
-        if f.stem.endswith("_opt"): continue
-        opt = optimized_dir / f"{f.stem}_opt.xyz"
-        if opt.exists():
-            pairs.append((f, opt))
-
-    print(f"Found {len(pairs)} pairs in {directory}")
-    print(f"Running analysis with converter={args.mol_converter}, level={args.level}")
-
-    all_records = []
-    
-    # Process pairs
-    for init_f, opt_f in tqdm(pairs, desc="Analyzing"):
-        res = compute_all_metrics(init_f, opt_f, args)
-        if "error" in res:
-            # print(f"Skipping {init_f.name}: {res['error']}")
-            continue
-        
-        rec = {"file": init_f.name, **res}
-        all_records.append(rec)
-
-    if not all_records:
-        print("No valid results found.")
-        return
-
-    df = pd.DataFrame(all_records)
-    
-    # Save detailed results
-    df.to_csv(csv_path, index=False)
-    print(f"Saved detailed results to {csv_path}")
-
-    # Summary Stats
-    summary = {}
-    metric_cols = [
-        "rmsd", "energy_diff_kcal", 
-        "bond_length_mean", "bond_angle_mean", "torsion_angle_mean"
-    ]
-    
-    print("\n--- Summary ---")
-    for col in metric_cols:
-        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-            mean_val = df[col].mean()
-            std_val = df[col].std()
-            print(f"{col}: {mean_val:.4f} ± {std_val:.4f}")
-            summary[f"{col}_mean"] = mean_val
-            summary[f"{col}_std"] = std_val
-    
-    summary_path = directory / "compare_summary.csv"
-    pd.DataFrame([summary]).to_csv(summary_path, index=False)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified comparison of molecular geometries.")
-    parser.add_argument("directory", type=str)
-    parser.add_argument("--mol-converter", choices=["openbabel", "xyz2mol"], default="openbabel")
-    parser.add_argument("--charge", type=int, default=0)
-    parser.add_argument("--level", default="gfn2")
-    parser.add_argument("--timeout", type=int, default=120)
-    parser.add_argument("--csv", "csv_path", type=Path, default=None)
-    parser.add_argument("--n-subsets", type=int, default=5) # Kept for CLI compat, primarily used for summary stats
-
-    args = parser.parse_args()
-    run_compare_analysis(args)

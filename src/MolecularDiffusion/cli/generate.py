@@ -158,6 +158,56 @@ def _apply_total_step_override(task, total_step):
         task.interpolant.num_timesteps = total_step
 
 
+# Keys the caller may override even though the architecture came from the checkpoint.
+# The path-valued ones are baked in at train time and are resolved again on load, so
+# without this a checkpoint trained elsewhere (a cluster, another user's tree) cannot
+# be run locally at all. Architecture keys are deliberately NOT here — those must keep
+# matching the weights.
+_CALLER_OWNED_KEYS = (
+    "chkpt_path", "autoencoder_ckpt", "vae_ckpt", "shape_cache_path",
+    "size_distribution_path", "normalize_condition", "extra_norm_values",
+    "reference_freeze_mode",
+)
+
+
+def _declared_generation_time_keys(*configs):
+    """Extra caller-owned config keys a task factory declares for itself.
+
+    Generalises `_CALLER_OWNED_KEYS`: instead of the platform hardcoding one more
+    name per model, a factory whose config carries a generation-time value (an
+    input-molecule pool, an sdf/smi/db path, a sampling knob) declares it as a
+    class attribute, exactly like the `train_set` seam declares a parameter::
+
+        class ModelTaskFactory:
+            generation_time_keys = ("sample_input",)
+
+    A factory that declares nothing behaves exactly as before.
+    """
+    for config in configs:
+        target = config.get("_target_") if config is not None else None
+        if not target:
+            continue
+        try:
+            factory_cls = hydra.utils.get_class(target)
+        except Exception:  # unresolvable target — the caller will fail louder later
+            continue
+        return tuple(getattr(factory_cls, "generation_time_keys", ()) or ())
+    return ()
+
+
+def _caller_overrides(ckpt_config, caller_config, base_keys=()):
+    """Values from the generate config that win over the checkpoint's task config."""
+    if ckpt_config is None or caller_config is None:
+        return {}
+    keys = tuple(base_keys) + _declared_generation_time_keys(ckpt_config, caller_config)
+    overrides = {}
+    for key in keys:
+        value = caller_config.get(key)
+        if value is not None:
+            overrides[key] = value
+    return overrides
+
+
 def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0):
     """Load model from Lightning checkpoint (.ckpt)."""
     log.info(f"Loading Lightning checkpoint from: {chkpt_path}")
@@ -171,7 +221,21 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
         raw_ckpt = torch.load(chkpt_path, map_location="cpu", weights_only=False)
         _validate_task_type(raw_ckpt, expected_task_type)
 
-        wrapper = EngineLightning.load_from_checkpoint(chkpt_path, map_location="cpu", strict=False, weights_only=False)
+        # This path rebuilds the task purely from the checkpoint's hyperparameters, so
+        # generation-time keys the caller set in the generate config would be lost.
+        # Only factory-declared keys are applied here — _CALLER_OWNED_KEYS is left to
+        # the fallback path below so every checkpoint that loads today loads identically.
+        ckpt_model_config = (raw_ckpt.get("hyper_parameters") or {}).get("model_config")
+        load_kwargs = {}
+        overrides = _caller_overrides(ckpt_model_config, task_config)
+        if overrides:
+            merged_model_config = copy.deepcopy(ckpt_model_config)
+            for key, value in overrides.items():
+                log.info(f"Override from generate config: tasks.{key} = {value}")
+                merged_model_config[key] = value
+            load_kwargs["model_config"] = merged_model_config
+
+        wrapper = EngineLightning.load_from_checkpoint(chkpt_path, map_location="cpu", strict=False, weights_only=False, **load_kwargs)
         log.info("Successfully loaded model using EngineLightning.load_from_checkpoint")
         
         if atom_vocab and hasattr(wrapper.task, 'atom_vocab') and wrapper.task.atom_vocab is None:
@@ -269,19 +333,13 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
         log.info(f"Clearing stale chkpt_path from task config: {task_config.chkpt_path}")
         task_config.chkpt_path = None
 
-    # Keys the caller may override even though the architecture came from the checkpoint.
-    # The path-valued ones are baked in at train time and are resolved again on load, so
-    # without this a checkpoint trained elsewhere (a cluster, another user's tree) cannot
-    # be run locally at all. Architecture keys are deliberately NOT here — those must keep
-    # matching the weights.
-    if ckpt_model_config is not None and caller_task_config is not None:
-        for key in ("chkpt_path", "autoencoder_ckpt", "vae_ckpt", "shape_cache_path",
-                    "size_distribution_path", "normalize_condition", "extra_norm_values",
-                    "reference_freeze_mode"):
-            override = caller_task_config.get(key)
-            if override is not None:
-                log.info(f"Override from generate config: tasks.{key} = {override}")
-                task_config[key] = override
+    # Caller-owned keys: the platform-wide `_CALLER_OWNED_KEYS` plus whatever this
+    # factory declares via `generation_time_keys`. See `_declared_generation_time_keys`.
+    for key, override in _caller_overrides(
+        ckpt_model_config, caller_task_config, _CALLER_OWNED_KEYS
+    ).items():
+        log.info(f"Override from generate config: tasks.{key} = {override}")
+        task_config[key] = override
 
     n_types = len(atom_vocab) if atom_vocab else 0
     

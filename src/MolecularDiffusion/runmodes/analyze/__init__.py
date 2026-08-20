@@ -14,7 +14,6 @@ __all__ = [
     "get_xtb_optimized_xyz",
     "compute_xtb_electronic",
     "batch_xtb_electronic",
-    "run_compare_analysis",
     "run_xyz2mol"
 ]
 
@@ -28,8 +27,6 @@ def __getattr__(name: str):
         from . import xtb_electronic
 
         value = getattr(xtb_electronic, name)
-    elif name == "run_compare_analysis":
-        from .compare_to_optimized import run_compare_analysis as value
     elif name == "run_xyz2mol":
         from .xyz2mol import run_processing as value
     else:
