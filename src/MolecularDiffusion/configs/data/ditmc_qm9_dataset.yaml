@@ -1,0 +1,59 @@
+# graph3d data for DiTMC. Bonds are CONDITIONING here, never generated.
+#
+# Build the db first:
+#   MolCraftDiff data import-graph3d qm9 <raw_dir> data/qm9_graph3d.db
+# or, for a multi-conformer set (which is what DiTMC actually wants):
+#   python docs/model_integrations/ditmc/scripts/convert_dataset.py --help
+#
+# kekulize MUST stay false: upstream keeps RDKit's aromatic perception and
+# aromatic is a real class in its 4-wide bond vocabulary. Kekulizing would push
+# aromatic bonds into the SINGLE/DOUBLE columns and change the conditioning
+# distribution the published weights were trained on.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/qm9_graph3d.db
+dataset_name: ditmc_qm9
+
+atom_vocab: [H, C, N, O, F]
+with_hydrogen: True          # DiTMC is all-atom; hydrogens carry the geometry
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 29
+forbidden_atom: []
+
+data_type: graph3d
+
+# --- graph3d-specific ------------------------------------------------------
+bond_collate: raw            # PyG Batch; the task's adapter builds the three
+                             # DiTMC graphs from it
+center_coords: True
+graph3d_stats: False         # DiTMC needs NO dataset statistics at construction
+kekulize: False              # <- see the header
+use_stored_split: True
+
+# --- shared DataModule knobs ---------------------------------------------
+train_ratio: 0.8
+batch_size: 32               # the latent graph is COMPLETE: E = N(N-1) per
+                             # molecule, so memory grows as N^2. 32 is safe for
+                             # QM9 (N<=29); drop to 8 for GEOM-Drugs.
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null
+
+# Present for schema parity with the point-cloud configs; unused here.
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

@@ -1,0 +1,77 @@
+# DiTMC -- graph-conditioned Diffusion Transformer CONFORMER GENERATOR.
+#
+# Frank et al., "Sampling 3D Molecular Conformers with Diffusion Transformers",
+# NeurIPS 2025 (arXiv:2506.15378). Weights/data: doi:10.5281/zenodo.15489212.
+#
+# This model does NOT invent molecules. You give it a molecule (atoms + bonds)
+# and it returns 3D conformers of exactly that molecule. There is no
+# unconditional mode -- generation goes through
+# configs/interference/gen_ditmc_conformers.yaml, and task.sample() raises.
+#
+# `variant` picks one of the three published models. They differ only in how
+# position information reaches the attention:
+#   ape  -- absolute positional embedding (an MLP on raw coordinates)
+#   rpe  -- relative: an MLP on pairwise displacements
+#   so3  -- SO(3)-EQUIVARIANT, spherical-harmonic edge basis. The upstream
+#           default and the interesting one. Verified equivariant to ~1e-15
+#           in float64 by tests/test_ditmc_e3x.py.
+#
+# Every default below is upstream's shipped value (configs/model/*.yaml plus
+# the `globals` block of configs/config.yaml). Changing any of them makes the
+# published checkpoints unloadable.
+_target_: MolecularDiffusion.modules.tasks.diffusion_ditmc.DiTMCTaskFactory
+
+task_type: diffusion_ditmc
+variant: so3
+
+# Selects the atom-symbol block of `node_attr`, and therefore its total width:
+# qm9 -> 64 columns, drugs -> 94. It must match the checkpoint you load.
+dataset: qm9
+
+# Harmonic prior over the bond-graph Laplacian (upstream default). `gaussian`
+# is the ablation. The harmonic prior's zero modes are zeroed, which is what
+# removes the centre of mass from the prior sample.
+prior: harmonic
+
+# One Haar-uniform rotation per molecule per training step. ON upstream
+# (globals.augmentation_bool: True) and NOT optional for ape/rpe, which are
+# not equivariant by construction and would otherwise see a different
+# distribution than the published weights did.
+augmentation_bool: true
+
+model:
+  num_layers: 6
+  num_heads: 8
+  num_features_head: 32        # -> 256 model dim
+  num_features_mlp: 1024
+  activation_fn: silu
+  activation_fn_mlp: gelu      # tanh-approximate GELU, as jax.nn.gelu defaults
+  mgn_num_layers: 2            # MeshGraphNet bond conditioner
+  mgn_num_features: 256
+  mgn_activation_fn: silu
+  output: drift_and_noise
+  # --- so3 only ---
+  max_degree: 1
+  include_pseudotensors: true
+  radial_basis: reciprocal_bernstein
+  num_radial_basis: 64
+  # --- ape / rpe only (ignored by so3) ---
+  # absolute_positional_embedding_bool / relative_positional_embedding_bool
+  # are set by `variant`; override here only to build a non-shipped hybrid.
+
+flow:
+  sigma: 0.5                   # constant interpolant noise
+  regress_x1_bool: true        # network predicts the clean x1, not the drift
+  align_bool: true             # Kabsch-align the prior sample to x1
+  weighted_loss_bool: true     # per-graph weight 1/(1-min(tau,0.9))^2
+  conditioning_bool: true      # bonds are never optional for GEOM/QM9
+  mixture_tau_bool: false
+  # Classifier-free guidance. Off upstream. Training drops the conditioner with
+  # this probability (ONE Bernoulli per batch, not per molecule); sampling then
+  # takes a guided two-pass update. Turning it on changes what the weights mean,
+  # so do not enable it for an existing checkpoint.
+  free_guidance_bool: false
+  free_guidance_prob: 0.1
+  # Self-conditioning. Off upstream. Costs one extra forward pass per step.
+  self_conditioning_bool: false
+  self_conditioning_prob: 0.5
