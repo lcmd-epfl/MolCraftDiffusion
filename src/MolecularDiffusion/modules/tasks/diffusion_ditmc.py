@@ -11,8 +11,9 @@ molecule. Nothing about the composition is generated, so:
 * :meth:`DiTMCTask.sample` **raises**. There is no unconditional mode: without a
   molecular graph there is nothing to place in 3D, and the platform's
   ``(one_hot, charges, coords, node_mask)`` return contract has no meaning here.
-  Generation goes through :class:`DiTMCConformerGenerator`, pointed at by
-  ``configs/interference/gen_ditmc_conformers.yaml`` -- the same route
+  Generation goes through the shared
+  :class:`~MolecularDiffusion.runmodes.generate.tasks_conformer.ConformerFactory`,
+  pointed at by ``configs/interference/gen_conformer.yaml`` -- the same route
   ``gen_diffdec_scaffold.yaml`` and ``gen_apo2mol_pocket.yaml`` take.
 * ``node_dist_model`` / ``n_node_dist`` are deliberately absent. They exist to
   let ``GenerativeFactory`` choose a molecule size; DiTMC's size is dictated by
@@ -230,9 +231,9 @@ class DiTMCTask(nn.Module):
         msg = (
             "DiTMC has no unconditional generation mode -- it places an EXISTING "
             "molecule in 3D, so there is nothing to sample without one. Use "
-            "configs/interference/gen_ditmc_conformers.yaml, which points at "
-            "MolecularDiffusion.modules.tasks.diffusion_ditmc."
-            "DiTMCConformerGenerator."
+            "configs/interference/gen_conformer.yaml and set "
+            "interference.sample_input to the molecules you want conformers "
+            "of; it drives this task's generate_conformers()."
         )
         raise NotImplementedError(msg)
 
@@ -332,232 +333,14 @@ def _plain(cfg: Any) -> dict:
     return dict(cfg)
 
 
-class DiTMCConformerGenerator:
-    """Generate conformers of molecules you supply.
-
-    ``cli/generate.py`` does ``instantiate(cfg.interference, task=task)`` then
-    ``.run()``, so every key in the interference YAML lands in ``__init__``.
-
-    Inputs, in priority order: ``smiles`` (a string, a list, or a path to a file
-    with one SMILES per line) or ``db_path`` (a graph3d ASE db) + ``indices``.
-    SMILES are embedded with RDKit **only to get atoms and bonds** -- never
-    coordinates; the coordinates are what the model produces.
-    """
-
-    def __init__(  # noqa: PLR0913
-        self,
-        task: Any,
-        smiles: Any = None,
-        db_path: str | None = None,
-        indices: Any = None,
-        num_generate: int = 5,
-        batch_size: int = 8,
-        num_steps: int = 50,
-        free_guidance_scale: float = 1.0,
-        logarithmic_time_bool: bool = False,
-        use_chirality_correction: bool = False,
-        n_frames: int = 0,
-        max_atom: int = 200,
-        seed: int = 42,
-        device: str | None = None,
-        output_path: str = "generated_ditmc",
-    ) -> None:
-        self.task = getattr(task, "task", task)
-        self.smiles = smiles
-        self.db_path = db_path
-        self.indices = indices
-        self.num_generate = num_generate
-        self.batch_size = batch_size
-        self.num_steps = num_steps
-        self.free_guidance_scale = free_guidance_scale
-        self.logarithmic_time_bool = logarithmic_time_bool
-        self.use_chirality_correction = use_chirality_correction
-        self.n_frames = n_frames
-        self.max_atom = max_atom
-        self.seed = seed
-        self.output_path = output_path
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-
-    # -- inputs ------------------------------------------------------------
-
-    def _items_from_smiles(self) -> list:
-        from rdkit import Chem
-        from torch_geometric.data import Data
-
-        # Pre-import: MolecularDiffusion.data.component.graph3d_dataset has a
-        # latent import cycle with MolecularDiffusion.data.dataset that only
-        # bites when graph3d_dataset is the FIRST of the two imported. This is
-        # pre-existing platform behaviour, not something to fix from here.
-        import MolecularDiffusion.data.dataset  # noqa: F401
-
-        from MolecularDiffusion.data.component.graph3d_dataset import (
-            rdkit_bond_types,
-        )
-
-        smis = self.smiles
-        if isinstance(smis, str) and os.path.exists(smis):
-            with open(smis) as fh:
-                smis = [ln.strip() for ln in fh if ln.strip()]
-        elif isinstance(smis, str):
-            smis = [smis]
-
-        inv = {bt: i for i, bt in enumerate(rdkit_bond_types()) if bt is not None}
-        items = []
-        for smi in smis:
-            mol = Chem.MolFromSmiles(smi)
-            if mol is None:
-                logger.warning("RDKit could not parse SMILES %r, skipping", smi)
-                continue
-            mol = Chem.AddHs(mol)
-            n = mol.GetNumAtoms()
-            bi, bt = [], []
-            for bond in mol.GetBonds():
-                bi.append([bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()])
-                bt.append(inv[bond.GetBondType()])
-            items.append(
-                Data(
-                    pos=torch.zeros(n, 3),
-                    z=torch.tensor(
-                        [a.GetAtomicNum() for a in mol.GetAtoms()], dtype=torch.long
-                    ),
-                    fc=torch.tensor(
-                        [a.GetFormalCharge() for a in mol.GetAtoms()], dtype=torch.long
-                    ),
-                    bond_index=torch.tensor(bi, dtype=torch.long).reshape(-1, 2).T
-                    if bi
-                    else torch.zeros(2, 0, dtype=torch.long),
-                    bond_type=torch.tensor(bt, dtype=torch.long)
-                    if bt
-                    else torch.zeros(0, dtype=torch.long),
-                    n_nodes=n,
-                    smiles=Chem.MolToSmiles(mol),
-                )
-            )
-        return items
-
-    def _items_from_db(self) -> list:
-        # Pre-import: MolecularDiffusion.data.component.graph3d_dataset has a
-        # latent import cycle with MolecularDiffusion.data.dataset that only
-        # bites when graph3d_dataset is the FIRST of the two imported. This is
-        # pre-existing platform behaviour, not something to fix from here.
-        import MolecularDiffusion.data.dataset  # noqa: F401
-
-        from MolecularDiffusion.data.component.graph3d_dataset import Graph3DDataset
-
-        ds = Graph3DDataset(
-            root=os.path.dirname(self.db_path) or ".",
-            ase_db_path=self.db_path,
-            dataset_name=f"ditmc_gen_{os.path.basename(self.db_path)}",
-            max_atom=self.max_atom,
-            atom_vocab=self.task.atom_vocab,
-            allow_unknown=True,
-            kekulize=False,
-            center_coords=True,
-            compute_stats=False,
-        )
-        idx = self.indices
-        if idx is None:
-            idx = list(range(min(len(ds), 10)))
-        elif isinstance(idx, int):
-            idx = [idx]
-        return [ds[int(i)]["graph"] for i in idx]
-
-    def _load_items(self) -> list:
-        if self.smiles is not None:
-            return self._items_from_smiles()
-        if self.db_path is not None:
-            return self._items_from_db()
-        msg = (
-            "DiTMC needs a molecule to place in 3D. Set `smiles` (a string, a "
-            "list, or a path to a file of SMILES) or `db_path` (+ `indices`) in "
-            "the interference config."
-        )
-        raise ValueError(msg)
-
-    # -- output ------------------------------------------------------------
-
-    @staticmethod
-    def _write_xyz(path: str, symbols, coords) -> None:
-        with open(path, "w") as fh:
-            fh.write(f"{len(symbols)}\n\n")
-            for s, (x, y, z) in zip(symbols, coords, strict=True):
-                fh.write(f"{s} {x:.6f} {y:.6f} {z:.6f}\n")
-
-    def run(self) -> str:
-        from rdkit import Chem
-        from rdkit.Chem import rdMolTransforms  # noqa: F401  (import parity)
-
-        # Pre-import: MolecularDiffusion.data.component.graph3d_dataset has a
-        # latent import cycle with MolecularDiffusion.data.dataset that only
-        # bites when graph3d_dataset is the FIRST of the two imported. This is
-        # pre-existing platform behaviour, not something to fix from here.
-        import MolecularDiffusion.data.dataset  # noqa: F401
-
-        from MolecularDiffusion.data.component.graph3d_dataset import build_rdkit_mol
-
-        os.makedirs(self.output_path, exist_ok=True)
-        torch.manual_seed(self.seed)
-        # The generator device must match the tensors it fills, or torch.randn
-        # raises. Bind it to wherever the task actually landed.
-        gen = torch.Generator(device=self.device).manual_seed(self.seed)
-
-        self.task = self.task.to(self.device).eval()
-        items = self._load_items()
-        if not items:
-            msg = "No input molecules could be built; nothing to generate."
-            raise ValueError(msg)
-        logger.info("DiTMC: %d input molecules", len(items))
-
-        written = 0
-        for mol_i, item in enumerate(items):
-            replicas = [item] * self.num_generate
-            all_coords = []
-            for start in range(0, len(replicas), self.batch_size):
-                chunk = replicas[start : start + self.batch_size]
-                coords, segments, _traj = self.task.generate_conformers(
-                    chunk,
-                    num_steps=self.num_steps,
-                    free_guidance_scale=self.free_guidance_scale,
-                    logarithmic_time_bool=self.logarithmic_time_bool,
-                    return_trajectory=self.n_frames > 0,
-                    generator=gen,
-                )
-                coords = center_data(coords, segments, len(chunk)).cpu()
-                for k in range(len(chunk)):
-                    all_coords.append(coords[segments.cpu() == k].numpy())
-
-            z = item.z.numpy()
-            symbols = [Chem.Atom(int(v)).GetSymbol() for v in z]
-            for k, xyz in enumerate(all_coords):
-                self._write_xyz(
-                    os.path.join(self.output_path, f"mol_{mol_i:04d}_conf_{k:03d}.xyz"),
-                    symbols,
-                    xyz,
-                )
-                written += 1
-
-            # One SDF per input molecule, carrying the INPUT bonds so that
-            # `MolCraftDiff analyze` has a real molecule to work with.
-            sdf_path = os.path.join(self.output_path, f"mol_{mol_i:04d}.sdf")
-            writer = Chem.SDWriter(sdf_path)
-            for xyz in all_coords:
-                try:
-                    mol = build_rdkit_mol(
-                        z,
-                        item.bond_index.numpy(),
-                        item.bond_type.numpy(),
-                        formal_charge=item.fc.numpy(),
-                        coords=xyz,
-                    )
-                    writer.write(mol)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("SDF write failed for molecule %d: %s", mol_i, exc)
-            writer.close()
-
-        logger.info("DiTMC wrote %d conformers to %s", written, self.output_path)
-        return self.output_path
+# ``DiTMCConformerGenerator`` used to live here: ~230 lines that loaded a
+# molecule pool, ran `generate_conformers`, and wrote flat .xyz. Conformer
+# generation is now unified behind
+# ``runmodes/generate/tasks_conformer.ConformerFactory``
+# (``configs/interference/gen_conformer.yaml``), which calls this task's
+# ``generate_conformers`` through the shared contract and additionally emits
+# the per-molecule layout, conformers.sdf/reference.sdf and the conformers.csv
+# index this class never produced.
 
 
 ModelTaskFactory = DiTMCTaskFactory

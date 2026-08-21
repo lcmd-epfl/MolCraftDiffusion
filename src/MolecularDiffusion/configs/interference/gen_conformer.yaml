@@ -1,21 +1,48 @@
 # Conformer generation: k 3D shapes of each molecule you already have.
 #
-# Use this instead of `gen_unconditional` for any model that is handed a
-# molecule and returns geometries OF that molecule (LoQI). The task must
-# expose `conditioning_pool()` and `sample(mols=[...])` -- see the module
-# docstring in runmodes/generate/tasks_conformer.py.
+# THE standard interference config for every conformer-generating model
+# (LoQI, DiTMC, NExT-Mol conformer mode). Use it instead of
+# `gen_unconditional` for any model that is handed a molecule and returns
+# geometries OF that molecule.
+#
+# The task must expose EITHER `generate_conformers(items, **sampler_kwargs)`
+# or `sample(mols=[...])` -- see the module docstring in
+# runmodes/generate/tasks_conformer.py. Nothing else is required of it: the
+# input molecules, the output layout and the metrics are all handled here.
 #
 # There is deliberately NO `mol_size` and NO `num_generate`: the input
 # molecule dictates its own atom count, and the request is per-molecule.
 # Setting either raises rather than being silently ignored.
 _target_: MolecularDiffusion.runmodes.generate.tasks_conformer.ConformerFactory
 
+# INPUT MOLECULES -- the standard way to say "make conformers of these".
+# A path (.sdf, .smi/.txt, or a graph3d ASE .db) or an inline SMILES list:
+#   sample_input: ["CCO", "N[C@@H](C)C(=O)O"]
+#   sample_input: docs/model_integrations/nextmol/data/nextmol_smoke.db
+# Inline and .smi molecules get an ETKDG conformer embedded first, so write
+# the stereochemistry you want INTO the SMILES.
+#
+# Leave null ONLY for a task that supplies its own pool (LoQI reads
+# `tasks.sample_input`, and can fall back to its training set).
+sample_input: null
+# Pick specific rows of that input: an int or a list of ints. null = all.
+indices: null
+
 # How many conformers to generate for EVERY input molecule.
 conformers_per_molecule: 10
 # Conformers sampled per forward pass (of one molecule). Memory knob only.
 batch_size: 8
-# 0 = every molecule in the task's conditioning pool. Set to cap a large input.
+# 0 = every molecule in the pool. Set to cap a large input.
 max_molecules: 0
+
+# PER-MODEL SAMPLER SETTINGS, forwarded verbatim to `generate_conformers`.
+# Deliberately opaque so this file never accretes the union of every model's
+# hyperparameters. Examples:
+#   DiTMC:    {num_steps: 50, free_guidance_scale: 1.0,
+#              logarithmic_time_bool: false}
+#   NExT-Mol: {num_steps: 100}
+# Ignored by tasks that implement `sample(mols=...)` instead (LoQI).
+sampler_kwargs: {}
 
 # Metrics. `rmsd` (heavy-atom, symmetry-corrected, vs. the INPUT geometry) is
 # always computed; this is the threshold the reported coverage uses.

@@ -31,15 +31,32 @@ WHY IT EXISTS
 
 TASK CONTRACT (duck-typed, no registry, no base class)
 
-    A task works with this mode if it exposes:
+    A task works with this mode if it exposes ONE of:
 
-    * ``conditioning_pool() -> list[Data]`` -- the input molecules, as
-      ``graph3d`` per-item ``Data`` (``pos``, ``z``, ``atom_idx``, ``fc``,
-      ``bond_index``, ``bond_type``, ``n_nodes``);
-    * ``sample(mols=[...])`` -- generate one conformer per entry of ``mols``,
-      returning the platform tuple ``(one_hot, charges, coords, node_mask)``.
+    * ``generate_conformers(items, **sampler_kwargs)`` -- returns
+      ``(positions, batch_segments)``, flat and concatenated, coordinates
+      only. Preferred, and what a model whose de-novo ``sample()`` cannot
+      exist implements (DiTMC, NExT-Mol);
+    * ``sample(mols=[...])`` -- one conformer per entry of ``mols``,
+      returning the platform tuple ``(one_hot, charges, coords, node_mask)``
+      (LoQI).
 
     Anything else raises a clear TypeError at construction.
+
+    The input molecules come from either:
+
+    * ``interference.sample_input`` -- THE standard: a ``.sdf``, a
+      ``.smi``/``.txt``, a graph3d ASE ``.db``, or an inline SMILES list,
+      loaded by ``utils/conformer_pool.load_conditioning_pool``. A model
+      needs no pool code of its own; or
+    * ``conditioning_pool() -> list[Data]`` on the task -- the older seam,
+      still honoured (LoQI takes its pool from ``tasks.sample_input`` so it
+      can also fall back to the training set).
+
+    ``sampler_kwargs`` is an opaque dict forwarded to
+    ``generate_conformers``. Per-model knobs (``num_steps``,
+    ``free_guidance_scale``, ...) go there, so this config never accretes the
+    union of every model's hyperparameters.
 
 OUTPUT LAYOUT
 
@@ -153,6 +170,9 @@ class ConformerFactory:
         xtb_energy: bool = False,
         seed: int | None = None,
         output_path: str = "generated_conformers",
+        sample_input: Any = None,
+        indices: Any = None,
+        sampler_kwargs: Any = None,
         **kwargs: Any,
     ) -> None:
         rejected = sorted(
@@ -170,19 +190,41 @@ class ConformerFactory:
         for unknown in sorted(set(kwargs) - {"task_type"}):
             logger.warning("Ignoring unknown interference key %r", unknown)
 
-        missing = [
-            name
-            for name in ("conditioning_pool", "sample")
-            if not callable(getattr(task, name, None))
-        ]
-        if missing:
+        # Either sampling entry point satisfies the contract. `sample(mols=)`
+        # is the original; `generate_conformers(items)` is what a model whose
+        # de-novo `sample()` cannot exist implements instead (DiTMC, NExT-Mol
+        # -- both raise from `sample()` on purpose).
+        self._sampler = next(
+            (
+                name
+                for name in ("generate_conformers", "sample")
+                if callable(getattr(task, name, None))
+            ),
+            None,
+        )
+        if self._sampler is None:
             msg = (
-                f"{type(task).__name__} is not a conformer generator: it lacks "
-                f"{', '.join(missing)}. This mode needs a task exposing "
-                "conditioning_pool() and sample(mols=[...]) -- see the module "
-                "docstring for the contract."
+                f"{type(task).__name__} is not a conformer generator: it "
+                "exposes neither generate_conformers(items) nor "
+                "sample(mols=[...]). This mode needs one of them -- see the "
+                "module docstring for the contract."
             )
             raise TypeError(msg)
+
+        # The pool comes from the task (LoQI owns its own) or, for any model
+        # that does not implement one, from `sample_input` right here -- so a
+        # new conformer model needs no pool code at all.
+        if sample_input is None and not callable(
+            getattr(task, "conditioning_pool", None)
+        ):
+            msg = (
+                f"{type(task).__name__} has no conditioning_pool(), so this "
+                "mode needs interference.sample_input: a .sdf, a .smi/.txt, a "
+                "graph3d ASE .db, or an inline list of SMILES. Conformer "
+                "generation is OF molecules you supply; there is nothing to "
+                "make conformers of without them."
+            )
+            raise ValueError(msg)
 
         self.task = task
         self.conformers_per_molecule = int(conformers_per_molecule)
@@ -192,6 +234,12 @@ class ConformerFactory:
         self.xtb_energy = bool(xtb_energy)
         self.seed = seed
         self.output_path = output_path
+        self.sample_input = sample_input
+        self.indices = indices
+        # Opaque per-model sampler settings (num_steps, free_guidance_scale,
+        # ...). Kept opaque on purpose: gen_conformer.yaml must not accrete
+        # the union of every model's hyperparameters.
+        self.sampler_kwargs = dict(sampler_kwargs or {})
 
         if self.xtb_energy and shutil.which("xtb") is None:
             logger.warning(
@@ -224,6 +272,65 @@ class ConformerFactory:
 
         return get_xtb_energy(xyz_path, charge=charge)
 
+    def _pool(self) -> list[Any]:
+        """The input molecules, from `sample_input` or from the task."""
+        if self.sample_input is not None:
+            from MolecularDiffusion.utils.conformer_pool import (
+                load_conditioning_pool,
+            )
+
+            limit = self.max_molecules or None
+            return load_conditioning_pool(
+                self.sample_input, self.task.atom_vocab, limit
+            )
+        return self.task.conditioning_pool()
+
+    def _sample_batch(self, item: Any, n: int) -> tuple[Any, Any, Any, Any]:
+        """`n` conformers of `item`, as `(one_hot, charges, coords, node_mask)`.
+
+        Two shapes reach here and both leave in the padded platform tuple that
+        ``_write_batch`` and the .sdf/CSV writers already expect:
+
+        * ``sample(mols=[...])`` returns that tuple directly.
+        * ``generate_conformers(items)`` returns ``(positions,
+          batch_segments)`` -- flat and concatenated, coordinates only (DiTMC
+          appends a trajectory as a third element, hence the slice). The atom
+          block is rebuilt from `item`, which is legitimate precisely because
+          these models diffuse coordinates ONLY: atom types and bonds are
+          fixed conditioning, identical across all `n` rows.
+        """
+        if self._sampler == "sample":
+            return self.task.sample(mols=[item] * n)
+
+        items = [item] * n
+        out = self.task.generate_conformers(items, **self.sampler_kwargs)
+        positions, segments = out[0], out[1]
+
+        n_nodes = int(item.n_nodes)
+        coords = positions.reshape(n, n_nodes, 3).cpu()
+        if int(segments.max()) + 1 != n:
+            msg = (
+                f"{type(self.task).__name__}.generate_conformers returned "
+                f"{int(segments.max()) + 1} graphs for {n} requested "
+                "conformers; the conformer mode requires one output graph per "
+                "input item."
+            )
+            raise RuntimeError(msg)
+
+        # Pool items carry `atom_idx` (an index into atom_vocab), not a
+        # one-hot; `save_xyz_file` decodes by argmax, so build one here.
+        one_hot = (
+            torch.nn.functional.one_hot(
+                item.atom_idx.cpu().long(), len(self.task.atom_vocab)
+            )
+            .float()
+            .unsqueeze(0)
+            .expand(n, -1, -1)
+        )
+        charges = item.fc.cpu().reshape(1, n_nodes, 1).expand(n, -1, -1)
+        node_mask = torch.ones(n, n_nodes, 1)
+        return one_hot, charges, coords, node_mask
+
     def _write_batch(self, mol_dir: str, start: int, sampled) -> list[str]:
         """Write one sampled batch as ``conformer_XXX.xyz``; return the paths."""
         one_hot, _charges, coords, node_mask = sampled
@@ -253,7 +360,14 @@ class ConformerFactory:
         if self.seed is not None:
             torch.manual_seed(int(self.seed))
 
-        pool = self.task.conditioning_pool()
+        pool = self._pool()
+        if self.indices is not None:
+            idx = (
+                [self.indices]
+                if isinstance(self.indices, int)
+                else list(self.indices)
+            )
+            pool = [pool[int(i)] for i in idx]
         if self.max_molecules > 0:
             pool = pool[: self.max_molecules]
         if not pool:
@@ -299,7 +413,7 @@ class ConformerFactory:
                         self.batch_size, self.conformers_per_molecule - written
                     )
                     try:
-                        sampled = self.task.sample(mols=[item] * n)
+                        sampled = self._sample_batch(item, n)
                         paths = self._write_batch(mol_dir, written, sampled)
                     except Exception as exc:  # noqa: BLE001 - one bad batch != dead run
                         failures += 1

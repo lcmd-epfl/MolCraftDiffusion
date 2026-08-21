@@ -123,6 +123,27 @@ shape = [
     "scikit-image",
     "trimesh",
 ]
+# NExT-Mol: MoLlama (a 22-layer Llama over a 192-token SELFIES vocabulary)
+# samples 1D molecule strings, which the DMT diffusion backbone then gives 3D
+# coordinates. Needed ONLY for the de-novo generation path -- training DMT and
+# conformer prediction from a given molecule import none of this, so the LM
+# wrapper imports `transformers` lazily.
+#
+# Pinned exactly, and that matters: unpinned `pip install transformers` pulls
+# 5.15.1, which upgrades huggingface_hub, click and hf-xet underneath an
+# otherwise-working env. These six install with zero upgrades and zero
+# downgrades (verified with --dry-run). safetensors also appears in [data];
+# extras do not inherit, so it is repeated here on purpose.
+#
+# selfies is NOT listed: `datamol` already brings it in.
+nextmol = [
+    "transformers==5.3.0",
+    "tokenizers==0.22.2",
+    "safetensors==0.8.0",
+    "regex==2026.7.19",
+    "typer==0.27.1",
+    "annotated-doc==0.0.5",
+]
 # GPU install (CUDA-capable torch wheels, auto-detected by pip on Linux/Windows):
 #   pip install molcraftdiffusion[gpu]
 gpu = [

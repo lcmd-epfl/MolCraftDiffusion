@@ -5,8 +5,9 @@
 #
 # This model does NOT invent molecules. You give it a molecule (atoms + bonds)
 # and it returns 3D conformers of exactly that molecule. There is no
-# unconditional mode -- generation goes through
-# configs/interference/gen_ditmc_conformers.yaml, and task.sample() raises.
+# unconditional mode -- generation goes through the shared conformer mode,
+# configs/interference/gen_conformer.yaml (set interference.sample_input to
+# your molecules), and task.sample() raises.
 #
 # `variant` picks one of the three published models. They differ only in how
 # position information reaches the attention:

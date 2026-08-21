@@ -1,0 +1,49 @@
+# NExT-Mol DE-NOVO generation -- the full two-stage pipeline.
+#
+# MoLlama samples SELFIES -> decoded to SMILES -> RDKit builds the 2D graph ->
+# DMT diffuses coordinates onto it. The molecule is written down BEFORE it is
+# built in 3D, so the chemistry is settled before any 3D work starts and the
+# intermediate 1D list is saved to <output_path>/sampled_sequences.tsv for you
+# to read, filter or hand-edit.
+#
+# cli/generate.py only calls `instantiate(cfg.interference, task=task)` then
+# `.run()`, so every key here goes straight to the generator's __init__.
+# NextMolTask.sample() raises with a pointer back to this file.
+#
+# REQUIRES `transformers` -- see docs/model_integrations/nextmol/
+# INTEGRATION_PLAN.md, "Environment Prerequisites", for the exact PINNED
+# install command. An unpinned `pip install transformers` upgrades
+# huggingface_hub, click and hf-xet; do not run it.
+#
+# KNOWN LIMITATION: MoLlama is used AS PUBLISHED, without the LM fine-tuning
+# that aligns it to a specific training distribution. Molecules therefore follow
+# general drug-like chemistry rather than the QM9-2014 / GEOM-Drugs
+# distribution, so Novelty and FCD will not reproduce the paper. Validity,
+# stability and 3D geometry quality -- everything DMT is responsible for -- are
+# unaffected.
+_target_: MolecularDiffusion.modules.tasks.diffusion_nextmol.NextMolGenerator
+
+# HF hub id, or a local snapshot directory. Setting this selects DE-NOVO mode.
+mollama_model: acharkq/MoLlama
+num_molecules: 100           # valid molecules to accumulate before diffusing
+temperature: 1.0
+num_beams: 1
+max_sf_tokens: 30            # SELFIES tokens per molecule (upstream's default)
+lm_batch_size: 200           # sequences per generate() call
+
+# NOTE: this config is DE NOVO only -- MoLlama invents the molecules, so there
+# is no input pool. For conformers of molecules you already have, use
+# gen_conformer.yaml with interference.sample_input; that shared mode serves
+# every conformer model (LoQI, DiTMC, NExT-Mol) and this generator is not
+# involved.
+
+num_generate: 1              # 3D structures per proposed molecule
+batch_size: 16
+num_steps: 100               # ancestral VP steps (upstream's sampling_steps)
+
+# Molecules whose element set falls outside the task's `dataset` vocabulary, or
+# that exceed max_atom, are COUNTED and reported -- never silently dropped.
+max_atom: 200
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_nextmol

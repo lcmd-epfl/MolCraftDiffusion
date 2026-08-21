@@ -1,0 +1,68 @@
+# NExT-Mol -- DMT, the 3D half of a two-stage de-novo generator.
+#
+# Liu*, Luo*, Huang et al., "NExT-Mol: 3D Diffusion Meets 1D Language Modeling
+# for 3D Molecule Generation", ICLR 2025 (arXiv:2502.12638).
+# Weights: OSF https://osf.io/gqy39/?view_only=5905ef8957f9444a8808fd49933b35c7
+#
+# WHAT TRAINS HERE: only DMT, the coordinate diffusion model. The language model
+# (MoLlama) that writes the molecule down is INFERENCED, not trained -- the
+# generator loads `acharkq/MoLlama` at generation time, so this checkpoint stays
+# DMT-only and does not grow by 2 GB.
+#
+# WHAT IS GENERATED: coordinates, and nothing else. Atom types and bonds are
+# fixed conditioning on every forward and every sampling step. Generation goes
+# through configs/interference/gen_nextmol_denovo.yaml (de novo) or the shared
+# gen_conformer.yaml with interference.sample_input (conformers of molecules
+# you supply -- the same mode LoQI and DiTMC use); task.sample() raises.
+_target_: MolecularDiffusion.modules.tasks.diffusion_nextmol.NextMolTaskFactory
+
+task_type: diffusion_nextmol
+
+# Selects the element set AND therefore the width of the node feature vector:
+#   qm9   -> H C N O F               -> in_node_features 44
+#   drugs -> 35 elements             -> in_node_features 74
+# Elements are matched BY SYMBOL, never by position. Must match the checkpoint.
+dataset: qm9
+
+# Coordinates are divided by this on load and multiplied back after sampling.
+# IT MUST MATCH THE CHECKPOINT'S DATASET or every structure comes back
+# mis-scaled -- there is no way to detect the mismatch from the output alone:
+#   GEOM-QM9 (qm9_dmt_b_e1999.ckpt)  1.4182
+#   QM9-2014 / JODO de-novo split    1.7226
+#   GEOM-Drugs TorDF                 2.4777
+#   GEOM-Drugs JODO                  2.3860
+pos_std: 1.4182
+
+# Continuous-time VP diffusion. `cosine` ends at T=0.9946, not 1.0 (t=1 has
+# numerical issues). Every released checkpoint used these values.
+noise_schedule: cosine
+continuous_beta_0: 0.1
+continuous_beta_1: 20.0
+discrete_schedule: false
+sampling_steps: 100
+t_cond: t                     # 't' | 'noise_level'
+
+# One Haar-uniform rotation per molecule per training step. DMT is NOT
+# equivariant by construction (enable_equiv=False upstream), so this is
+# load-bearing, not an optional regularizer.
+aug_rotation: true
+
+# Epsilon-prediction MSE against a Kabsch-ROTATION-ALIGNED target
+# (get_noise_loss, align=True upstream). Turning it off changes what the
+# weights mean.
+align_loss: true
+reduce_node_mean: false       # upstream's `not_reduce_node_mean` default
+disable_com: true             # plain Gaussian noise, not COM-free
+
+model:
+  in_node_features: 44        # 44 for dataset: qm9, 74 for dataset: drugs
+  in_edge_features: 4         # SINGLE / DOUBLE / TRIPLE / AROMATIC
+  hidden_size: 512            # DMT-B 512; DMT-L 768
+  n_blocks: 10                # DMT-B 10;  DMT-L 12
+  n_heads: 8
+  dropout: 0.1                # upstream evaluates the released weights at 0.05
+  mlp_ratio: 4
+  # drugs_dmt_b_e2999.ckpt is the ONE released checkpoint trained with these
+  # two set; they change parameter shapes, so a mismatch is a hard load error.
+  not_pair_update: false
+  fuse_qkv: false
