@@ -119,6 +119,8 @@ class DiffIntPocketGenerator(DiffSBDDPocketGenerator):
     instead.
     """
 
+    tag = "diffint"
+
     def __init__(
         self,
         task,

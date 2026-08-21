@@ -2,8 +2,10 @@
 #
 # GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
 # "which scaffold, which anchor atom, which pocket", so this points at a
-# dedicated generator, exactly as gen_diffsbdd_pocket.yaml / gen_kgdiff_pocket
-# .yaml do. cli/generate.py:673 only calls `instantiate(cfg.interference,
+# dedicated generator. NB DiffDec is deliberately NOT part of the shared
+# PocketGenerator used by the pocket models: it reads a preprocessed .pt
+# rather than a pocket db, and its inputs are a scaffold + anchor, not just a
+# pocket. cli/generate.py:673 only calls `instantiate(cfg.interference,
 # task=task)` then `.run()`, so every key here goes straight to that
 # generator's __init__ -- nothing needs registering.
 #

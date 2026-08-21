@@ -1,0 +1,54 @@
+# Pocket-conditioned generation, any model.
+#
+# All seven pocket-conditioned generators (DiffSBDD, DiffInt, KGDiff, IPDiff,
+# PMDM, Apo2Mol, DiffPharma) run the same loop: load one pocket, tile it,
+# sample ligands into it, write .xyz. That loop lives once, in
+# modules/tasks/pocket_generator.PocketGenerator; this config drives it with
+# only the nine keys every one of them shares.
+#
+# WHICH MODEL? Not set here. The concrete generator is picked from whichever
+# `tasks:` your run config selected -- the loaded task object tells
+# PocketGenerator how to read the pocket db, how to tile it, how ligand sizes
+# are drawn and what extra kwargs task.sample() wants.
+#
+# EXCEPTION -- DiffInt. It reuses DiffSBDD's task class verbatim, so the task
+# cannot distinguish the two. DiffInt runs must use gen_diffint_pocket.yaml.
+#
+# THE PER-MODEL CONFIGS ARE NOT DEPRECATED. Use gen_<model>_pocket.yaml
+# whenever you need that model's own knobs, which this config cannot express:
+#   gen_kgdiff_pocket.yaml      guide_mode, type_grad_weight, pos_grad_weight
+#   gen_pmdm_pocket.yaml        validity_filter, max_retries, sampler settings
+#   gen_apo2mol_pocket.yaml     use_holo_reference
+#   gen_diffint_pocket.yaml     pocket_pdb / ref_sdf / dist_cutoff
+#   gen_diffpharma_pocket.yaml  pocket_pdb / ref_sdf
+#   gen_diffsbdd_inpaint.yaml   fixed_atom_indices, add_n_nodes, resamplings,
+#                               center, jump_length
+# Those keys DO work here too: `_target_` below dispatches to the concrete
+# per-model generator, so a key that model declares is consumed and honoured
+# (e.g. `guide_mode=wo` on a KGDiff task). The per-model configs above are
+# kept because they document and default those knobs, not because this one
+# rejects them.
+#
+# What IS rejected is a key NO generator in the chain declares -- a typo'd
+# `guide_mdoe` raises naming the key, rather than quietly doing nothing.
+_target_: MolecularDiffusion.modules.tasks.pocket_generator.PocketGenerator
+
+# A converted ASE db (each model has its own converter under
+# docs/model_integrations/<model>/scripts/). Which centering is applied at
+# load time is per-model and decided by the generator, not by this config.
+pocket_db: ???
+pocket_index: 0
+
+num_generate: 20
+batch_size: 4
+
+# Reverse-process steps. null => the model's full schedule.
+num_steps: null
+
+# Empty => draw ligand sizes from whatever prior that model has (usually
+# conditioned on this pocket's size). A list => sample uniformly from it.
+mol_size: []
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_pocket

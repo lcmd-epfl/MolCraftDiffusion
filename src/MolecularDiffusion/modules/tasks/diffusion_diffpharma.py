@@ -20,20 +20,19 @@ with scatter masks. See ``data/component/diffpharma_data.py``.
 
 from __future__ import annotations
 
-import os
 import random
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from MolecularDiffusion.modules.models.diffpharma import (
     ConditionalDDPM,
     DistributionNodes,
     EGNNDynamics,
 )
+from MolecularDiffusion.modules.tasks.pocket_generator import PocketGenerator
 
 FLOAT_TYPE = torch.float32
 INT_TYPE = torch.int64
@@ -343,7 +342,7 @@ class DiffPharmaTaskFactory:
         return self.task
 
 
-class DiffPharmaPocketGenerator:
+class DiffPharmaPocketGenerator(PocketGenerator):
     """Pocket-conditioned generation behind ``interference/gen_diffpharma_pocket``.
 
     Two mutually exclusive pocket sources:
@@ -356,7 +355,13 @@ class DiffPharmaPocketGenerator:
       and the ligand ODDT detects the interactions against.
 
     Either way the downstream dict is identical.
+
+    The sampling loop itself lives in :class:`PocketGenerator`.
     """
+
+    tag = "diffpharma"
+    # never seeded numpy; seeding it would change what this model generates.
+    seed_numpy = False
 
     def __init__(
         self,
@@ -374,18 +379,21 @@ class DiffPharmaPocketGenerator:
         device: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
-        self.task = task
-        self.pocket_db = pocket_db
-        self.pocket_index = pocket_index
+        super().__init__(
+            task,
+            pocket_db=pocket_db,
+            pocket_index=pocket_index,
+            num_generate=num_generate,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            mol_size=mol_size,
+            output_path=output_path,
+            seed=seed,
+            device=device,
+            **kwargs,
+        )
         self.pocket_pdb = pocket_pdb
         self.ref_sdf = ref_sdf
-        self.num_generate = num_generate
-        self.batch_size = batch_size
-        self.num_steps = num_steps
-        self.mol_size = list(mol_size) if mol_size else []
-        self.output_path = output_path
-        self.seed = seed
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         if bool(pocket_db) == bool(pocket_pdb):
             raise ValueError(
@@ -414,6 +422,9 @@ class DiffPharmaPocketGenerator:
 
         return complex_from_files(self.pocket_pdb, self.ref_sdf)
 
+    def _pocket(self) -> Dict[str, torch.Tensor]:
+        return self._complex()
+
     def _repeat(self, item: Dict[str, torch.Tensor], n: int) -> Dict[str, Any]:
         """Tile one complex's context node sets ``n`` times, with fresh masks."""
         batch: Dict[str, Any] = {}
@@ -438,42 +449,13 @@ class DiffPharmaPocketGenerator:
         pocket_size = batch["num_pocket"].clamp(max=max_pocket)
         return nd.sample_conditional(n2=pocket_size).clamp(min=1)
 
-    def run(self) -> None:
-        from MolecularDiffusion.utils.geom_utils import save_xyz_file
+    def _pick_sizes(self, batch: Dict[str, Any], n: int) -> torch.Tensor:
+        # the only prior that needs the TILED BATCH, not just the count.
+        return self._sizes(batch, n)
 
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        os.makedirs(self.output_path, exist_ok=True)
-
-        self.task.to(self.device)
-        self.task.eval()
-        item = self._complex()
+    def _start(self, item: Dict[str, Any]) -> None:
         print(
-            f"[diffpharma] pocket={len(item['pocket_coords'])} atoms, "
+            f"[{self.tag}] pocket={len(item['pocket_coords'])} atoms, "
             f"interh={len(item['interh_coords'])}, "
             f"interhp={len(item['interhp_coords'])} particles"
         )
-
-        written = 0
-        bar = tqdm(total=self.num_generate, desc="Sampling ligands", leave=True)
-        while written < self.num_generate:
-            n = min(self.batch_size, self.num_generate - written)
-            batch = self._repeat(item, n)
-            one_hot, _charges, coords, node_mask = self.task.sample(
-                batch=batch,
-                nodesxsample=self._sizes(batch, n),
-                num_steps=self.num_steps,
-            )
-            save_xyz_file(
-                self.output_path,
-                one_hot.cpu(),
-                coords.cpu(),
-                self.task.atom_vocab,
-                id_from=written,
-                name="molecule",
-                node_mask=node_mask.cpu(),
-            )
-            written += n
-            bar.update(n)
-        bar.close()
-        print(f"[diffpharma] wrote {written} ligands to {self.output_path}")

@@ -38,14 +38,10 @@ trajectory export.
 
 from __future__ import annotations
 
-import os
-import random
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from MolecularDiffusion.data.component.kgdiff_data import (
     KGDIFF_ATOM_VOCAB,
@@ -65,6 +61,7 @@ from MolecularDiffusion.modules.models.kgdiff.atom_num import (
     marginal_size_distribution,
     sample_atom_num,
 )
+from MolecularDiffusion.modules.tasks.pocket_generator import PocketGenerator
 
 INT_TYPE = torch.int64
 
@@ -401,7 +398,7 @@ class ModelTaskFactory:
         return self.task
 
 
-class KGDiffPocketGenerator:
+class KGDiffPocketGenerator(PocketGenerator):
     """Pocket-conditioned generation behind ``interference/gen_kgdiff_pocket``.
 
     The pocket comes from one row of a converted ASE db
@@ -411,7 +408,16 @@ class KGDiffPocketGenerator:
     ``guide_mode='joint'`` is KGDiff's headline self-guided sampler (the
     model's own affinity head is the classifier guide); ``'wo'`` runs the
     same loop unguided, which is the paper's ablation and a useful control.
+
+    The sampling loop itself lives in :class:`PocketGenerator`.
     """
+
+    tag = "kgdiff"
+    db_required_msg = (
+        "interference.pocket_db is required: KGDiff has no "
+        "unconditional mode. Point it at a converted ASE db "
+        "(docs/model_integrations/kgdiff/scripts/convert_dataset.py)."
+    )
 
     def __init__(
         self,
@@ -428,29 +434,24 @@ class KGDiffPocketGenerator:
         output_path: str = "generated_kgdiff",
         seed: int = 42,
         device: Optional[str] = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> None:
-        if not pocket_db:
-            raise ValueError(
-                "interference.pocket_db is required: KGDiff has no "
-                "unconditional mode. Point it at a converted ASE db "
-                "(docs/model_integrations/kgdiff/scripts/convert_dataset.py)."
-            )
-        self.task = task
-        self.pocket_db = pocket_db
-        self.pocket_index = pocket_index
-        self.num_generate = num_generate
-        self.batch_size = batch_size
-        self.num_steps = num_steps
-        self.mol_size = list(mol_size) if mol_size else []
+        super().__init__(
+            task,
+            pocket_db=pocket_db,
+            pocket_index=pocket_index,
+            num_generate=num_generate,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            mol_size=mol_size,
+            output_path=output_path,
+            seed=seed,
+            device=device,
+            **kwargs,
+        )
         self.guide_mode = guide_mode
         self.type_grad_weight = type_grad_weight
         self.pos_grad_weight = pos_grad_weight
-        self.output_path = output_path
-        self.seed = seed
-        self.device = device or (
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
 
     def _pocket(self) -> Dict[str, Any]:
         return KGDiffDataset(self.pocket_db)[self.pocket_index]
@@ -467,54 +468,17 @@ class KGDiffPocketGenerator:
             ),
         }
 
-    def _sizes(self, n: int) -> Optional[torch.Tensor]:
-        """Explicit sizes, or ``None`` to let the pocket prior decide."""
-        if self.mol_size:
-            return torch.tensor(
-                random.choices(self.mol_size, k=n), dtype=INT_TYPE
-            )
-        return None
+    def _sample_kwargs(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
+        return {
+            "guide_mode": self.guide_mode,
+            "type_grad_weight": self.type_grad_weight,
+            "pos_grad_weight": self.pos_grad_weight,
+            "progress": False,
+        }
 
-    def run(self) -> None:
-        from MolecularDiffusion.utils.geom_utils import save_xyz_file
-
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        os.makedirs(self.output_path, exist_ok=True)
-
-        self.task.to(self.device)
-        self.task.eval()
-        item = self._pocket()
+    def _start(self, item: Dict[str, Any]) -> None:
         print(
-            f"[kgdiff] pocket '{item['name']}': "
+            f"[{self.tag}] pocket '{item['name']}': "
             f"{len(item['protein_pos'])} atoms, guide_mode={self.guide_mode}, "
             f"generating {self.num_generate} ligands"
         )
-
-        written = 0
-        bar = tqdm(total=self.num_generate, desc="Sampling ligands", leave=True)
-        while written < self.num_generate:
-            n = min(self.batch_size, self.num_generate - written)
-            one_hot, _charges, coords, node_mask = self.task.sample(
-                batch=self._repeat(item, n),
-                nodesxsample=self._sizes(n),
-                num_steps=self.num_steps,
-                guide_mode=self.guide_mode,
-                type_grad_weight=self.type_grad_weight,
-                pos_grad_weight=self.pos_grad_weight,
-                progress=False,
-            )
-            save_xyz_file(
-                self.output_path,
-                one_hot.cpu(),
-                coords.cpu(),
-                self.task.atom_vocab,
-                id_from=written,
-                name="molecule",
-                node_mask=node_mask.cpu(),
-            )
-            written += n
-            bar.update(n)
-        bar.close()
-        print(f"[kgdiff] wrote {written} ligands to {self.output_path}")

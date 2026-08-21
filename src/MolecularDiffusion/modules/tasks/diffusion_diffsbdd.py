@@ -52,15 +52,11 @@ hallucinates a pocket).
 
 from __future__ import annotations
 
-import os
-import random
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
 import torch
 from torch import nn
 from torch_scatter import scatter_mean
-from tqdm import tqdm
 
 from MolecularDiffusion.data.component.diffsbdd_data import (
     DIFFSBDD_ATOM_VOCAB,
@@ -68,6 +64,7 @@ from MolecularDiffusion.data.component.diffsbdd_data import (
     DiffSBDDDataset,
 )
 from MolecularDiffusion.modules.models.diffsbdd import DDPM_MODES, EGNNDynamics
+from MolecularDiffusion.modules.tasks.pocket_generator import PocketGenerator
 
 INT_TYPE = torch.int64
 FLOAT_TYPE = torch.float32
@@ -550,7 +547,7 @@ class ModelTaskFactory:
         return self.task
 
 
-class DiffSBDDPocketGenerator:
+class DiffSBDDPocketGenerator(PocketGenerator):
     """Pocket-conditioned generation and inpainting.
 
     One class behind both interference configs -- they differ only in whether
@@ -565,7 +562,16 @@ class DiffSBDDPocketGenerator:
     (``fixed_atom_indices: [0, 1, 2, 3]``) rather than by PDB atom name
     (upstream's ``--fix_atoms "C1 N6 C5"``): the db has no atom names, and the
     same ``lig_fixed`` tensor reaches ``inpaint()`` either way.
+
+    The sampling loop itself lives in :class:`PocketGenerator`.
     """
+
+    tag = "diffsbdd"
+    db_required_msg = (
+        "interference.pocket_db is required: DiffSBDD has no "
+        "unconditional mode. Point it at a converted ASE db "
+        "(docs/model_integrations/kgdiff/scripts/convert_dataset.py)."
+    )
 
     def __init__(
         self,
@@ -584,21 +590,21 @@ class DiffSBDDPocketGenerator:
         output_path: str = "generated_diffsbdd",
         seed: int = 42,
         device: Optional[str] = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> None:
-        if not pocket_db:
-            raise ValueError(
-                "interference.pocket_db is required: DiffSBDD has no "
-                "unconditional mode. Point it at a converted ASE db "
-                "(docs/model_integrations/kgdiff/scripts/convert_dataset.py)."
-            )
-        self.task = task
-        self.pocket_db = pocket_db
-        self.pocket_index = pocket_index
-        self.num_generate = num_generate
-        self.batch_size = batch_size
-        self.num_steps = num_steps
-        self.mol_size = list(mol_size) if mol_size else []
+        super().__init__(
+            task,
+            pocket_db=pocket_db,
+            pocket_index=pocket_index,
+            num_generate=num_generate,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            mol_size=mol_size,
+            output_path=output_path,
+            seed=seed,
+            device=device,
+            **kwargs,
+        )
         self.fixed_atom_indices = (
             list(fixed_atom_indices) if fixed_atom_indices else []
         )
@@ -606,16 +612,14 @@ class DiffSBDDPocketGenerator:
         self.resamplings = resamplings
         self.center = center
         self.jump_length = jump_length
-        self.output_path = output_path
-        self.seed = seed
-        self.device = device or (
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
 
     def _item(self) -> Dict[str, Any]:
         # center=False: the sampled ligand comes back in this pocket's own
         # frame and overlays on the original structure.
         return DiffSBDDDataset(self.pocket_db, center=False)[self.pocket_index]
+
+    def _pocket(self) -> Dict[str, Any]:
+        return self._item()
 
     def _pocket_batch(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
         """Tile one pocket ``n`` times, with fresh scatter indices."""
@@ -629,12 +633,12 @@ class DiffSBDDPocketGenerator:
             "num_pocket_nodes": torch.full((n,), size, dtype=INT_TYPE),
         }
 
+    def _repeat(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
+        return self._pocket_batch(item, n)
+
     def _explicit_sizes(self, n: int) -> Optional[torch.Tensor]:
-        if self.mol_size:
-            return torch.tensor(
-                random.choices(self.mol_size, k=n), dtype=INT_TYPE
-            )
-        return None
+        """Explicit sizes, or ``None`` for the pocket-conditioned prior."""
+        return self._sizes(n)
 
     def _fixed_ligand(self, item: Dict[str, Any], n: int):
         """Build the zero ligand + ``lig_fixed``, as ``inpaint.py:114-141``."""
@@ -668,56 +672,26 @@ class DiffSBDDPocketGenerator:
         ligand = {"x": x, "one_hot": one_hot, "size": sizes, "mask": mask}
         return ligand, lig_fixed, n_fixed
 
-    def run(self) -> None:
-        from MolecularDiffusion.utils.geom_utils import save_xyz_file
+    def _sample_kwargs(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
+        ligand, lig_fixed = None, None
+        if self.fixed_atom_indices:
+            ligand, lig_fixed, _ = self._fixed_ligand(item, n)
+        return {
+            "ligand": ligand,
+            "lig_fixed": lig_fixed,
+            "resamplings": self.resamplings,
+            "center": self.center,
+            "jump_length": self.jump_length,
+        }
 
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        os.makedirs(self.output_path, exist_ok=True)
-
-        self.task.to(self.device)
-        self.task.eval()
-        item = self._item()
+    def _start(self, item: Dict[str, Any]) -> None:
         what = (
             f"inpainting around {len(self.fixed_atom_indices)} fixed atoms"
             if self.fixed_atom_indices
             else "de novo"
         )
         print(
-            f"[diffsbdd] pocket '{item['name']}': "
+            f"[{self.tag}] pocket '{item['name']}': "
             f"{len(item['pocket_coords'])} atoms, mode={self.task.mode}, "
             f"{what}, generating {self.num_generate} ligands"
         )
-
-        written = 0
-        bar = tqdm(total=self.num_generate, desc="Sampling ligands", leave=True)
-        while written < self.num_generate:
-            n = min(self.batch_size, self.num_generate - written)
-            ligand, lig_fixed = None, None
-            if self.fixed_atom_indices:
-                ligand, lig_fixed, _ = self._fixed_ligand(item, n)
-
-            one_hot, _charges, coords, node_mask = self.task.sample(
-                batch=self._pocket_batch(item, n),
-                nodesxsample=self._explicit_sizes(n),
-                num_steps=self.num_steps,
-                ligand=ligand,
-                lig_fixed=lig_fixed,
-                resamplings=self.resamplings,
-                center=self.center,
-                jump_length=self.jump_length,
-            )
-            save_xyz_file(
-                self.output_path,
-                one_hot.cpu(),
-                coords.cpu(),
-                self.task.atom_vocab,
-                id_from=written,
-                name="molecule",
-                node_mask=node_mask.cpu(),
-            )
-            written += n
-            bar.update(n)
-        bar.close()
-        print(f"[diffsbdd] wrote {written} ligands to {self.output_path}")

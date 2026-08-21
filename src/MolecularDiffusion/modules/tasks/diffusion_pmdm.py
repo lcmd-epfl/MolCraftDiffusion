@@ -27,7 +27,6 @@ gradient guidance.
 
 from __future__ import annotations
 
-import os
 import random
 from collections import Counter
 from types import SimpleNamespace
@@ -36,7 +35,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from MolecularDiffusion.data.component.pmdm_data import (
     PMDM_ATOM_VOCAB,
@@ -44,6 +42,7 @@ from MolecularDiffusion.data.component.pmdm_data import (
     fully_connected_edges,
 )
 from MolecularDiffusion.modules.models.pmdm import PMDMEpsNet
+from MolecularDiffusion.modules.tasks.pocket_generator import PocketGenerator
 
 INT_TYPE = torch.int64
 
@@ -360,14 +359,28 @@ class ModelTaskFactory:
         return self.task
 
 
-class PMDMPocketGenerator:
+class PMDMPocketGenerator(PocketGenerator):
     """Pocket-conditioned generation behind ``interference/gen_pmdm_pocket``.
 
     The pocket comes from one row of a converted ASE db
     (``docs/model_integrations/pmdm/scripts/convert_dataset.py``), read with
     ``center=False`` so the sampled ligand comes back in that pocket's own
     frame.
+
+    The only generator that may write FEWER than ``num_generate``: unusable
+    samples are filtered out and resampled, bounded by ``max_retries``.
+
+    The sampling loop itself lives in :class:`PocketGenerator`.
     """
+
+    tag = "pmdm"
+    # never seeded numpy; seeding it would change what this model generates.
+    seed_numpy = False
+    db_required_msg = (
+        "interference.pocket_db is required: PMDM has no unconditional "
+        "mode. Point it at a converted ASE db "
+        "(scripts/convert_dataset.py)."
+    )
 
     def __init__(
         self,
@@ -394,24 +407,22 @@ class PMDMPocketGenerator:
         max_retries: int = 10,
         **kwargs: Any,
     ) -> None:
-        if not pocket_db:
-            raise ValueError(
-                "interference.pocket_db is required: PMDM has no unconditional "
-                "mode. Point it at a converted ASE db "
-                "(scripts/convert_dataset.py)."
-            )
-        self.task = task
-        self.pocket_db = pocket_db
-        self.pocket_index = pocket_index
-        self.num_generate = num_generate
-        self.batch_size = batch_size
-        self.num_steps = num_steps
-        self.mol_size = list(mol_size) if mol_size else []
-        self.output_path = output_path
-        self.seed = seed
+        super().__init__(
+            task,
+            pocket_db=pocket_db,
+            pocket_index=pocket_index,
+            num_generate=num_generate,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            mol_size=mol_size,
+            output_path=output_path,
+            seed=seed,
+            device=device,
+            **kwargs,
+        )
         self.validity_filter = validity_filter
         self.max_retries = max_retries
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._rejected: list = []
         self.sampler_kwargs = dict(
             sampling_type=sampling_type,
             step_lr=step_lr,
@@ -446,6 +457,9 @@ class PMDMPocketGenerator:
         if self.mol_size:
             return torch.tensor(random.choices(self.mol_size, k=n), dtype=INT_TYPE)
         return self.task.node_dist_model.sample(n).clamp(min=2)
+
+    def _sample_kwargs(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
+        return self.sampler_kwargs
 
     def _reject_reason(self, symbols: list, coords: torch.Tensor) -> Optional[str]:
         """``None`` if the molecule is usable, else why it was rejected.
@@ -496,69 +510,27 @@ class PMDMPocketGenerator:
         self._rejected.extend(r for r in rejects if r)
         return keep
 
-    def run(self) -> None:
-        from MolecularDiffusion.utils.geom_utils import save_xyz_file
-
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        os.makedirs(self.output_path, exist_ok=True)
-
-        self.task.to(self.device)
-        self.task.eval()
-        item = self._pocket()
+    def _start(self, item: Dict[str, Any]) -> None:
+        self._rejected = []
         print(
-            f"[pmdm] pocket '{item['name']}': {len(item['protein_pos'])} atoms, "
+            f"[{self.tag}] pocket '{item['name']}': {len(item['protein_pos'])} atoms, "
             f"generating {self.num_generate} ligands"
         )
 
-        self._rejected: list = []
-        written = attempts = 0
-        # Upstream resamples on failure (sample.py:320, try_num=10) rather than
-        # emitting a broken molecule. Bound it the same way, per shortfall.
-        max_attempts = max(1, self.max_retries) * max(
-            1, -(-self.num_generate // self.batch_size)
-        )
-        bar = tqdm(total=self.num_generate, desc="Sampling ligands", leave=True)
-        while written < self.num_generate and attempts < max_attempts:
-            attempts += 1
-            n = min(self.batch_size, self.num_generate - written)
-            one_hot, _charges, coords, node_mask = self.task.sample(
-                batch=self._repeat(item, n),
-                nodesxsample=self._sizes(n),
-                num_steps=self.num_steps,
-                **self.sampler_kwargs,
-            )
-            one_hot, coords, node_mask = one_hot.cpu(), coords.cpu(), node_mask.cpu()
-            keep = self._accept(one_hot, coords, node_mask)
-            if not keep:
-                continue
-            index = torch.tensor(keep, dtype=torch.long)
-            save_xyz_file(
-                self.output_path,
-                one_hot[index],
-                coords[index],
-                self.task.atom_vocab,
-                id_from=written,
-                name="molecule",
-                node_mask=node_mask[index],
-            )
-            written += len(keep)
-            bar.update(len(keep))
-        bar.close()
-
+    def _summary(self, written: int, attempts: int) -> None:
         if self.validity_filter:
             counts = Counter(self._rejected)
             total = written + sum(counts.values())
             print(
-                f"[pmdm] kept {written}/{total} sampled "
+                f"[{self.tag}] kept {written}/{total} sampled "
                 f"({100 * written / total if total else 0:.0f}%); "
                 f"rejected: {dict(counts) or 'none'}"
             )
         if written < self.num_generate:
             # Never report a short run as a full one.
             print(
-                f"[pmdm] WARNING: wrote {written} of {self.num_generate} requested "
+                f"[{self.tag}] WARNING: wrote {written} of {self.num_generate} requested "
                 f"after {attempts} sampling rounds. Raise interference.max_retries, "
                 "or set interference.validity_filter=false to keep raw samples."
             )
-        print(f"[pmdm] wrote {written} ligands to {self.output_path}")
+        print(f"[{self.tag}] wrote {written} ligands to {self.output_path}")

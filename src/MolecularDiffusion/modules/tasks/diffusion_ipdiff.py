@@ -43,14 +43,10 @@ Out of scope this pass (see the integration plan): CFG/guidance of any kind
 
 from __future__ import annotations
 
-import os
-import random
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from MolecularDiffusion.data.component.kgdiff_data import (
     KGDIFF_ATOM_VOCAB,
@@ -370,51 +366,22 @@ class IPDiffPocketGenerator(KGDiffPocketGenerator):
     same object (one row of an ASE db written by
     ``docs/model_integrations/kgdiff/scripts/convert_dataset.py``) and the
     tiling / size-drawing logic is identical. The only difference is that
-    IPDiff has no guidance knobs to pass through, so ``run`` is re-stated
-    without them.
+    IPDiff has no guidance knobs to pass through: its conditioning IS the
+    pretrained prior, so ``_sample_kwargs`` drops them.
     """
+
+    tag = "ipdiff"
 
     def __init__(self, task, **kwargs: Any) -> None:
         kwargs.setdefault("output_path", "generated_ipdiff")
         super().__init__(task=task, **kwargs)
 
-    def run(self) -> None:
-        from MolecularDiffusion.utils.geom_utils import save_xyz_file
+    def _sample_kwargs(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
+        return {"progress": False}
 
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        os.makedirs(self.output_path, exist_ok=True)
-
-        self.task.to(self.device)
-        self.task.eval()
-        item = self._pocket()
+    def _start(self, item: Dict[str, Any]) -> None:
         print(
-            f"[ipdiff] pocket '{item['name']}': "
+            f"[{self.tag}] pocket '{item['name']}': "
             f"{len(item['protein_pos'])} atoms, generating "
             f"{self.num_generate} ligands"
         )
-
-        written = 0
-        bar = tqdm(total=self.num_generate, desc="Sampling ligands", leave=True)
-        while written < self.num_generate:
-            n = min(self.batch_size, self.num_generate - written)
-            one_hot, _charges, coords, node_mask = self.task.sample(
-                batch=self._repeat(item, n),
-                nodesxsample=self._sizes(n),
-                num_steps=self.num_steps,
-                progress=False,
-            )
-            save_xyz_file(
-                self.output_path,
-                one_hot.cpu(),
-                coords.cpu(),
-                self.task.atom_vocab,
-                id_from=written,
-                name="molecule",
-                node_mask=node_mask.cpu(),
-            )
-            written += n
-            bar.update(n)
-        bar.close()
-        print(f"[ipdiff] wrote {written} ligands to {self.output_path}")

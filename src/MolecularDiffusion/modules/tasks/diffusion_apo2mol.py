@@ -45,14 +45,11 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from MolecularDiffusion.data.component.apo2mol_data import (
     APO2MOL_ATOM_VOCAB,
@@ -77,6 +74,7 @@ from MolecularDiffusion.modules.tasks.diffusion_kgdiff import (
     KGDiffDiffusionTask,
     PocketSizePrior,
 )
+from MolecularDiffusion.modules.tasks.pocket_generator import PocketGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +499,7 @@ def write_pocket_pdb(
         fh.write("END\n")
 
 
-class Apo2MolPocketGenerator:
+class Apo2MolPocketGenerator(PocketGenerator):
     """Pocket-conditioned generation behind ``interference/gen_apo2mol_pocket``.
 
     The apo pocket comes from one row of a converted ASE db
@@ -521,7 +519,16 @@ class Apo2MolPocketGenerator:
     measure **displacement from the input apo structure**, not accuracy. Set
     it to ``true`` on a db row converted from a real apo/holo pair to get a
     genuine accuracy number instead.
+
+    The sampling loop itself lives in :class:`PocketGenerator`.
     """
+
+    tag = "apo2mol"
+    db_required_msg = (
+        "interference.pocket_db is required: Apo2Mol has no "
+        "unconditional mode. Point it at a converted ASE db "
+        "(docs/model_integrations/apo2mol/scripts/convert_dataset.py)."
+    )
 
     def __init__(
         self,
@@ -536,25 +543,23 @@ class Apo2MolPocketGenerator:
         output_path: str = "generated_apo2mol",
         seed: int = 42,
         device: Optional[str] = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> None:
-        if not pocket_db:
-            raise ValueError(
-                "interference.pocket_db is required: Apo2Mol has no "
-                "unconditional mode. Point it at a converted ASE db "
-                "(docs/model_integrations/apo2mol/scripts/convert_dataset.py)."
-            )
-        self.task = task
-        self.pocket_db = pocket_db
-        self.pocket_index = pocket_index
-        self.num_generate = num_generate
-        self.batch_size = batch_size
-        self.num_steps = num_steps
-        self.mol_size = list(mol_size) if mol_size else []
+        super().__init__(
+            task,
+            pocket_db=pocket_db,
+            pocket_index=pocket_index,
+            num_generate=num_generate,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            mol_size=mol_size,
+            output_path=output_path,
+            seed=seed,
+            device=device,
+            **kwargs,
+        )
         self.use_holo_reference = use_holo_reference
-        self.output_path = output_path
-        self.seed = seed
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._rows: List[str] = []
 
     def _pocket(self) -> Dict[str, Any]:
         return Apo2MolDataset(self.pocket_db)[self.pocket_index]
@@ -590,13 +595,8 @@ class Apo2MolPocketGenerator:
             "protein_atom_to_aa_name": [item["protein_atom_to_aa_name"]] * n,
         }
 
-    def _sizes(self, n: int) -> Optional[torch.Tensor]:
-        """Explicit sizes, or ``None`` to let the pocket prior decide."""
-        if self.mol_size:
-            return torch.tensor(
-                random.choices(self.mol_size, k=n), dtype=INT_TYPE
-            )
-        return None
+    def _sample_kwargs(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
+        return {"progress": False}
 
     def _write_pockets(self, item, written: int, n: int, rows: List[str]) -> None:
         pocket = self.task.last_pocket
@@ -615,59 +615,29 @@ class Apo2MolPocketGenerator:
             tm = pocket["tmscore"][j] if j < len(pocket["tmscore"]) else float("nan")
             rows.append(f"{written + j},{rmsd:.4f},{tm:.4f}\n")
 
-    def run(self) -> None:
-        from MolecularDiffusion.utils.geom_utils import save_xyz_file  # noqa: PLC0415
+    def _after_batch(self, item: Dict[str, Any], written: int, n: int) -> None:
+        self._write_pockets(item, written, n, self._rows)
 
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        os.makedirs(self.output_path, exist_ok=True)
-
-        self.task.to(self.device)
-        self.task.eval()
-        item = self._pocket()
+    def _start(self, item: Dict[str, Any]) -> None:
+        self._rows = ["sample,pocket_rmsd,pocket_tmscore\n"]
         reference = "holo" if self.use_holo_reference else "apo (upstream default)"
         print(
-            f"[apo2mol] pocket '{item['name']}': {len(item['protein_pos'])} "
+            f"[{self.tag}] pocket '{item['name']}': {len(item['protein_pos'])} "
             f"atoms / {len(item['protein_rotations'])} residues, pocket "
             f"reference = {reference}, generating {self.num_generate} ligands"
         )
 
-        rows = ["sample,pocket_rmsd,pocket_tmscore\n"]
-        written = 0
-        bar = tqdm(total=self.num_generate, desc="Sampling ligands", leave=True)
-        while written < self.num_generate:
-            n = min(self.batch_size, self.num_generate - written)
-            one_hot, _charges, coords, node_mask = self.task.sample(
-                batch=self._repeat(item, n),
-                nodesxsample=self._sizes(n),
-                num_steps=self.num_steps,
-                progress=False,
-            )
-            save_xyz_file(
-                self.output_path,
-                one_hot.cpu(),
-                coords.cpu(),
-                self.task.atom_vocab,
-                id_from=written,
-                name="molecule",
-                node_mask=node_mask.cpu(),
-            )
-            self._write_pockets(item, written, n, rows)
-            written += n
-            bar.update(n)
-        bar.close()
-
+    def _summary(self, written: int, attempts: int) -> None:  # noqa: ARG002
         metrics_path = os.path.join(self.output_path, "pocket_metrics.csv")
         with open(metrics_path, "w") as fh:
-            fh.writelines(rows)
+            fh.writelines(self._rows)
         print(
-            f"[apo2mol] wrote {written} ligands, {written} pocket .pdb "
+            f"[{self.tag}] wrote {written} ligands, {written} pocket .pdb "
             f"sidecars and {metrics_path} to {self.output_path}"
         )
         if not self.use_holo_reference:
             print(
-                "[apo2mol] NOTE: pocket_rmsd / pocket_tmscore are measured "
+                f"[{self.tag}] NOTE: pocket_rmsd / pocket_tmscore are measured "
                 "against the INPUT APO structure (use_holo_reference=false), "
                 "so they report displacement, not accuracy against a true "
                 "holo structure."

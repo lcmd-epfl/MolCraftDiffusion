@@ -1,10 +1,17 @@
 # De-novo pocket-conditioned generation for DiffSBDD.
 #
 # GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel for
-# "which pocket", so this points at a dedicated generator, exactly as
-# gen_kgdiff_pocket.yaml / gen_pmdm_pocket.yaml do. cli/generate.py only calls
-# `instantiate(cfg.interference, task=task)` then `.run()`, so every key here
-# goes straight to that generator's __init__ -- nothing needs registering.
+# "which pocket", so pocket models bypass it. The reverse loop itself is
+# shared: modules/tasks/pocket_generator.py::PocketGenerator owns it, and the
+# `_target_` below is that model's thin subclass, which supplies only what
+# genuinely differs (how the pocket is read, how it is tiled, its sampler
+# kwargs). cli/generate.py only calls `instantiate(cfg.interference,
+# task=task)` then `.run()`.
+#
+# THIS config exists for the inpainting knobs (fixed_atom_indices,
+# add_n_nodes, resamplings, center, jump_length) -- see gen_diffsbdd_inpaint.
+# For a run needing none of that, interference/gen_pocket.yaml carries the
+# nine keys every pocket model shares and picks the subclass off the task.
 #
 # There is no unconditional mode: ConditionalDDPM.sample() itself raises
 # without a pocket (conditional_model.py:474).
