@@ -1,0 +1,105 @@
+# @package _global_
+# Generation with multi-LigandDiff from the CONVERTED PRETRAINED checkpoint.
+#
+# WHAT THE MODEL DOES / CONDITIONS ON
+# -----------------------------------
+# multi-LigandDiff regenerates SEVERAL ligands of a 3D transition-metal
+# complex at once -- everything from "replace two ligands" to "build the whole
+# coordination sphere onto a bare metal". It is conditional-only: you must
+# supply a scaffold (the metal plus whatever ligands you want kept) as an
+# .xyz, and the model grows new ligands onto its free coordination sites.
+# Dispatch is the platform's generic "outpaint" mode -- freeze the reference,
+# draw a strictly larger total atom count, denoise the difference.
+#
+# The model is hardcoded OCTAHEDRAL: the scaffold's occupied coordination
+# sites plus the generated ligands' denticities always sum to 6 (upstream
+# generate.py:210). If the scaffold already occupies all 6, generation raises
+# rather than produce nothing.
+#
+# PREREQUISITE -- convert the checkpoint first
+# ---------------------------------------------
+#   python docs/model_integrations/ligandiff_multi/scripts/convert_checkpoint.py \
+#     --src others/multi_LigandDiff/model/pre_trained.ckpt \
+#     --out docs/model_integrations/ligandiff_multi/checkpoints/converted/ligandiff_multi_pretrained.ckpt
+#
+# That conversion renames exactly two keys (ligand_site_embedding ->
+# ligand_group_embedding) and drops nothing: 238/238 tensors, asserted, then
+# re-verified byte-identical after loading through cli/generate.py's real path.
+#
+# The reference scaffold below was extracted from the val split with:
+#   python docs/model_integrations/ligandiff_multi/scripts/extract_reference_complex.py \
+#     --pt-path docs/model_integrations/ligandiff_multi/data/multi_ligand_val_noH.pt \
+#     --out docs/model_integrations/ligandiff_multi/data/reference_complex.xyz \
+#     --min-atoms 8 --max-atoms 25 --min-free-sites 2
+# Point `reference_structure_path` at your own .xyz to use a different
+# complex. It must be hydrogen-free, list the metal FIRST, and contain only
+# the 8 heavy atoms (C,N,O,S,Br,Cl,P,F) and one of the 20 supported metals --
+# preprocess_ref_structure resolves elements with allow_unknown=False and
+# raises on anything else.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+# --------------------------------------------
+# * ONLY SEVEN METALS ARE REALLY SUPPORTED. Every complex in all three Zenodo
+#   splits has a metal in {Cr, Mn, Fe, Co, Ni, Cu, Zn} (Z 24-30). The other
+#   thirteen entries of atom_vocab exist so such complexes can be PARSED; the
+#   released weights have never seen them.
+# * `diffusion_noise_schedule: learned` is what the released weights were
+#   trained with. It is the task config's default here, so nothing needs
+#   overriding -- but do not change it: under any other schedule the eight
+#   edm.gamma.* tensors arrive as unexpected keys and cli/generate.py:322's
+#   strict=False load drops them silently, running generation on the wrong
+#   schedule while looking fine.
+# * `mol_size` is the TOTAL atom count (scaffold + ALL new ligands), not the
+#   ligand size. It must exceed the scaffold's atom count, and leave at least
+#   one atom per free coordination site. Change it whenever you change the
+#   scaffold.
+# * The scaffold's `ligand_group` slots and `coord_site` flags are recovered
+#   from geometry (connected components of the covalent-radius graph after
+#   deleting the metal; contact with the metal, respectively) rather than from
+#   molSimplify, which upstream used. The two agree on the bundled scaffold
+#   and on ordinary mononuclear complexes; bridged/polynuclear cases may
+#   differ.
+# * Upstream enumerates EVERY octahedral denticity partition per reference;
+#   this port draws one at random per sample instead, so `num_generate`
+#   provides the coverage. Pin it with
+#   `interference.condition_configs.outpaint_cfgs.denticity_split`.
+
+defaults:
+  - tasks: diffusion_ligandiff_multi
+  - interference: gen_outpaint
+  - _self_
+
+name: "ligandiff_multi_generate_pretrained"
+
+# cli/generate.py:386 accepts a file or a directory.
+chkpt_directory: ${asset:ligandiff_multi/pretrained/ligandiff_multi_pretrained.ckpt}
+
+seed: 42
+
+# Mandatory as a *value*: cli/generate.py:598 hard-reads cfg.atom_vocab while
+# building load_model()'s kwargs, before the task-yaml precedence check at
+# cli/generate.py:95/309 can supersede it. Same 28-entry decode-side list as
+# configs/tasks/diffusion_ligandiff_multi.yaml -- 8 upstream heavy atoms at
+# indices 0..7, 20 metals at 8..27. The decode path depends on that ordering.
+atom_vocab: [C, N, O, S, Br, Cl, P, F,
+             Ti, V, Cr, Mn, Fe, Co, Ni, Cu, Zn, Zr,
+             Mo, Ru, Rh, Pd, Cd, W, Re, Os, Ir, Pt]
+
+# Architecture is the released checkpoint's, already the task-config default
+# (ligand_group_node_nf 7, hidden_nf 192, n_layers 5, drop_rate 0.2, 500
+# steps, learned schedule, normalize_factors [10, 4, 1]). Nothing to override.
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  output_path: generated_ligandiff_multi
+  n_frames: 0
+  # TOTAL atoms. The bundled 8-atom Co scaffold occupies 2 of 6 coordination
+  # sites, so 4 remain and the complex it came from had 12 atoms in the
+  # removed ligands. 16-28 total leaves 8-20 atoms for the new ligands.
+  mol_size: [16, 28]
+  condition_configs:
+    reference_structure_path: ${asset:ligandiff_multi/data/reference_complex.xyz}
+    # Optional: pin the denticity partition of the free coordination sites,
+    # e.g. outpaint_cfgs: {denticity_split: [2, 2]}. Omitted so each sample
+    # draws a random feasible partition from CN_OCT.

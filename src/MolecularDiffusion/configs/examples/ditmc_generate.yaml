@@ -1,0 +1,68 @@
+# @package _global_
+# Conformer generation with DiTMC, from the CONVERTED PRETRAINED weights.
+#
+#   MolCraftDiff generate configs/ditmc_generate.yaml
+#
+# PREREQUISITE -- run once:
+#
+#   python docs/model_integrations/ditmc/scripts/convert_checkpoint.py \
+#       --source <unpacked Zenodo>/checkpoints/qm9/so3 --variant so3
+#
+# That script reads upstream's Orbax checkpoint tree, remaps it onto this
+# task's state_dict, ASSERTS that every key the task needs exists in the source
+# with a matching shape and that every dropped source key is provably droppable,
+# and writes
+#   docs/model_integrations/ditmc/checkpoints/converted/ditmc_so3_pretrained.ckpt
+# That assertion set is load-bearing: cli/generate.py loads with strict=False,
+# so a bad or absent remap loads NOTHING and still emits plausible-looking
+# molecules. Do not skip the script and hand-copy anything.
+#
+# *** CURRENT STATUS: the conversion is BLOCKED. *** Reading an Orbax tree
+# needs `orbax-checkpoint` (which pulls jax and tensorstore), and none of those
+# are installed. Nothing has been installed without approval. Until they are,
+# this config will fail to find its checkpoint AND WILL SAY SO -- it does not
+# fall back to the smoke-test run or to random weights, because both would
+# generate confident nonsense. See docs/model_integrations/ditmc/
+# INTEGRATION_PLAN.md, "Pretrained checkpoints", for the exact install command
+# and the recommendation to do it in a throwaway environment.
+#
+# WHAT IT CONDITIONS ON: the atoms and bonds of the molecule you supply, and
+# nothing else. Set `interference.sample_input` below -- an inline SMILES list,
+# a .smi/.txt, a .sdf, or a graph3d .db. Coordinates are generated, never read
+# from the input; when you pass a file that carries geometry, that geometry is
+# used only as the RMSD reference, never as model input.
+#
+# This uses the SHARED conformer mode (gen_conformer), the same one LoQI and
+# NExT-Mol use, so the input keys and the output layout are identical across
+# all three models.
+defaults:
+  - tasks: diffusion_ditmc
+  - interference: gen_conformer
+  - hydra: default
+  - _self_
+
+name: "ditmc_generate"
+seed: 42
+
+# cli/generate.py accepts a file or a directory here.
+chkpt_directory: ${asset:ditmc/so3/ditmc_so3_pretrained.ckpt}
+
+# cli/generate.py:656 reads cfg.atom_vocab unconditionally under struct mode.
+# QM9 elements, same order as configs/data/ditmc_qm9_dataset.yaml.
+atom_vocab: [H, C, N, O, F]
+
+tasks:
+  variant: so3
+  dataset: qm9
+
+interference:
+  # CHANGE ME: an inline SMILES list, or a path to .smi/.txt/.sdf/graph3d .db.
+  sample_input: ["CC(=O)Oc1ccccc1C(=O)O"]   # aspirin
+  conformers_per_molecule: 20
+  batch_size: 10
+  # DiTMC's own sampler settings, forwarded verbatim to generate_conformers().
+  sampler_kwargs:
+    num_steps: 50
+    free_guidance_scale: 1.0
+    logarithmic_time_bool: false
+  output_path: generated_ditmc

@@ -17,7 +17,7 @@ def download(url, path, save_file=None, md5=None):
         save_file (str, optional): name of save file. If not specified, infer the file name from the URL.
         md5 (str, optional): MD5 of the file
     """
-    from six.moves.urllib.request import urlretrieve
+    from urllib.request import urlretrieve
 
     if save_file is None:
         save_file = os.path.basename(url)

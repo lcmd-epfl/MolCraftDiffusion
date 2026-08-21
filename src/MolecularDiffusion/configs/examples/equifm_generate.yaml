@@ -1,0 +1,62 @@
+# EquiFM generation from MolFM's RELEASED pretrained QM9 weights.
+#
+# PREREQUISITE (one command, no download -- the weights ship inside the target
+# repo clone at others/MolFM/sampling/generative_model_ema_0.npy):
+#
+#   python docs/model_integrations/equifm/scripts/convert_checkpoint.py
+#
+# That writes docs/model_integrations/equifm/checkpoints/converted/
+# equifm_pretrained.ckpt and verifies, after loading it back through
+# cli/generate.py's real path, that all 140 live tensors are byte-identical to
+# the source. (cli/generate.py loads with strict=False, so an unverified remap
+# would load nothing and still emit plausible-looking molecules.)
+#
+# WHAT THE MODEL CONDITIONS ON
+#   Nothing. Unconditional QM9 generation: coordinates + atom type + integer
+#   charge, zero centre-of-mass, no bonds. args.pickle confirms the released
+#   checkpoint is the unconditional model (conditioning=[], context_node_nf=0);
+#   the paper's property-conditional variant (§5.3) has no released weights.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. discrete_path MUST be HB_path for these weights. args.pickle records
+#      discrete_path='HB_path', meaning the network emits velocity / M_para on
+#      the h channels and the sampler must multiply it back in. Sampling them
+#      with OT_path silently drops that reweighting and degrades atom types.
+#      Conversely, a model you train yourself with configs/equifm_train.yaml is
+#      an OT_path model -- use configs/equifm_generate_trained.yaml for it.
+#   2. The ODE solver is fixed-step RK4, not the paper's adaptive dopri5
+#      (torchdiffeq is deliberately not a dependency). `diffusion_steps` below
+#      is the number of RK4 steps; each costs 4 network evaluations. Paper
+#      Fig. 3 shows fixed-step integrators reaching ~0.87-0.88 molecule
+#      stability against the dopri5 headline of 0.883.
+#   3. The molecule-size prior is the atom-count histogram of the full QM9 db
+#      (data/qm9.db, 133,885 molecules), synthesised during conversion because
+#      the upstream release ships no histogram -- their notebook took sizes from
+#      the command line.
+#   4. The generated `charges` channel is noisy (an EDM-family artifact of the
+#      /10 charge normalisation); the atom identity written to the .xyz comes
+#      from the one-hot channel, which is the reliable one.
+
+defaults:
+  - tasks: diffusion_equifm
+  - interference: gen_unconditional
+  - _self_
+
+name: "equifm_gen_qm9_pretrained"
+chkpt_directory: ${asset:equifm/pretrained/equifm_pretrained.ckpt}
+atom_vocab: [H, C, N, O, F]
+seed: 9
+
+# Fixed-step RK4 steps. 100 steps = 400 network evaluations; drop to ~50 to
+# halve the cost at a small quality cost.
+diffusion_steps: 100
+
+tasks:
+  discrete_path: HB_path   # required by these weights -- see limitation 1
+
+interference:
+  batch_size: 16
+  num_generate: 100
+  mol_size: [0, 0]         # [0,0] => draw sizes from the QM9 histogram prior
+  n_frames: 0
+  output_path: equifm_gen_qm9_pretrained

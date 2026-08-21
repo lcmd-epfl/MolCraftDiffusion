@@ -1,0 +1,71 @@
+# @package _global_
+# Pocket-conditioned generation from PMDM's CONVERTED PRETRAINED weights
+# (upstream `500.pt`, iteration 500, CrossDocked).
+#
+#   MolCraftDiff generate configs/pmdm_generate.yaml
+#
+# PREREQUISITE -- run once, if the converted checkpoint is not already there:
+#
+#   curl -L -o 500.pt \
+#     "https://zenodo.org/records/10630921/files/500.pt?download=1"
+#   python docs/model_integrations/pmdm/scripts/convert_checkpoint.py --ckpt 500.pt
+#
+# The released 500.pt is NOT loadable directly: it is a bare upstream training
+# checkpoint (it even pickles an `easydict` config object, which this env does
+# not have). The script keeps 212 of its 542 tensors and proves the other 330
+# are droppable rather than assuming it -- 330 are byte-identical duplicates
+# created by two `nn.ModuleList` aliases, the rest are modules upstream
+# registered but never calls. That proof is load-bearing: cli/generate.py:322
+# loads with strict=False, so a bad remap would load NOTHING and still emit
+# plausible-looking molecules. Do not hand-copy the file.
+#
+# POCKET. Set `interference.pocket_db` to a converted ASE db
+# (scripts/convert_dataset.py) and `pocket_index` to the row you want. The
+# pocket is read with center=false, so generated ligands come back in that
+# pocket's own coordinate frame and overlay on the original structure.
+# There is no unconditional mode -- PMDM's network always consumes a pocket.
+#
+# LIGAND SIZE. Upstream's checkpoint carries no size distribution (their
+# sampler took sizes from the command line), so the converter builds one from
+# the ligands in the db it is pointed at. With the default 31-complex smoke
+# set that prior is narrow (16-33 atoms). Either re-run the converter against
+# a larger db, or override `interference.mol_size: [20, 24, 28]` to sample
+# uniformly from a fixed list instead.
+
+defaults:
+  - tasks: diffusion_pmdm
+  - interference: gen_pmdm_pocket
+  - _self_
+
+name: "pmdm_generate"
+chkpt_directory: ${asset:pmdm/pretrained/pmdm_pretrained.ckpt}
+# Must match tasks.num_atom in length. utils/transforms.py:45-47 ->
+# atomic numbers [1, 6, 7, 8, 9, 15, 16, 17, 34, 119]. The last slot is
+# upstream's Z=119 placeholder and is written to .xyz as the literal symbol
+# `others`, which strict xyz readers reject.
+atom_vocab: [H, C, N, O, F, P, S, Cl, Se, others]
+seed: 42
+
+interference:
+  pocket_db: ${asset:pmdm/data/pmdm_smoke.db}
+  pocket_index: 15
+
+  num_generate: 24
+  batch_size: 4     # bump to 64 for ~10x wall-clock: the 1000 steps are
+                    # sequential per batch, but the batch itself is parallel
+                    # and 4 leaves the GPU idle (~440 MiB).
+  num_steps: null   # null => the model's full T (1000). Lower it to trade
+                    # sample quality for speed.
+  mol_size: []      # empty => the size prior baked into the checkpoint
+
+  # OFF deliberately. The filter works (it reproduces a hand analysis exactly),
+  # but its resample loop yields a ~2% pass rate against ~13% for plain
+  # unfiltered runs -- two runs each way, consistent within mode. Since the
+  # first batch is identical by seed, later batches in the retry loop must be
+  # degrading, which points at state carried across successive sample() calls
+  # rather than at the model. Until that is diagnosed, raw output is the
+  # trustworthy path. Turning this on also costs ~8x wall clock (620s vs 78s),
+  # because ~98% of sampled molecules get discarded.
+  validity_filter: false
+  max_retries: 10
+  output_path: "generated_pmdm_2"

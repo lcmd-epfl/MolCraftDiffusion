@@ -73,7 +73,25 @@ See the [installation guide](https://preghosh.github.io/MolCraftDiffusion/instal
 
 ## Usage
 
-Pre-trained diffusion models are available on [Hugging Face](https://huggingface.co/pregHosh/MolecularDiffusion). Starting from a pretrained checkpoint is recommended for downstream tasks.
+Pre-trained diffusion models are available on [Hugging Face](https://huggingface.co/pregH/MolecularDiffusion). Starting from a pretrained checkpoint is recommended for downstream tasks.
+
+### Model zoo
+
+Pretrained weights, datasets and runnable example configs for every integrated
+model are resolved **by name** rather than by path, so an example config runs
+unchanged on any machine:
+
+```bash
+MolCraftDiff zoo list                        # what is available
+MolCraftDiff zoo fetch --model kgdiff        # pulls only what that model needs
+MolCraftDiff generate examples/kgdiff_generate.yaml
+```
+
+Assets are cached under `$MOLCRAFT_ASSETS` (default `~/.cache/molcraft/zoo`)
+and verified by sha256 on every fetch. The zoo repositories are currently
+private — access requires a HuggingFace token with permission. See the
+[quickstart tutorial](https://preghosh.github.io/MolCraftDiffusion/tutorials/quickstart_model_zoo.html)
+for the full command reference.
 
 ### CLI
 

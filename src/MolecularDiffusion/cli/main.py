@@ -230,6 +230,10 @@ cli.add_command(analyze)
 from MolecularDiffusion.cli.data import data
 cli.add_command(data)
 
+# Register zoo subcommand group
+from MolecularDiffusion.cli.zoo import zoo
+cli.add_command(zoo)
+
 
 def main():
     """Entry point."""

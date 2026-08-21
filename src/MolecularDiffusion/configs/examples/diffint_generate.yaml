@@ -1,0 +1,81 @@
+# @package _global_
+# Pocket-conditioned generation from DiffInt's CONVERTED PRETRAINED weights
+# (upstream checkpoints/best_model.ckpt, epoch 962, CrossDocked, CA pocket).
+#
+#   MolCraftDiff generate configs/diffint_generate.yaml
+#
+# PREREQUISITE -- run once:
+#
+#   python docs/model_integrations/diffint/scripts/convert_checkpoint.py
+#
+# It remaps the released checkpoint's 142 tensors (`ddpm.` -> `task.model.`),
+# ASSERTS the remapped key set and shapes equal a freshly built task, and
+# re-loads the result through cli/generate.py's real path to prove every live
+# tensor is byte-identical to the source. That assertion is load-bearing:
+# cli/generate.py:322 loads with strict=False, so a bad remap would load
+# NOTHING and still emit plausible-looking molecules. Do not skip the script
+# and hand-copy the file.
+#
+# WHAT THE MODEL CONDITIONS ON. A CA pocket (one node per residue within 8 A
+# of the reference ligand) PLUS two H-bond pseudo-atoms per detected
+# protein-ligand hydrogen bond, at 1/3 and 2/3 along the donor-acceptor
+# vector, in two extra one-hot channels (DD, AC). Those particles are the
+# whole point of DiffInt; without them this is plain DiffSBDD.
+#
+# CHOOSE A POCKET -- set exactly one source under `interference:`
+#
+#   (a) pocket_db + pocket_index   a row of a converted ASE db, particles
+#                                  already baked in. The default below:
+#                                  complex 0 of the converted CrossDocked
+#                                  test set.
+#
+#   (b) pocket_pdb + ref_sdf       a novel protein + a reference ligand pose.
+#                                  Preprocessed on the fly through
+#                                  Biopython/ODDT. Needs the [bio] extra:
+#                                      pip install '.[bio]' --no-deps
+#                                  Worked example (ships with DiffInt):
+#                                      pocket_db:  null
+#                                      pocket_pdb: others/DiffInt/example/1a2g_A_rec.pdb
+#                                      ref_sdf:    others/DiffInt/example/1a2g_A_rec.sdf
+#
+# The ref_sdf ligand is MANDATORY on path (b) and is not optional garnish:
+# hydrogen bonds are protein<->ligand, so without a bound pose there is
+# nothing to place particles between. Upstream's own generate_ligands() gets
+# this wrong -- it zero-pads the pocket one-hot to 22 columns and never adds
+# the particles, silently producing plain DiffSBDD output. This port follows
+# their test_single.py path instead, and prints a warning if ODDT finds no
+# H-bonds at all. The reference ligand is used only to define the pocket and
+# the interactions; it is not copied into the output.
+#
+# Ligand size is drawn from the released 2D joint histogram CONDITIONED on the
+# pocket's RESIDUE count (particles excluded, as upstream does). Override with
+# `mol_size: [20, 24, 28]` to sample uniformly from a fixed list instead.
+#
+# KNOWN LIMITATION: pockets with >=113 residues at the 8 A cutoff fall outside
+# that histogram and raise. Trim the PDB or set `mol_size` explicitly.
+
+defaults:
+  - tasks: diffusion_diffint
+  - interference: gen_diffint_pocket
+  - _self_
+
+name: "diffint_generate"
+# cli/generate.py accepts a file or a directory; point it straight at the
+# converted checkpoint.
+chkpt_directory: ${asset:diffint/pretrained/diffint_pretrained.ckpt}
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]
+seed: 42
+
+interference:
+  pocket_db: ${asset:diffint/data/diffint_smoke.db}
+  pocket_index: 0
+
+  pocket_pdb: null
+  ref_sdf: null
+  dist_cutoff: 8.0
+
+  num_generate: 20
+  batch_size: 4
+  num_steps: null   # null => the model's full T (500)
+  mol_size: []      # empty => 2D size prior conditioned on the residue count
+  output_path: "generated_diffint"

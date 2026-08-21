@@ -1,0 +1,86 @@
+# LoQI conformer generation from the CONVERTED PRETRAINED weights (FLOW MATCHING).
+#
+#   MolCraftDiff generate configs/loqi_flow_generate.yaml
+#
+# PREREQUISITES (three commands)
+#   1. Fetch the released checkpoint (363.8 MB), release DOI 10.1184/R1/31441570:
+#        curl -sL -o docs/model_integrations/loqi/checkpoints/raw/loqi_flow.ckpt \
+#            "https://ndownloader.figshare.com/files/62280790"
+#   2. Fetch + convert some conditioning molecules (see configs/loqi_train.yaml
+#      for the data commands) -- or skip this and point `sample_input` below at
+#      your own .sdf or .smi file, which is the real use case.
+#   3. Convert the checkpoint to a platform task checkpoint:
+#        python docs/model_integrations/loqi/scripts/convert_checkpoint.py \
+#            --variant flow
+#      The converter asserts every target tensor is present and shape-matched,
+#      justifies every dropped source tensor, and reloads the result through
+#      cli/generate.py's real path to confirm the live weights are
+#      byte-identical to the source's EMA weights. It keeps 412 tensors and
+#      drops 410 (the non-EMA training copies, dead at inference because
+#      ModelWithEMA.forward consults ema_model whenever not training).
+#
+# WHAT THE MODEL CONDITIONS ON
+#   A molecule you already have. LoQI does not invent chemistry: atom types,
+#   formal charges, bond orders and stereochemistry (E/Z and R/S) go in
+#   un-noised at every step and come back out unchanged; only the 3D
+#   coordinates are generated. `sample_input` is therefore not optional --
+#   without it there is nothing to make a conformer of.
+#
+#   Point it at:
+#     * an .sdf  -- conformers are regenerated for those molecules (best);
+#     * a .smi / .txt of SMILES -- an ETKDG conformer is embedded first, because
+#       stereochemistry is read FROM 3D. Annotate stereo in the SMILES (@/@@,
+#       /  \) or it is not imposed;
+#     * a graph3d ASE .db written by the dataset converter.
+#
+#   Every molecule in that pool gets `interference.conformers_per_molecule`
+#   conformers. Sizes are never drawn or enforced -- the input molecule
+#   dictates its own atom count -- so the conformer mode has no `mol_size`.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. 25 sampling steps is only the DEFAULT here. Unlike the diffusion
+#      variant, the flow model may be run at other step counts -- override with
+#      `MolCraftDiff generate configs/loqi_flow_generate.yaml tasks.timesteps=50`.
+#      This variant predicts a VELOCITY, so sample() returns the stepped state
+#      rather than the network output; that is `return_step_output: true` in
+#      configs/tasks/diffusion_loqi_flow.yaml and must not be turned off.
+#   2. The molecule-SIZE prior shipped inside the converted checkpoint is
+#      derived from the 200-molecule ChEMBL3D slice the dataset converter
+#      produces by default, not from LoQI's training distribution. The
+#      conformer mode never draws a size, so it is unused here -- it only
+#      mattered under the old `gen_unconditional` route.
+#   3. Output is grouped per input molecule: `mol_XXXX/conformer_YYY.xyz`
+#      plus `mol_XXXX/conformers.sdf` (same conformers WITH bonds and formal
+#      charges) and `mol_XXXX/reference.sdf`, indexed by `conformers.csv` at
+#      the output root -- which also carries the per-conformer RMSD to the
+#      input geometry. .xyz still has no bond channel; the .sdf is there
+#      precisely for that.
+#   4. No CFG, no gradient guidance, no inpainting: none exists upstream.
+#      Trajectories are not emitted either.
+defaults:
+  - tasks: diffusion_loqi_flow
+  - interference: gen_conformer
+  - _self_
+
+name: "loqi_flow_pretrained_gen"
+# A file path, not a directory -- cli/generate.py accepts either.
+chkpt_directory: ${asset:loqi/flow/loqi_flow_pretrained.ckpt}
+# LoQI's own FULL_ATOM_ENCODER order (utils_data.py:54-58).
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Br, I, Hg, Bi, Se]
+seed: 9
+
+tasks:
+  # CHANGE ME: your molecules. A path (.sdf / .smi / graph3d .db) or an
+  # inline SMILES list, e.g.
+  #   sample_input: ["CCO", "N[C@@H](C)C(=O)O"]
+  # Inline and .smi molecules get an ETKDG conformer first, so write the
+  # stereochemistry you want INTO the SMILES -- an unspecified centre has
+  # nothing for the model to honour.
+  sample_input: ${asset:loqi/data/loqi_smoke.db}
+  sample_pool_limit: 2000
+
+interference:
+  # 10 conformers of EVERY molecule in the pool above.
+  conformers_per_molecule: 10
+  batch_size: 4
+  output_path: generated_loqi_flow

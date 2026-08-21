@@ -1,0 +1,75 @@
+# @package _global_
+# Pocket-conditioned generation from DiffSBDD's CONVERTED PRETRAINED weights
+# (upstream `crossdocked_fullatom_cond.ckpt` -- the released full-atom
+# CrossDocked conditional model, trained 1000 epochs).
+#
+#   MolCraftDiff generate configs/diffsbdd_generate.yaml
+#
+# PREREQUISITE -- run once, if the converted checkpoint is not already there:
+#
+#   curl -L -o docs/model_integrations/diffsbdd/raw/crossdocked_fullatom_cond.ckpt \
+#     "https://zenodo.org/api/records/8183747/files/crossdocked_fullatom_cond.ckpt/content"
+#   curl -L -o docs/model_integrations/diffsbdd/raw/crossdocked_fullatom_joint.ckpt \
+#     "https://zenodo.org/api/records/8183747/files/crossdocked_fullatom_joint.ckpt/content"
+#   python docs/model_integrations/diffsbdd/scripts/convert_checkpoint.py
+#
+# The converter does not just re-prefix keys, it PROVES the mapping:
+# cli/generate.py:322 loads with strict=False, so a bad remap would load
+# NOTHING and still emit plausible-looking molecules. It asserts every key and
+# shape (122/122, zero drops), refuses to drop anything unclassified, and then
+# re-loads through the real `load_model` path to confirm every live tensor is
+# byte-identical to the source. Do not hand-copy the file.
+#
+# AND YOU ALSO NEED A POCKET -- there is no unconditional mode:
+#
+#   python docs/model_integrations/kgdiff/scripts/convert_dataset.py \
+#       docs/model_integrations/kgdiff/raw/test_set/test_set \
+#       docs/model_integrations/diffsbdd/data/diffsbdd_smoke.db
+#
+# WHAT THE MODEL CONDITIONS ON. A full-atom protein pocket, taken from one row
+# of a converted ASE db. Set `interference.pocket_db` and `pocket_index` to
+# choose it. The pocket is read WITHOUT re-centring, so generated ligands come
+# back in that pocket's own frame and overlay directly on the original
+# structure.
+#
+# LIGAND SIZE needs no configuration: it is drawn from the released 2D
+# (n_ligand_atoms, n_pocket_nodes) histogram, CONDITIONED on this pocket's
+# actual size. The converter copies that histogram out of the checkpoint's
+# hyper_parameters, so it is upstream's own statistic over full CrossDocked --
+# not something measured from the smoke db. Override
+# `interference.mol_size: [20, 24, 28]` to sample from a fixed list instead.
+#
+# JOINT WEIGHTS live in their own config: configs/diffsbdd_joint_generate.yaml.
+# Do NOT just swap `tasks: diffusion_diffsbdd_joint` +
+# `diffsbdd_fullatom_joint.ckpt` in here -- the released CrossDocked joint
+# checkpoint is broken (reproduced with upstream's own code; see that config's
+# header), so the joint path uses the Binding MOAD weights instead, which need
+# a different task config. The two modes share a task_type AND their
+# state-dict shapes, so a mode mismatch cannot be caught by strict=False --
+# the task carries a `mode_id` buffer that raises a clear error instead of
+# silently sampling with the wrong sampler.
+#
+# FRAGMENT-FIXED generation (scaffold hopping / linker design) is
+# configs/diffsbdd_inpaint.yaml.
+
+defaults:
+  - tasks: diffusion_diffsbdd
+  - interference: gen_diffsbdd_pocket
+  - _self_
+
+name: "diffsbdd_generate"
+chkpt_directory: ${asset:diffsbdd/fullatom_cond/diffsbdd_fullatom_cond.ckpt}
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]
+seed: 42
+
+interference:
+  pocket_db: ${asset:kgdiff/data/kgdiff_smoke.db}
+  pocket_index: 0
+
+  num_generate: 20
+  batch_size: 4     # the 500 steps are sequential per batch but the batch
+                    # itself is parallel -- raise it to use the GPU properly.
+  num_steps: null   # null => the model's full T (500). Lower it to trade
+                    # sample quality for speed.
+  mol_size: []      # empty => the pocket-size-conditioned joint prior
+  output_path: "generated_diffsbdd"

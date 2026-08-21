@@ -1,0 +1,71 @@
+# @package _global_
+# Scaffold decoration from DiffDec's CONVERTED PRETRAINED weights (upstream
+# `diffdec_single.ckpt` -- the released single-R-group CrossDocked model).
+#
+#   MolCraftDiff generate configs/diffdec_generate.yaml
+#
+# PREREQUISITES -- run once, if the converted checkpoint is not already there:
+#
+#   curl -L -o docs/model_integrations/diffdec/raw/diffdec_single.ckpt \
+#     "https://zenodo.org/api/records/10527451/files/diffdec_single.ckpt/content"
+#   python docs/model_integrations/diffdec/scripts/convert_checkpoint.py
+#
+# The converter does not just re-prefix keys, it PROVES the mapping:
+# cli/generate.py:322 loads with strict=False, so a bad remap would load
+# NOTHING and still emit plausible-looking molecules. It asserts every key and
+# shape (131/131 kept, zero drops), refuses to drop anything unclassified,
+# cross-checks the checkpoint's own hyper_parameters against
+# configs/tasks/diffusion_diffdec.yaml, and then re-loads through the real
+# `load_model` path to confirm every live tensor is byte-identical to the
+# source. Do not hand-copy the file.
+#
+# AND YOU ALSO NEED AN INPUT COMPLEX -- there is no unconditional mode:
+#
+#   python docs/model_integrations/diffdec/scripts/convert_dataset.py
+#
+# WHAT THE MODEL CONDITIONS ON. A fixed 3D scaffold, one flagged ANCHOR atom
+# on it, and a fixed protein pocket -- all three read from ONE row of that
+# .pt. Set `interference.data_file` and `complex_index` to choose the row.
+# Coordinates come back in that complex's original frame (the generator adds
+# the anchor-centred offset back), so decorations overlay directly on the
+# input structure. Alongside the samples it also writes scaffold_000.xyz (the
+# fixed input) and reference_000.xyz (the ground-truth decorated molecule) --
+# without them there is nothing to judge a decoration against.
+#
+# R-GROUP SIZE needs no configuration and is NOT drawn from a size prior. Each
+# R-group gets a fixed 10-slot budget and the model writes a fake '#' atom
+# into the slots it does not use; the generator strips those rows, so the
+# emitted R-group size is whatever the model chose. This is upstream's own
+# protocol (sample_single.py, `sample_fn = None`).
+#
+# KNOWN LIMITATION. The `interference.data_file` below is the 43-complex TEST
+# split -- the only split small enough to fetch on demand. Every scaffold in
+# it is one the released weights were evaluated on, not trained on, so it is a
+# fair demo; it is simply small. Point `data_file` at your own preprocessed
+# complexes to decorate something else.
+#
+# SCOPE: single-R-group only. The released `diffdec_multi.ckpt` is a different
+# architecture (separate batch re-expansion per R-group) and is not ported.
+
+defaults:
+  - tasks: diffusion_diffdec
+  - interference: gen_diffdec_scaffold
+  - _self_
+
+name: "diffdec_generate"
+chkpt_directory: ${asset:diffdec/pretrained/diffdec_pretrained.ckpt}
+atom_vocab: [C, O, N, F, S, Cl, Br, I, P, "#"]
+seed: 42
+
+interference:
+  data_file: ${asset:diffdec/data/crossdocksingle_test_full.pt}
+  complex_index: 0
+
+  num_generate: 20
+  batch_size: 4     # the reverse steps are sequential, but the batch itself
+                    # is parallel -- raise it to use the GPU properly.
+  num_steps: null   # null => the model's full T (500), which is what the
+                    # weights were trained with. Lowering it subsamples that
+                    # same schedule and trades quality for speed.
+  save_reference: true
+  output_path: "generated_diffdec"

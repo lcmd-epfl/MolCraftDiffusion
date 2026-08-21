@@ -1,0 +1,72 @@
+# @package _global_
+# Shape-conditioned generation from DiffSMol's CONVERTED PRETRAINED weights
+# (upstream iteration 956000, trained on MOSES2).
+#
+#   MolCraftDiff generate configs/diffsmol_generate.yaml
+#
+# Prerequisites, in order:
+#   1. python docs/model_integrations/diffsmol/scripts/convert_upstream_ckpt.py
+#      -> reads others/DiffSMol/models/diffusion.pt, writes
+#         docs/model_integrations/diffsmol/pretrained/edm_chem.pkl.
+#         The pickled task inside already carries pred_bond_type=True and the
+#         15-class add_aromatic vocabulary, so the `tasks:` block below does
+#         NOT configure the architecture -- the checkpoint does.
+#   2. python docs/model_integrations/diffsmol/scripts/precompute_shapes.py \
+#        --xyz <reference>.xyz --out shape_cache/ref.pt --single
+#      -> the reference molecule whose shape envelope conditions generation.
+#
+# ============================ READ THIS FIRST ============================
+# Shape conditioning DOES NOT WORK with these released weights, and it is not
+# a defect in this port. Upstream's released shape encoder `se.pt` is
+# incomplete: VN_DGCNN_Encoder keeps its blocks in a bare Python list
+# (others/DiffSMol/source/models/shape_pointcloud_modelAE.py:160), so they were
+# never registered, never saved, and are re-randomised every process. The
+# latents this checkpoint learned to read came from a random projection that
+# no published artifact recovers.
+#
+# Measured (FINAL_REPORT.md "LIMITATION" section): right-vs-wrong latent
+# p = 0.38; retrieval 0/6 bias-corrected; guide_stren response flat and
+# non-monotone; elongation transmission r = -0.555. The conditioning channel
+# is noise.
+#
+# The DENOISER, by contrast, is bit-identical to upstream -- max abs deviation
+# 0.000e+00 (scripts/test_upstream_parity.py). So these weights are good for:
+#   - an unconditional MOSES2 prior (leave reference_shape null),
+#   - a regression oracle for backbone refactors,
+#   - a fine-tuning initialisation using this port's deterministic encoder,
+#     which is the only route to working shape conditioning.
+# For shape conditioning that actually steers, train with
+# configs/diffsmol_train.yaml. =============================================
+
+defaults:
+  - tasks: diffusion_diffsmol
+  - interference: gen_diffsmol_shape
+  - _self_
+
+name: "diffsmol_generate"
+chkpt_directory: ${asset:diffsmol/pretrained}
+
+# Upstream's 15-class (element, is_aromatic) vocabulary flattened to elements.
+# Duplicates are intentional -- aromatic and non-aromatic C are two classes.
+atom_vocab: [H, C, C, N, N, O, O, F, P, P, S, S, Cl, Br, I]
+seed: 42
+
+tasks:
+  atom_mode: add_aromatic
+  model_config:
+    pred_bond_type: true  # required by this checkpoint; see FINAL_REPORT.md
+
+interference:
+  # null => unconditional (the honest mode for these weights, see above)
+  reference_shape: ${asset:diffsmol/shapes/ref.pt}
+  reference_key: null
+  batch_size: 8
+  num_generate: 100
+  num_steps: null      # null => the checkpoint's full 1000 steps
+  guide_stren: 2.0     # upstream's shipped sampling guidance strength
+  # Upstream draws atom counts from a MOSES2 shape-volume histogram that was
+  # never published, and this checkpoint ships no dataset statistics, so sizes
+  # come from mol_size. Set from the reference's heavy-atom count.
+  mol_size: [22]
+  n_frames: 0
+  output_path: "diffsmol_generate"

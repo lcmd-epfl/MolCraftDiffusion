@@ -1,0 +1,70 @@
+# MiDi generation from the RELEASED pretrained QM9 explicit-H weights.
+#
+#   MolCraftDiff generate configs/midi_generate.yaml
+#
+# PREREQUISITES (two commands)
+#   1. The graph3d QM9 db, which is where the noise model's class marginals and
+#      the molecule-size prior come from -- neither is in the checkpoint:
+#        MolCraftDiff data import-graph3d qm9 data/qm9_raw data/qm9_graph3d.db
+#   2. Fetch and convert the released weights (~375 MB download):
+#        python docs/model_integrations/midi/scripts/convert_checkpoint.py
+#
+#      That remaps all 1060 GraphTransformer tensors (0 dropped), rebuilds the
+#      marginals and the size histogram from the kekulized db, and verifies --
+#      after loading the result back through cli/generate.py's real path --
+#      that all 1064 live tensors are byte-identical to the source.
+#      cli/generate.py loads with strict=False, so an unverified remap would
+#      load NOTHING and still emit plausible-looking molecules.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   Nothing. Unconditional QM9 generation. What it GENERATES is the part that
+#   is unusual: atom types, 3D coordinates, FORMAL CHARGES and BOND ORDERS,
+#   all diffused jointly. Sizes are drawn from the QM9 atom-count histogram
+#   (mol_size: [0,0]).
+#
+# OUTPUT
+#   .xyz files under interference.output_path, as every model here produces --
+#   plus, because .xyz has no bond channel and MiDi's whole point is the bond
+#   table, an .sdf sidecar with bonds + formal charges + coordinates. Set
+#   tasks.sdf_output_path to null to turn the sidecar off. Molecules RDKit
+#   refuses to sanitize are skipped from the .sdf with a warning (their .xyz is
+#   still written), so the .sdf doubles as a validity filter.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. Do NOT change the bond distribution these marginals were built on. The
+#      converter reads data/qm9_graph3d.db with kekulize=True because MiDi
+#      reads gdb9 with sanitize=False and therefore never sees an aromatic
+#      bond. A 1.05e-4 aromatic residue remains (2141 of 2,407,023 bonds, in
+#      molecules RDKit refuses to kekulize) -- a 0.089% perturbation of the
+#      limit distribution, left in rather than silently zeroed. MiDi's own
+#      aromatic mass is exactly 0.
+#   2. diffusion_steps: 500 is MiDi's full schedule and costs 500 network
+#      evaluations per batch (~18 s for 8 molecules on a 4090). Lowering it
+#      strides the schedule -- MiDi's `faster_sampling` -- and trades quality
+#      for speed.
+#   3. The `charges` channel in the platform's sample() tuple carries SIGNED
+#      FORMAL CHARGES, not atomic numbers; the element identity written to the
+#      .xyz comes from the one-hot channel.
+#   4. Unconditional only. No CFG / gradient guidance / inpainting exists for
+#      MiDi, upstream or here.
+defaults:
+  - tasks: diffusion_midi
+  - interference: gen_unconditional
+  - _self_
+
+name: "midi_gen_qm9_pretrained"
+chkpt_directory: ${asset:midi/pretrained/midi_pretrained.ckpt}
+atom_vocab: [H, C, N, O, F]
+seed: 9
+
+tasks:
+  # Bond sidecar. Appends, so the file accumulates across batches -- delete it
+  # between runs if you want a clean one.
+  sdf_output_path: midi_gen_qm9_pretrained/midi_generated.sdf
+
+interference:
+  batch_size: 16
+  num_generate: 100
+  mol_size: [0, 0]         # [0,0] -> draw sizes from the QM9 size histogram
+  n_frames: 0
+  output_path: midi_gen_qm9_pretrained

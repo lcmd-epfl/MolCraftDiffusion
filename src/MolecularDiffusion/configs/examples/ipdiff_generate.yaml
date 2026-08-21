@@ -1,0 +1,86 @@
+# @package _global_
+# Pocket-conditioned generation from IPDiff's CONVERTED PRETRAINED weights
+# (upstream `pretrained_ipdiff.pt`, the paper's CrossDocked2020 checkpoint,
+# plus the frozen `ipnet` prior folded into the same file).
+#
+#   MolCraftDiff generate configs/ipdiff_generate.yaml
+#
+# PREREQUISITE -- run once, if the converted checkpoint is not already there:
+#
+#   gdown --folder \
+#     https://drive.google.com/drive/folders/1VaCvlRncFHQqvYV-FsUmxpoxIYRm2u_V \
+#     -O others/IPDiff/pretrained_models
+#   python docs/model_integrations/ipdiff/scripts/convert_checkpoint.py
+#
+# The released `pretrained_ipdiff.pt` is NOT loadable directly: it is a bare
+# upstream training checkpoint that even pickles an `easydict` config object
+# this env does not have, so `torch.load` fails outright. The converter shims
+# that, re-prefixes all 389 diffusion tensors plus IPNet's 58, and --
+# crucially -- PROVES the mapping: cli/generate.py:322 loads with
+# strict=False, so a bad remap would load NOTHING and still emit
+# plausible-looking molecules. It asserts every key and shape, refuses to drop
+# anything unclassified (there are zero drops), and then re-loads through the
+# real `load_model` path to confirm every live tensor is byte-identical to the
+# source. Do not hand-copy the file.
+#
+# AND YOU ALSO NEED A POCKET -- there is no unconditional mode. IPDiff reads
+# KGDiff's converted format unchanged, so use KGDiff's converter:
+#
+#   python docs/model_integrations/kgdiff/scripts/convert_dataset.py \
+#       docs/model_integrations/kgdiff/raw/test_set/test_set \
+#       docs/model_integrations/kgdiff/data/kgdiff_smoke.db
+#
+# WHAT THE MODEL CONDITIONS ON. A full-atom 10 A protein pocket, taken from
+# one row of a converted ASE db (`interference.pocket_db` / `pocket_index`),
+# AND the frozen IPNet prior, which is re-run on the *current predicted x0*
+# at every reverse step -- self-conditioning on the interaction
+# representation. That per-step prior pass is why sampling costs roughly two
+# forward passes per step rather than one. Coordinates are never re-centred at
+# load time, so generated ligands come back in the pocket's own frame and
+# overlay directly on the original structure.
+#
+# NO GUIDANCE KNOBS, deliberately. IPDiff has no classifier, no CFG and no
+# property head; the prior IS the conditioning. (KGDiff's guide_mode /
+# *_grad_weight settings have no counterpart here.)
+#
+# LIGAND SIZE needs no configuration and no training data: it is drawn from a
+# static table conditioned on the pocket's spatial extent (`atom_num_config`,
+# shared with KGDiff/TargetDiff). Override `interference.mol_size: [20, 24]`
+# to sample from a fixed list instead.
+#
+# KNOWN LIMITATION: the default pocket_db below is the 100-complex smoke set.
+# Its geometry is genuine CrossDocked test-split structure, which is all that
+# is used here; the constant `affinity` column it also carries is never read
+# by IPDiff.
+
+defaults:
+  - tasks: diffusion_ipdiff
+  - interference: gen_ipdiff_pocket
+  - _self_
+
+name: "ipdiff_generate"
+chkpt_directory: ${asset:ipdiff/pretrained/ipdiff_pretrained.ckpt}
+# The 8 distinct elements behind the model's 13-class (element, is_aromatic)
+# vocabulary; aromaticity is dropped when writing .xyz.
+atom_vocab: [H, C, N, O, F, P, S, Cl]
+seed: 42
+
+tasks:
+  # Still required at build time even though the converted checkpoint also
+  # carries these weights: BAPNet loads at construction, then the checkpoint
+  # overwrites it (and the converter asserts that overwrite actually lands).
+  net_cond_ckpt: ${asset:ipdiff/ipnet/ipnet}
+
+interference:
+  pocket_db: ${asset:kgdiff/data/kgdiff_smoke.db}
+  pocket_index: 0
+
+  num_generate: 20
+  # Quadratic in (pocket atoms x batch_size) because of the prior's fully
+  # connected graph. 4 is upstream's setting; lower it if you OOM, raise it
+  # only if you have headroom.
+  batch_size: 4
+  num_steps: null   # null => the model's full T (1000). Lower it to trade
+                    # sample quality for speed; each step is ~2 forward passes.
+  mol_size: []      # empty => the pocket-size-conditioned prior
+  output_path: "generated_ipdiff"

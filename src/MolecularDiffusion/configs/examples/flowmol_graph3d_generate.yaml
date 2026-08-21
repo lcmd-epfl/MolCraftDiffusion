@@ -1,0 +1,99 @@
+# FlowMol3 generation from the RELEASED pretrained GEOM weights.
+#
+#   MolCraftDiff generate configs/flowmol_graph3d_generate.yaml
+#
+# PREREQUISITES (four commands)
+#   1. Fetch MiDi's GEOM-Drugs val pickle (823 MB). This is not optional even
+#      for generation: the molecule-size prior is NOT in the checkpoint --
+#      upstream's n_atoms_hist_file is a bare PosixPath into
+#      data/geom_full_kekulized/, an unpublished processed directory:
+#        wget -P data/geom_raw https://bits.csb.pitt.edu/files/geom_raw/val_data.pickle
+#   2. Build the graph3d db (existing platform code, unmodified):
+#        MolCraftDiff data import-graph3d geom data/geom_raw \
+#            data/geom_graph3d_val.db --max-conformers 1
+#   3. Filter it (drops residual aromatics, fragmented molecules, off-vocab
+#      elements) -- this is also where the size histogram comes from:
+#        python docs/model_integrations/flowmol_graph3d/scripts/convert_dataset.py
+#   4. Fetch and convert the released weights (68 MB download):
+#        python docs/model_integrations/flowmol_graph3d/scripts/convert_checkpoint.py
+#
+#      That remaps all 475 vector-field tensors (0 dropped), synthesises the
+#      size histogram from the db built in step 3, and verifies -- AFTER loading
+#      the result back through cli/generate.py's real path -- that all 475 live
+#      tensors are byte-identical to the source. cli/generate.py loads with
+#      strict=False, so an unverified remap would load NOTHING and still emit
+#      plausible-looking molecules.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   Nothing. Unconditional de novo generation at GEOM-Drugs (drug-molecule)
+#   scale. What it GENERATES is the unusual part: coordinates, atom types,
+#   FORMAL CHARGES and BOND ORDERS, jointly -- coordinates by continuous flow
+#   matching, the three categorical modalities by CTMC discrete flow matching
+#   from an all-mask prior. It also picks its own molecule size (see limitation
+#   2). Sizes are seeded from the GEOM atom-count histogram (mol_size: [0,0]).
+#
+# OUTPUT
+#   .xyz files under interference.output_path, as every model here produces --
+#   plus, because .xyz has no bond channel and bonds are FlowMol3's whole point,
+#   an .sdf sidecar with bonds + formal charges + coordinates. Set
+#   tasks.sdf_output_path to null to turn the sidecar off. Molecules RDKit
+#   refuses to sanitize are skipped from the .sdf with a warning (their .xyz is
+#   still written), so the .sdf doubles as a validity filter.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. The size histogram is derived from GEOM's VAL split (30,390 molecules,
+#      sizes 7-160, modal 44), not the 6.5 GB train split. MiDi's split is a
+#      molecule-level random partition, so this is an unbiased sample of the
+#      train distribution, and the quantity is a 1-D marginal over ~150 integer
+#      bins used only to pick molecule sizes at sampling time -- it never enters
+#      a weight. Fetch train_data.pickle and re-run steps 2-4 if you want the
+#      exact training histogram.
+#   2. Generated molecules run slightly SMALLER than the requested size. Any
+#      node the model assigns to the "fake" atom class is physically deleted
+#      before decoding (upstream molecule_builder.py:226-231), so nodesxsample
+#      is an UPPER BOUND, not the produced atom count. Upstream does not inflate
+#      the histogram to compensate (flowmol.py:468-471); this is model
+#      behaviour, not a defect. The node_mask in the output carries the truth.
+#   3. atom_vocab order below is FlowMol3's OWN ([C, H, N, O, F, P, S, Cl, Br,
+#      I]), not the platform-usual H-first order. Do not "fix" it: the stored
+#      atom_idx IS the model's atom-type index, so a reorder silently mislabels
+#      every atom against these weights.
+#   4. default_n_timesteps: 250, stochasticity: 30.0 and
+#      high_confidence_threshold: 0.9 are the released checkpoint's own values.
+#      Lowering the step count trades quality for speed; the other two are
+#      CTMC sampler knobs the released weights were tuned with.
+#   5. The `charges` channel in the platform's sample() tuple carries SIGNED
+#      FORMAL CHARGES, not atomic numbers; the element identity written to the
+#      .xyz comes from the one-hot channel.
+#   6. Unconditional only. No CFG / gradient guidance / inpainting exists for
+#      FlowMol, upstream or here. Trajectory frames (n_frames) are not ported.
+defaults:
+  - tasks: diffusion_flowmol_graph3d
+  - interference: gen_unconditional
+  - _self_
+
+name: "flowmol_graph3d_gen_pretrained"
+
+# Points straight at the converted checkpoint FILE (cli/generate.py:386 accepts
+# a file or a directory). The converted checkpoint deliberately carries no
+# 'model_config', so the architecture is rebuilt from the tasks: block above --
+# the bundled config is the single source of truth for these hyperparameters.
+chkpt_directory: ${asset:flowmol_graph3d/pretrained/flowmol_graph3d_pretrained.ckpt}
+
+# FlowMol3's own order -- see limitation 3.
+atom_vocab: [C, H, N, O, F, P, S, Cl, Br, I]
+seed: 42
+
+tasks:
+  default_n_timesteps: 250
+  stochasticity: 30.0
+  high_confidence_threshold: 0.9
+  sdf_output_path: generated_flowmol_graph3d/flowmol_graph3d_pretrained.sdf
+
+interference:
+  # 250 network evaluations per batch on drug-sized, fully-connected graphs.
+  batch_size: 8
+  num_generate: 32
+  mol_size: [0, 0]         # [0,0] -> draw sizes from the size histogram
+  n_frames: 0
+  output_path: generated_flowmol_graph3d

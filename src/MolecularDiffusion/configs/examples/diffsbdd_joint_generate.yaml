@@ -1,0 +1,84 @@
+# @package _global_
+# JOINT-MODE generation from DiffSBDD's converted pretrained weights.
+#
+#   MolCraftDiff generate configs/diffsbdd_joint_generate.yaml
+#
+# In joint mode (EnVariationalDiffusion) the pocket is diffused alongside the
+# ligand, and pocket-conditioned generation IS RePaint-style inpainting with
+# lig_fixed=0 / pocket_fixed=1 -- upstream's own design
+# (lightning_modules.py:814-834), which is also what makes `resamplings` and
+# `jump_length` meaningful here. For plain conditional generation (pocket held
+# fixed, cheaper, and the model upstream actually advertises) use
+# configs/diffsbdd_generate.yaml.
+#
+# ## READ THIS: these are the BINDING MOAD weights, on purpose
+#
+# The released CrossDocked joint checkpoint (`crossdocked_fullatom_joint.ckpt`)
+# is BROKEN and this config deliberately does not use it. Reproduced with
+# upstream's own unmodified code on upstream's own example pocket
+# (others/DiffSBDD/generate_ligands.py, example/3rfm.pdb):
+#
+#   crossdocked_fullatom_cond    C/N/O molecules,  min interatomic 1.1-1.2 A
+#   crossdocked_fullatom_joint   Br/P/I/N soup,    atoms 20-390 A apart
+#   moad_fullatom_joint          C/N/O molecules,  min interatomic 0.9-1.3 A
+#
+# It is a defect in the release, not in this port -- see the header of
+# docs/model_integrations/diffsbdd/scripts/convert_checkpoint.py for the
+# forward-pass evidence (|eps_hat| ~ 6e3 at t=0.9 versus ~3 for the working
+# models). Binding MOAD uses the identical 10-class element vocabulary and the
+# identical full-atom pocket construction, so this model runs on CrossDocked
+# pockets; its architecture differs, which is why it has its own task config
+# (`tasks: diffusion_diffsbdd_joint_moad` below -- pairing it with plain
+# `diffusion_diffsbdd_joint` will not load).
+#
+# ## PREREQUISITES
+#
+#   curl -L -o docs/model_integrations/diffsbdd/raw/moad_fullatom_joint.ckpt \
+#     "https://zenodo.org/record/8183747/files/moad_fullatom_joint.ckpt?download=1"
+#   python docs/model_integrations/diffsbdd/scripts/convert_checkpoint.py --mode joint_moad
+#
+# and a pocket -- there is no unconditional mode:
+#
+#   python docs/model_integrations/kgdiff/scripts/convert_dataset.py \
+#       docs/model_integrations/kgdiff/raw/test_set/test_set \
+#       docs/model_integrations/diffsbdd/data/diffsbdd_smoke.db
+#
+# ## KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#
+# 1. The ligand-size prior is this checkpoint's own MOAD histogram, whose axes
+#    stop at 61 ligand atoms / 662 pocket nodes. A complex outside that RAISES
+#    rather than being silently mis-scored. CrossDocked pockets can exceed
+#    662 atoms; if yours do, cut them tighter or pass an explicit
+#    `interference.mol_size`.
+# 2. Joint mode denoises the pocket too, so it is markedly slower and heavier
+#    per sample than configs/diffsbdd_generate.yaml at the same step count.
+# 3. Sampling is a domain transfer: MOAD-trained weights on CrossDocked
+#    pockets. Expect it to be a step below the conditional CrossDocked model
+#    on CrossDocked benchmarks.
+#
+# To FIX PART OF THE LIGAND (scaffold hopping, linker design) add
+# `interference.fixed_atom_indices` -- see configs/diffsbdd_inpaint.yaml; the
+# same sampler serves both, with nothing fixed here.
+
+defaults:
+  - tasks: diffusion_diffsbdd_joint_moad
+  - interference: gen_diffsbdd_pocket
+  - _self_
+
+name: "diffsbdd_joint_generate"
+chkpt_directory: ${asset:diffsbdd/fullatom_joint_moad/diffsbdd_fullatom_joint_moad.ckpt}
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]
+seed: 42
+
+interference:
+  pocket_db: ${asset:kgdiff/data/kgdiff_smoke.db}
+  pocket_index: 0
+
+  num_generate: 20
+  batch_size: 4
+  num_steps: null    # null => the model's full T (500)
+  mol_size: []       # empty => the pocket-size-conditioned joint prior
+  resamplings: 1     # >1 re-noises and re-denoises each step (RePaint); only
+                     # worth the extra cost when atoms are actually fixed.
+  jump_length: 1
+  output_path: "generated_diffsbdd_joint"

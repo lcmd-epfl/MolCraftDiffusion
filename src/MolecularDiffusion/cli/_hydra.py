@@ -44,6 +44,29 @@ def get_package_config_path() -> Path:
     )
 
 
+def _stem(name: str) -> str:
+    return name[:-5] if name.endswith(".yaml") else name
+
+
+def _fallback_to_bundled(primary_config_dir, config_name, requested,
+                         pkg_config_path):
+    """Point Hydra at the bundled config tree if the config is not local.
+
+    Returns ``(primary_config_dir, config_name)`` unchanged whenever the
+    requested config exists where the caller asked for it -- so a user's own
+    config always takes precedence over a bundled one of the same name.
+    """
+    local = Path(primary_config_dir) / f"{_stem(Path(config_name).name)}.yaml"
+    if local.exists():
+        return primary_config_dir, config_name
+
+    candidate = Path(pkg_config_path) / f"{_stem(requested)}.yaml"
+    if candidate.exists():
+        return str(candidate.parent), candidate.name
+
+    return primary_config_dir, config_name
+
+
 def setup_hydra_config(
     config_name: str,
     config_dir: Optional[str] = None,
@@ -68,7 +91,8 @@ def setup_hydra_config(
     
     # Get package config path for defaults
     pkg_config_path = get_package_config_path()
-    
+    requested_config = config_name
+
     # Determine primary config directory
     # If config_name contains a path (e.g., "configs/train.yaml"), extract the directory
     config_name_path = Path(config_name)
@@ -82,7 +106,21 @@ def setup_hydra_config(
         primary_config_dir = os.path.abspath(config_dir)
     else:
         primary_config_dir = os.getcwd()
-    
+
+    # Fall back to the bundled config tree when the requested config is not
+    # where we were told to look. `hydra.searchpath` (set below) extends the
+    # search for config GROUPS but not for the PRIMARY config, so without
+    # this the shipped examples -- e.g. `MolCraftDiff generate
+    # examples/kgdiff_generate.yaml` -- are unreachable for anyone who
+    # pip-installed the package.
+    #
+    # This only fires where the CLI would otherwise raise
+    # MissingConfigException, so no currently-working invocation changes
+    # behaviour: a user config in CWD always wins, because it is found first.
+    primary_config_dir, config_name = _fallback_to_bundled(
+        primary_config_dir, config_name, requested_config, pkg_config_path
+    )
+
     # Clear any existing Hydra state
     GlobalHydra.instance().clear()
     

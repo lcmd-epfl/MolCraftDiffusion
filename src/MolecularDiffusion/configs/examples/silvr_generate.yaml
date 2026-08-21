@@ -1,0 +1,74 @@
+# @package _global_
+# SILVR: Selective Iterative Latent Variable Refinement.
+#
+#   MolCraftDiff generate configs/silvr_generate.yaml
+#
+# SILVR is an inference-time GUIDANCE method, not a trained model -- there is
+# no SILVR checkpoint and no SILVR training config. It runs on any existing
+# `tasks: diffusion` EDM checkpoint and steers each reverse step towards a
+# reference structure:
+#
+#   z_t = alpha_t * ref + sigma_t * eps          # reference re-noised each step
+#   z   = z - (z*alpha_t*ref_mask)*rate + (z_t*ref_mask)*rate
+#
+# Implemented verbatim from the original (vendored at
+# docs/model_integrations/silvr/reference_source/). See
+# docs/model_integrations/silvr/INTEGRATION_PLAN.md for the derivation and the
+# two recorded deviations.
+#
+# ---------------------------------------------------------------- gotchas --
+# * The checkpoint below is a GEOM-drugs, with-hydrogens EDM (900 steps,
+#   17-element vocab). Its directory holds edm_chem.pkl + edm_stat.pkl and no
+#   *.ckpt, so cli/generate.py:load_model takes the original-engine .pkl
+#   branch. Point `chkpt_directory` at a directory, not a file.
+# * mol_size MUST be explicit here. edm_stat.pkl fails to unpickle in this env
+#   (No module named 'torchdrug'), so node_dist_model is unset and
+#   mol_size: [0,0] has no distribution to draw from. Set it to
+#   n_reference_atoms + however many extra atoms you want SILVR to invent; it
+#   is snapped up to the reference size if you go under.
+# * sampling_mode is ddpm-only -- "ddim" raises.
+# * Because the reference is normalized (a deliberate deviation from the
+#   original, which leaves its one-hot 4x hot), feature guidance is ~4x weaker
+#   than the paper's at a given silvr_rate. If SILVR feels too weak, raise the
+#   rate before suspecting a bug.
+# ---------------------------------------------------------------------------
+
+defaults:
+  - tasks: diffusion
+  - interference: gen_silvr
+  - _self_
+
+name: "silvr_generate"
+
+# Any EDM checkpoint. This one is the GEOM-drugs prior SILVR itself was built
+# on, and is the one the integration was validated against.
+chkpt_directory: "/media/mohammed/TW/RF/hoshino/Morpho/assets/molcraftdiffusion/edm_geom"
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
+
+# The checkpoint is a 900-step model; lower this to trade quality for speed.
+diffusion_steps: 900
+
+seed: 9
+
+interference:
+  batch_size: 1
+  num_generate: 12
+  n_frames: 0
+  output_path: silvr_generate
+  # reference atoms + dummy atoms SILVR is free to place.
+  mol_size: [24]
+  condition_configs:
+    # The fragment(s) to steer towards. Elements must be in atom_vocab.
+    reference_structure_path: ${asset:silvr/data/reference.xyz}
+    condition_component: xh   # "x" restricts SILVR to coordinates only
+    n_retrys: 0               # forced to 0 for structure-guided modes
+    silvr_cfgs:
+      # 0.01 is the published working value. 0 = ignore the reference,
+      # 1 = replace the generated atoms with it outright.
+      silvr_rate: 0.01
+      # Optional per-atom rates, length = reference atom count. Overrides
+      # silvr_rate -- use it to pin some fragment atoms harder than others.
+      silvr_rates: null
+      # true  => samples come back in the reference's frame (binding site).
+      # false => samples come back centred on the origin.
+      shift_centre: true

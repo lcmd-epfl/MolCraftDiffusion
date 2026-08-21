@@ -1,0 +1,73 @@
+# @package _global_
+# FRAGMENT-FIXED generation (scaffold hopping / linker design) with DiffSBDD's
+# CONVERTED PRETRAINED conditional weights, via RePaint-style inpainting.
+#
+#   MolCraftDiff generate configs/diffsbdd_inpaint.yaml
+#
+# PREREQUISITES are identical to configs/diffsbdd_generate.yaml -- read that
+# file's header first (checkpoint download + converter, and the ASE db).
+#
+# WHAT THIS DOES. Part of the ligand is held FIXED at every denoising step
+# while the rest is generated around it (Lugmayr et al., RePaint, CVPR 2022;
+# upstream's inpaint.py, which calls exactly this on exactly this checkpoint).
+# Set `resamplings` > 1 to let the fixed and generated parts reconcile: the
+# cost is num_steps * resamplings network calls per batch.
+#
+# HOW FIXED ATOMS ARE CHOSEN -- the one deliberate deviation from upstream.
+# DiffSBDD's CLI selects them by PDB atom name (`--fix_atoms "C1 N6 C5"`).
+# An ASE db has no atom names, so this port selects by INDEX into the
+# reference ligand stored in the SAME db row that supplies the pocket:
+#
+#   from MolecularDiffusion.data.component.diffsbdd_data import DiffSBDDDataset
+#   ref = DiffSBDDDataset("<db>", center=False)[0]
+#   ref["lig_coords"]                 # inspect, then pick indices
+#   ref["lig_one_hot"].argmax(1)      # element class per atom
+#
+# Indices are into the HEAVY-ATOM ligand (hydrogens are stripped at load), and
+# the same lig_fixed tensor reaches inpaint() either way. To fix a fragment
+# from some *other* molecule, add a row to the db whose ligand is that
+# fragment and whose pocket is the target -- there is no PDB/SDF reader here
+# on purpose (no BioPython, no `prepare_substructure`).
+#
+# KNOWN LIMITATION: the fixed fragment must come from a db row, so the fixed
+# atoms and the pocket always share a row. That is fine for the intended use
+# (re-grow a known ligand in its own pocket) and is the reason this needed no
+# new data.
+#
+# JOINT MODE also inpaints. Take the defaults and chkpt_directory from
+# configs/diffsbdd_joint_generate.yaml (`tasks: diffusion_diffsbdd_joint_moad`
+# + diffsbdd_fullatom_joint_moad.ckpt -- NOT the CrossDocked joint checkpoint,
+# which is broken; that config's header has the evidence) and add the
+# `fixed_atom_indices` block below. There `jump_length` becomes meaningful
+# (the RePaint jump schedule) and `center` is ignored.
+
+defaults:
+  - tasks: diffusion_diffsbdd
+  - interference: gen_diffsbdd_inpaint
+  - _self_
+
+name: "diffsbdd_inpaint"
+chkpt_directory: ${asset:diffsbdd/fullatom_cond/diffsbdd_fullatom_cond.ckpt}
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]
+seed: 42
+
+interference:
+  pocket_db: ${asset:kgdiff/data/kgdiff_smoke.db}
+  pocket_index: 0
+
+  num_generate: 20
+  batch_size: 4
+
+  # Upstream's inpaint.py CLI defaults.
+  num_steps: 50
+  resamplings: 20
+
+  # The fixed substructure. CHANGE THIS -- [0,1,2,3] is only a placeholder
+  # meaning "the first four heavy atoms of row 0's reference ligand".
+  fixed_atom_indices: [0, 1, 2, 3]
+  # null => total size from the pocket-conditioned prior, clamped to at least
+  # the number of fixed atoms. An int => exactly n_fixed + add_n_nodes.
+  add_n_nodes: null
+
+  center: ligand
+  output_path: "generated_diffsbdd_inpaint"

@@ -1,0 +1,62 @@
+# @package _global_
+# Pocket-conditioned generation from KGDiff's converted pretrained weights.
+#
+#   MolCraftDiff zoo fetch --model kgdiff        # ~12 MB, once
+#   MolCraftDiff generate examples/kgdiff_generate.yaml
+#
+# Runs from any directory: every path below is an "asset" reference
+# resolved against your local zoo cache ($MOLCRAFT_ASSETS, default
+# ~/.cache/molcraft/zoo), not a path relative to the repo.
+#
+# WHAT IT CONDITIONS ON. A full-atom 10 A protein pocket from one row of the
+# converted db; `pocket_index` picks it. There is no unconditional mode.
+# Coordinates are never re-centred at load time, so generated ligands come
+# back in that pocket's own frame and overlay on the original structure.
+#
+# GUIDANCE. `guide_mode: joint` is KGDiff's whole point -- the model's own
+# affinity head is the classifier guide, so one checkpoint both denoises and
+# steers toward higher predicted affinity. `wo` runs the identical reverse
+# loop with guidance off, which is the control worth generating alongside if
+# you want to judge whether guidance is doing anything. The `valuenet*` /
+# `target_diff` modes each need a second pretrained checkpoint and `vina`
+# needs AutoDockTools; neither is ported.
+#
+# LIGAND SIZE needs no configuration: KGDiff draws it from a static table
+# conditioned on the pocket's spatial extent. Set
+# `interference.mol_size: [20, 24, 28]` to sample from a fixed list instead.
+#
+# KNOWN LIMITATION: the bundled pocket set is 100 CrossDocked test complexes
+# whose `affinity` column is a constant placeholder. Irrelevant here -- the
+# affinity head in use is the pretrained one, trained on real Vina scores,
+# and the db only supplies pocket geometry, which is genuine. It would
+# matter only if you retrained on it.
+
+defaults:
+  - tasks: diffusion_kgdiff
+  - interference: gen_kgdiff_pocket
+  - _self_
+
+name: "kgdiff_generate"
+chkpt_directory: ${asset:kgdiff/pretrained/kgdiff_pretrained.ckpt}
+# The 8 distinct elements behind the model's 13-class (element, is_aromatic)
+# vocabulary; aromaticity is dropped when writing .xyz.
+atom_vocab: [H, C, N, O, F, P, S, Cl]
+seed: 42
+
+interference:
+  pocket_db: ${asset:kgdiff/data/kgdiff_smoke.db}
+  pocket_index: 0
+
+  num_generate: 20
+  batch_size: 4     # the 1000 steps are sequential per batch but the batch
+                    # itself is parallel -- raise it to use the GPU properly.
+  num_steps: null   # null => the model's full T (1000). Lower it to trade
+                    # sample quality for speed.
+  mol_size: []      # empty => the pocket-size-conditioned prior
+
+  guide_mode: joint
+  # The paper's CrossDocked settings. Raising them pushes harder on predicted
+  # affinity at the cost of geometry.
+  type_grad_weight: 100.0
+  pos_grad_weight: 25.0
+  output_path: "generated_kgdiff"

@@ -34,3 +34,11 @@ def __getattr__(name: str):
 
 
 __all__ = _submodules
+
+# Register the ${asset:...} OmegaConf resolver at package import, so it is
+# live for both the CLI (cli/_hydra.py compose) and plain library use
+# (OmegaConf.load in a notebook). assets.py imports only stdlib + yaml, so
+# this does not defeat the lazy-submodule scheme above.
+from MolecularDiffusion.assets import register as _register_asset_resolver
+
+_register_asset_resolver()

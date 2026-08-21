@@ -1,0 +1,90 @@
+# @package _global_
+# Generation with LigandDiff from a checkpoint YOU trained, as opposed to the
+# released one. Use this to sanity-check a run of `configs/ligandiff_train.yaml`
+# -- including a run that is still in progress, since `last.ckpt` is rewritten
+# every validation epoch and is safe to read while training continues.
+#
+# The sibling `configs/ligandiff_generate.yaml` is the pretrained-weights
+# config; keep the two separate so testing your own run never overwrites the
+# reference output or silently picks up the released checkpoint.
+#
+#   MolCraftDiff generate configs/ligandiff_generate_trained.yaml
+#
+# POINT IT AT YOUR RUN
+# --------------------
+# `chkpt_directory` below assumes the default `trainer.output_path:
+# ligandiff_train`. Lightning nests the run under a wandb-style id, so the
+# path contains a random directory name -- check yours with:
+#
+#   find ligandiff_train -name 'last.ckpt'
+#
+# and either edit the value below or override it on the command line:
+#
+#   MolCraftDiff generate configs/ligandiff_generate_trained.yaml \
+#     chkpt_directory=ligandiff_train/MolecularDiffusion/<id>/checkpoints/last.ckpt
+#
+# `last.ckpt` is the newest epoch. To sample from the best-scoring epoch
+# instead, point at one of the `epoch=...` checkpoints in the same directory.
+#
+# SCHEDULE MUST MATCH HOW YOU TRAINED
+# ------------------------------------
+# `configs/ligandiff_train.yaml` trains with the learned GammaNetwork, so this
+# file uses `learned` to match. If you trained with `polynomial_2` instead,
+# change it here too -- a mismatch means the eight edm.gamma.* tensors are
+# unexpected keys that cli/generate.py's strict=False load drops in silence,
+# and generation runs on the wrong schedule while looking perfectly healthy.
+# Any other architecture override you made at train time must be mirrored here
+# for the same reason.
+#
+# INTERPRETING THE OUTPUT OF AN EARLY CHECKPOINT
+# -----------------------------------------------
+# An undertrained model produces disconnected fragments and near-uniform
+# element composition. Useful reference points, measured on 20 molecules from
+# the bundled 18-atom scaffold:
+#
+#   released weights   fraction connected 1.00   C .62  N .21  O .14
+#   training data       fraction connected 0.93   C .63  N .16  O .13
+#   2-epoch toy run     fraction connected 0.00   C .35, halogens everywhere
+#
+# Composition converges much earlier in training than connectivity does.
+
+defaults:
+  - tasks: diffusion_ligandiff
+  - interference: gen_outpaint
+  - _self_
+
+name: "ligandiff_generate_trained"
+
+# cli/generate.py accepts a file or a directory. See the note above -- the
+# `MolecularDiffusion/<id>/` segment is generated per run and will differ.
+chkpt_directory: "ligandiff_train/MolecularDiffusion/lbj7ecmk/checkpoints/last.ckpt"
+
+seed: 42
+
+# Mandatory as a *value*: cli/generate.py hard-reads cfg.atom_vocab while
+# building load_model()'s kwargs, before the task-yaml precedence check can
+# supersede it. Same 18-entry decode-side list as
+# configs/tasks/diffusion_ligandiff.yaml -- 8 upstream heavy atoms at indices
+# 0..7 (src/const.py order), 10 metals at 8..17. The decode path depends on
+# that ordering.
+atom_vocab: [C, N, O, S, Br, Cl, P, F, Cr, Mn, Fe, Co, Ni, Cu, Zn, Ru, Pd, Pt]
+
+tasks:
+  # Must match configs/ligandiff_train.yaml -- see the warning above.
+  diffusion_noise_schedule: learned
+  diffusion_loss_type: vlb
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  # Distinct from the pretrained config's `generated_ligandiff`, so the two
+  # sets never overwrite each other.
+  output_path: generated_ligandiff_trained
+  n_frames: 0
+  # TOTAL atom count (scaffold + new ligand), not the ligand size; must exceed
+  # the scaffold's atom count. This range reproduces upstream's 6-20 atom
+  # ligand draw on the bundled 18-atom scaffold -- change it if you change the
+  # scaffold.
+  mol_size: [24, 38]
+  condition_configs:
+    reference_structure_path: ${asset:ligandiff/data/reference_complex.xyz}

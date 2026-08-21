@@ -1,0 +1,104 @@
+# @package _global_
+# NExT-Mol DE-NOVO 3D molecule generation, from the CONVERTED PRETRAINED
+# weights and the published MoLlama language model.
+#
+#   MolCraftDiff generate configs/nextmol_generate.yaml
+#
+# PREREQUISITES -- run once each:
+#
+# 1. The DMT weights (OSF view-only share; 213 MB):
+#
+#      curl -L -o docs/model_integrations/nextmol/checkpoints/qm9_dmt_b_e1999.ckpt \
+#        "https://osf.io/download/7u3mg/?view_only=5905ef8957f9444a8808fd49933b35c7"
+#      python docs/model_integrations/nextmol/scripts/convert_checkpoint.py
+#
+#    The converter ASSERTS that every key the task needs exists in the source
+#    with a matching shape, that every dropped source key is provably droppable,
+#    and -- after writing -- reloads the result through cli/generate.py's real
+#    path and compares the live tensors byte-for-byte against the source. That
+#    assertion set is load-bearing: cli/generate.py loads with strict=False, so
+#    a bad or absent remap loads NOTHING and still emits plausible-looking
+#    molecules. Do not skip the script and hand-copy anything.
+#
+# 2. MoLlama (1.94 GB). `mollama_model` below points at a local copy; the HF
+#    hub id `acharkq/MoLlama` works equally well if the machine has network:
+#
+#      D=docs/model_integrations/nextmol/checkpoints/mollama; mkdir -p $D
+#      for f in config.json generation_config.json special_tokens_map.json \
+#               tokenizer.json tokenizer_config.json model.safetensors; do
+#        curl -L -o $D/$f "https://huggingface.co/acharkq/MoLlama/resolve/main/$f"
+#      done
+#
+#    Requires `transformers` -- see docs/model_integrations/nextmol/
+#    INTEGRATION_PLAN.md, "Environment Prerequisites", for the exact PINNED
+#    install command. An unpinned `pip install transformers` upgrades
+#    huggingface_hub, click and hf-xet. Do not run the unpinned form.
+#
+# WHAT IT CONDITIONS ON: nothing you supply. This is fully unconditional --
+# MoLlama writes a molecule down as SELFIES, RDKit turns it into a 2D graph, and
+# DMT places that exact molecule in 3D. The intermediate 1D list is saved to
+# <output_path>/sampled_sequences.tsv so you can read, filter or hand-edit it.
+# To generate conformers of molecules YOU choose instead, switch to the SHARED
+# conformer mode -- the same one LoQI and DiTMC use:
+#     defaults:  - interference: gen_conformer
+#     interference:
+#       sample_input: ["CCO", "c1ccccc1"]   # or a .smi/.txt/.sdf/graph3d .db
+#       conformers_per_molecule: 10
+#       sampler_kwargs: {num_steps: 100}
+# MoLlama is not loaded at all on that path; DMT alone places your molecules.
+#
+# TWO LIMITATIONS BAKED INTO THESE DEFAULTS, both worth knowing before you read
+# the numbers:
+#
+#  * MoLlama is used AS PUBLISHED, without the LM fine-tuning that aligns it to
+#    a dataset. Its molecules follow general drug-like chemistry rather than the
+#    QM9-2014 / GEOM-Drugs distribution, so Novelty and FCD will NOT reproduce
+#    the paper. Validity, stability and 3D geometry -- everything DMT does --
+#    are unaffected.
+#  * qm9_dmt_b_e1999.ckpt is the GEOM-QM9 CONFORMER-PREDICTION checkpoint (its
+#    own hyper_parameters say root=./data/tordf_qm9_v2), and pos_std is set to
+#    match it at 1.4182. The OSF share publishes no DMT trained on the QM9-2014
+#    de-novo split, so this is the closest released weight set to the paper's
+#    de-novo table -- not the exact one.
+#
+#    It is also QM9-scale: `dataset: qm9` covers H, C, N, O, F only, so any
+#    molecule MoLlama proposes containing S, Cl, Br... is dropped and reported.
+#    For drug-like output convert drugs_dmt_l_e2999.ckpt instead and set
+#    tasks.dataset: drugs, tasks.pos_std: 2.4777,
+#    tasks.model.{in_node_features: 74, hidden_size: 768, n_blocks: 12}.
+defaults:
+  - tasks: diffusion_nextmol
+  - interference: gen_nextmol_denovo
+  - hydra: default
+  - _self_
+
+name: "nextmol_generate"
+seed: 42
+
+# cli/generate.py accepts a file or a directory here.
+chkpt_directory: ${asset:nextmol/pretrained/nextmol_pretrained.ckpt}
+
+# cli/generate.py reads cfg.atom_vocab unconditionally under struct mode.
+atom_vocab: [H, C, N, O, F]
+
+tasks:
+  dataset: qm9
+  pos_std: 1.4182              # MUST match the checkpoint. See the header.
+  model:
+    hidden_size: 512
+    n_blocks: 10
+    n_heads: 8
+    # Upstream evaluates the released weights with dropout 0.05, not the 0.1
+    # they were trained at. Irrelevant at eval (dropout is off in .eval()), but
+    # this is the value their command line passes.
+    dropout: 0.05
+
+interference:
+  # A local snapshot; `acharkq/MoLlama` also works if the machine has network.
+  mollama_model: acharkq/MoLlama
+  num_molecules: 100
+  temperature: 1.0
+  num_generate: 1
+  batch_size: 16
+  num_steps: 100
+  output_path: generated_nextmol

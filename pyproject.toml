@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molcraftdiffusion"
-version = "1.9.0"
+version = "1.10.0"
 description = "A unified generative AI framework for 3D molecular generation using diffusion models"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -168,6 +168,11 @@ cpu = [
     "torch_cluster",
     "torch_spline_conv",
 ]
+# `huggingface_hub` is here and NOT in the runtime dependencies on purpose.
+# Users only ever DOWNLOAD zoo assets, which `MolecularDiffusion/assets.py`
+# does over plain HTTPS through `utils/file.py::download` -- stdlib urllib,
+# no extra package. Only the maintainer-side upload path
+# (`scripts/build_zoo_manifest.py upload`) imports it.
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
@@ -176,6 +181,7 @@ dev = [
     "flake8>=5.0.0",
     "mypy>=1.0.0",
     "pre-commit>=2.20.0",
+    "huggingface_hub",
 ]
 docs = [
     "sphinx>=7.4",
@@ -209,6 +215,8 @@ where = ["src"]
     "*.py", "*.txt", "*.rst", "*.md",
     "data/**/*.json",
     "configs/**/*.yaml",
+    "configs/**/*.xyz",
+    "zoo.yaml",
     "**/*.pt", "**/*.npz",
 ]
 

@@ -1,0 +1,64 @@
+# GCDM generation from the authors' RELEASED pretrained QM9 weights.
+#
+# PREREQUISITES (two commands; the second needs ~1 GB of network transfer out
+# of a 2.4 GB archive, streamed and aborted early)
+#
+#   mkdir -p docs/model_integrations/gcdm/checkpoints/raw
+#   cd docs/model_integrations/gcdm/checkpoints/raw && \
+#     curl -sL "https://zenodo.org/records/13375913/files/GCDM_Checkpoints.tar.gz?download=1" \
+#       | tar -xzv --wildcards "*Unconditional*" "*Conditional/alpha*"
+#
+#   python docs/model_integrations/gcdm/scripts/convert_checkpoint.py --all
+#
+# The converter writes docs/model_integrations/gcdm/checkpoints/converted/
+# and PROVES its key remap: every tensor the rebuilt task needs must exist in
+# the source with a matching shape, every source key must be either used or
+# provably not a weight, the rebuilt noise schedule must equal the
+# checkpoint's own precomputed gamma (it does, exactly), and after reloading
+# through cli/generate.py's real path every live tensor must be byte-identical
+# to the source's. That last check matters because cli/generate.py loads with
+# strict=False -- an unverified remap would load nothing and still emit
+# plausible-looking molecules.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   Nothing. This is GCDM's unconditional QM9 model (its hyper_parameters
+#   record conditioning: []). Coordinates + atom type + integer atomic-number
+#   channel, zero centre of mass, no bonds, no pocket.
+#
+#   For the property-CONDITIONAL checkpoints, see configs/interference/
+#   gen_gcdm_optimize.yaml -- those weights are what GCDM's property
+#   OPTIMIZATION mode runs on.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. diffusion_steps MUST be 1000. That is the T these weights were trained
+#      with; a mismatch produces plausible-looking garbage rather than an
+#      error. Lower it only knowing you are trading quality for time.
+#   2. GCPNet is O(N^2) in atoms per denoising step, so this is slower than
+#      EDM or TABASCO for the same molecule count. Raise batch_size if you
+#      have the memory; num_generate is set low so a first run finishes in
+#      minutes.
+#   3. The molecule-size prior is GCDM's OWN published QM9 histogram, carried
+#      over from the checkpoint's num_nodes_distribution buffers rather than
+#      synthesised here. mol_size [0, 0] draws from it.
+#   4. The generated `charges` channel is noisy (an EDM-family artifact of
+#      the /10 charge normalisation); the atom identity written to the .xyz
+#      comes from the one-hot channel, which is the reliable one.
+
+defaults:
+  - tasks: diffusion_gcdm
+  - interference: gen_unconditional
+  - _self_
+
+name: "gcdm_gen_qm9_pretrained"
+chkpt_directory: ${asset:gcdm/qm9_uncond/gcdm_qm9_uncond.ckpt}
+atom_vocab: [H, C, N, O, F]
+seed: 9
+
+diffusion_steps: 1000 # GCDM's T -- do not change for these weights
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  mol_size: [0, 0] # [0,0] => draw sizes from GCDM's published QM9 histogram
+  n_frames: 0
+  output_path: "generated_gcdm"

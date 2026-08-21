@@ -1,0 +1,74 @@
+# Apo2Mol -- generation from the RELEASED PRETRAINED checkpoint.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   One APO (ligand-free) pocket, taken from a row of a converted ASE db. The
+#   model generates a ligand AND a holo-like conformation of that pocket. It
+#   cannot run unconditionally -- there is no mode without a pocket.
+#
+# WHAT THIS WRITES, per sample i, into interference.output_path:
+#   molecule_<i>.xyz    the generated ligand, in the input pocket's frame
+#   pocket_<i>.pdb      the CO-GENERATED pocket -- Apo2Mol's headline output,
+#                       and the thing no other pocket model in this repo emits
+#   pocket_metrics.csv  per-sample pocket RMSD and TM-score vs the reference
+#
+# PREREQUISITES -- run both before this config will work
+#
+#   1. The weights (39 MB, shipped inside the model repo; nothing downloaded):
+#
+#        python docs/model_integrations/apo2mol/scripts/convert_checkpoint.py
+#
+#      The raw file cannot simply be torch.load-ed: it pickles live upstream
+#      objects that import kornia / numpy-quaternion, and trips two separate
+#      version-skew AttributeErrors. The converter works around all three
+#      without installing anything, and ASSERTS the result -- every tensor is
+#      re-read through cli/generate.py's own load path and compared with
+#      torch.equal, because strict=False makes a bad conversion look exactly
+#      like a good one at runtime.
+#
+#   2. A pocket to generate into:
+#
+#        python docs/model_integrations/apo2mol/scripts/convert_dataset.py \
+#          <dir of complex sub-directories> data/apo2mol_pockets.db
+#
+#      Each sub-directory needs an apo pocket PDB and a ligand SDF, plus
+#      either a matching holo pocket PDB or an apo/holo protein pair.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   * pocket_db points at the SMOKE db (the single bundled 8tv6 complex),
+#     because the published dataset is access-gated. Repoint it at your own
+#     converted db -- the weights are the real released ones either way.
+#   * use_holo_reference is true, which only works on rows converted from a
+#     genuine apo/holo pair (the smoke row is one). Set it to false for a
+#     pocket you only have in apo form; the reported RMSD / TM-score then
+#     measures DISPLACEMENT from your input, not accuracy, which is exactly
+#     what upstream's sample_custom_pocket.py reports and warns about.
+#   * Ligand sizes come from KGDiff's static pocket-extent prior. Set
+#     interference.mol_size to a list to override.
+defaults:
+  - tasks: diffusion_apo2mol
+  - interference: gen_apo2mol_pocket
+  - _self_
+
+name: "apo2mol_generate"
+# cli/generate.py accepts a file or a directory here.
+chkpt_directory: ${asset:apo2mol/pretrained/apo2mol_pretrained.ckpt}
+atom_vocab: [H, C, N, O, F, P, S, Cl]
+seed: 42
+
+tasks:
+  # The prior comes with the checkpoint under net_cond.*; this only silences
+  # the warning emitted while the task is being built.
+  net_cond_ckpt: ${asset:apo2mol/pminet/pminet}
+
+interference:
+  pocket_db: ${asset:apo2mol/data/apo2mol_smoke.db}
+  pocket_index: 0
+  num_generate: 10
+  # The prior's dense complex graph is the memory ceiling. Raise cautiously.
+  batch_size: 2
+  # null => the model's full 1000-step schedule, which is the only setting
+  # that reaches all 5 pocket-update steps ({799, 599, 399, 199, 10}).
+  # Shortening this drops pocket updates first and fast.
+  num_steps: null
+  use_holo_reference: true
+  output_path: "generated_apo2mol"

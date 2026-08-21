@@ -1,0 +1,91 @@
+# GCDM PROPERTY OPTIMIZATION -- take molecules you already have and push them
+# towards a property value, using the authors' RELEASED property-conditional
+# QM9 weights (alpha).
+#
+# PREREQUISITES (three steps)
+#
+#   1. Fetch and convert the weights (same two commands as
+#      configs/gcdm_generate.yaml; the tar filter below already pulls the
+#      alpha checkpoint):
+#
+#        mkdir -p docs/model_integrations/gcdm/checkpoints/raw
+#        cd docs/model_integrations/gcdm/checkpoints/raw && \
+#          curl -sL "https://zenodo.org/records/13375913/files/GCDM_Checkpoints.tar.gz?download=1" \
+#            | tar -xzv --wildcards "*Unconditional*" "*Conditional/alpha*"
+#
+#        python docs/model_integrations/gcdm/scripts/convert_checkpoint.py --all
+#
+#   2. Produce starting molecules. This mode does NOT generate them -- it
+#      edits molecules you give it, exactly as GCDM's own README does in two
+#      stages. The easy source is an ordinary generate run:
+#
+#        MolCraftDiff generate configs/gcdm_generate.yaml
+#
+#      which writes .xyz files into
+#      docs/model_integrations/gcdm/gen_qm9_pretrained (the default
+#      input_mols_dir below). Any directory of .xyz files works, including
+#      real molecules of your own, as long as every element is in atom_vocab.
+#
+#   3. MolCraftDiff generate configs/gcdm_optimize.yaml
+#
+# WHAT THE MODEL CONDITIONS ON
+#   One scalar property value, alpha (isotropic polarizability, Bohr^3), fed
+#   to every node as context. GCDM ships six conditional QM9 checkpoints --
+#   alpha, gap, homo, lumo, mu, Cv -- so point chkpt_directory at another and
+#   change property_names/target_values to optimize a different property.
+#   No property classifier is involved: the conditional weights themselves do
+#   the steering. GCDM's EGNN classifiers only SCORE finished samples for the
+#   paper's table and were deliberately not ported.
+#
+# HOW IT WORKS, IN ONE PARAGRAPH
+#   Each input molecule is forward-diffused to t0 = noise_level (partial
+#   re-noising, SDEdit-style), then walked back down to t = 0 over
+#   num_optimization_timesteps steps with the property target as context.
+#   Repeat `iterations` times, each round re-seeded with the previous round's
+#   output. Low noise_level = stays close to the input; high = freer to move.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. noise_level: 0.5 is UNVALIDATED. It is a reasonable middle value
+#      chosen to make the mode usable, not a swept or measured optimum --
+#      sweep it for your property before quoting any number that depends on
+#      it.
+#   2. noise_level: 1.0 reproduces upstream's literal behaviour and is
+#      numerically UNSTABLE here: the reverse chain amplifies the seed by
+#      1/alpha(1.0) ~ 316x and blows molecules apart. Do not raise it to 1.0.
+#   3. There is no filtering or selection between iterations -- matching
+#      upstream. Whatever comes out of round n seeds round n+1, good or bad.
+#   4. No property is measured on the output. If you need the achieved alpha,
+#      score the .xyz files yourself with a predictor of your choice.
+#   5. GCPNet is O(N^2) in atoms per denoising step, so this is slower than
+#      EDM-family models; raise batch_size if you have the memory.
+
+defaults:
+  - tasks: diffusion_gcdm
+  - interference: gen_gcdm_optimize
+  - _self_
+
+name: "gcdm_optimize_qm9_alpha"
+chkpt_directory: ${asset:gcdm/qm9_alpha/gcdm_qm9_alpha.ckpt}
+atom_vocab: [H, C, N, O, F]
+seed: 9
+
+interference:
+  # The property target, in the property's own units. Normalized through the
+  # checkpoint's own mean/mad normalizer. Leaving this empty is an error --
+  # these weights are conditional and require a context.
+  target_values: [80.0] # alpha, Bohr^3
+  property_names: ["alpha"]
+  batch_size: 8
+  condition_configs:
+    # Directory of .xyz molecules to optimize -- see PREREQUISITES step 2.
+    input_mols_dir: "generated_gcdm"
+    # Optimization rounds, each re-seeded with the previous round's output.
+    iterations: 5
+    # K, the compressed reverse-trajectory length. Deliberately NOT the
+    # model's T (1000): the time axis is rescaled by K.
+    num_optimization_timesteps: 100
+    # t0 in (0, 1] -- how far each input is forward-diffused before the
+    # reverse walk. Lower stays closer to the input molecule. See limitations
+    # 1 and 2 above before changing it.
+    noise_level: 0.5
+  output_path: "gcdm_optimized"

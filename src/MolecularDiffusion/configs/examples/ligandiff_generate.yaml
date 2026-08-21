@@ -1,0 +1,80 @@
+# @package _global_
+# Generation with LigandDiff from the CONVERTED PRETRAINED checkpoint.
+#
+# WHAT THE MODEL DOES / CONDITIONS ON
+# -----------------------------------
+# LigandDiff regenerates ONE ligand of a 3D transition-metal complex. It is
+# conditional-only: you must supply a scaffold (the metal plus the ligands you
+# want kept) as an .xyz, and the model grows a new ligand onto it. Dispatch is
+# the platform's generic "outpaint" mode -- freeze the reference, draw a
+# strictly larger total atom count, denoise the difference.
+#
+# PREREQUISITE -- convert the checkpoint first
+# ---------------------------------------------
+#   python docs/model_integrations/ligandiff/scripts/convert_checkpoint.py \
+#     --src others/LigandDiff/model/pretrained.ckpt \
+#     --out docs/model_integrations/ligandiff/checkpoints/converted/ligandiff_pretrained.ckpt
+#
+# The reference scaffold below was extracted from the val split with:
+#   python docs/model_integrations/ligandiff/scripts/extract_reference_complex.py \
+#     --pt-path docs/model_integrations/ligandiff/data/val.pt \
+#     --out docs/model_integrations/ligandiff/data/reference_complex.xyz
+# Point `reference_structure_path` at your own .xyz to use a different
+# complex. It must be hydrogen-free and contain only the 8 heavy atoms
+# (C,N,O,S,Br,Cl,P,F) and one of the 10 supported metals
+# (Cr,Mn,Fe,Co,Ni,Cu,Zn,Ru,Pd,Pt) -- preprocess_ref_structure resolves
+# elements with allow_unknown=False and raises on anything else.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+# --------------------------------------------
+# * `diffusion_noise_schedule: learned` below is NOT optional. The released
+#   weights were trained with the learned GammaNetwork (the checkpoint's own
+#   hyper_parameters say so, contradicting upstream's config.yml). With the
+#   task default `polynomial_2`, the eight edm.gamma.* tensors arrive as
+#   unexpected keys and cli/generate.py:322's strict=False load drops them
+#   silently -- generation then runs on the wrong schedule while looking fine.
+# * `mol_size` is the TOTAL atom count (scaffold + new ligand), not the ligand
+#   size. It must exceed the scaffold's atom count or generation raises. The
+#   range below reproduces upstream's 6-20 atom ligand draw
+#   (sampling.py:19-24) on the bundled 18-atom scaffold; change it whenever
+#   you change the scaffold.
+# * The scaffold's `ligand_group` slots are recovered from geometry
+#   (connected components of the covalent-radius graph after deleting the
+#   metal) rather than from molSimplify, which upstream used. The two agree on
+#   ordinary mononuclear complexes; bridged/polynuclear cases may differ.
+
+defaults:
+  - tasks: diffusion_ligandiff
+  - interference: gen_outpaint
+  - _self_
+
+name: "ligandiff_generate_pretrained"
+
+# cli/generate.py:386 accepts a file or a directory.
+chkpt_directory: ${asset:ligandiff/pretrained/ligandiff_pretrained.ckpt}
+
+seed: 42
+
+# Mandatory as a *value*: cli/generate.py:598 hard-reads cfg.atom_vocab while
+# building load_model()'s kwargs, before the task-yaml precedence check at
+# cli/generate.py:95/309 can supersede it. Same 18-entry decode-side list as
+# configs/tasks/diffusion_ligandiff.yaml -- 8 upstream heavy atoms at indices
+# 0..7 (src/const.py order), 10 metals at 8..17. The decode path depends on
+# that ordering.
+atom_vocab: [C, N, O, S, Br, Cl, P, F, Cr, Mn, Fe, Co, Ni, Cu, Zn, Ru, Pd, Pt]
+
+tasks:
+  # Architecture is the released checkpoint's, already the task-config default
+  # (hidden_nf 192, n_layers 5, attention/tanh true, inv_sublayers 1,
+  # drop_rate 0.2, 500 steps). Only the schedule has to be overridden.
+  diffusion_noise_schedule: learned
+  diffusion_loss_type: vlb
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  output_path: generated_ligandiff
+  n_frames: 0
+  mol_size: [24, 38]
+  condition_configs:
+    reference_structure_path: ${asset:ligandiff/data/reference_complex.xyz}

@@ -1,0 +1,52 @@
+# GCDM drug-sized generation from the authors' RELEASED pretrained GEOM
+# weights.
+#
+# PREREQUISITES -- identical to configs/gcdm_generate.yaml:
+#
+#   mkdir -p docs/model_integrations/gcdm/checkpoints/raw
+#   cd docs/model_integrations/gcdm/checkpoints/raw && \
+#     curl -sL "https://zenodo.org/records/13375913/files/GCDM_Checkpoints.tar.gz?download=1" \
+#       | tar -xzv --wildcards "*Unconditional*" "*Conditional/alpha*"
+#
+#   python docs/model_integrations/gcdm/scripts/convert_checkpoint.py --all
+#
+# No dataset is needed to generate.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   Nothing. GCDM's GEOM model is unconditional and carries NO atomic-number
+#   channel (include_charges: False) -- the latent is 16 one-hot atom-type
+#   scalars only, and element identity is read back off that one-hot.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. This is the slowest configuration in the repo: GCPNet is O(N^2) in
+#      atoms and GEOM molecules reach 181. 1000 denoising steps on a
+#      100-atom molecule is minutes, not seconds. num_generate and
+#      batch_size are set low deliberately; `max_mol_size` caps the size
+#      prior if you want to bound the worst case.
+#   2. diffusion_steps MUST be 1000 for these weights.
+#   3. The atom vocabulary below is GCDM's published 16-element GEOM list, in
+#      their order and WITHOUT Se. It is not the platform's bundled
+#      17-element vocabulary and must not be "fixed" -- inserting Se would
+#      shift every one-hot column past As.
+#   4. The size prior is GCDM's own published GEOM histogram (3..181 atoms),
+#      carried over from the checkpoint rather than synthesised.
+
+defaults:
+  - tasks: diffusion_gcdm_geom
+  - interference: gen_unconditional
+  - _self_
+
+name: "gcdm_gen_geom_pretrained"
+chkpt_directory: ${asset:gcdm/geom_uncond/gcdm_geom_uncond.ckpt}
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Br, I, Hg, Bi]
+seed: 9
+
+diffusion_steps: 1000 # GCDM's T -- do not change for these weights
+
+interference:
+  batch_size: 1
+  num_generate: 10
+  mol_size: [0, 0] # draw sizes from GCDM's published GEOM histogram
+  max_mol_size: 0 # 0 = no cap; set e.g. 80 to bound the O(N^2) cost
+  n_frames: 0
+  output_path: "generated_gcdm_geom"

@@ -1,0 +1,69 @@
+# @package _global_
+# Pocket-conditioned generation from DiffPharma's CONVERTED PRETRAINED
+# weights (upstream DiffPharma_best.ckpt, epoch 772, CrossDocked).
+#
+#   MolCraftDiff generate configs/diffpharma_generate.yaml
+#
+# PREREQUISITE -- run once:
+#
+#   python docs/model_integrations/diffpharma/scripts/convert_checkpoint.py
+#
+# It remaps the released checkpoint's 525 tensors (`ddpm.` -> `task.model.`),
+# ASSERTS the remapped key set and shapes equal a freshly built task, and
+# writes an edm_stat.pkl size-prior sidecar next to it that cli/generate.py
+# picks up automatically. That assertion is load-bearing: cli/generate.py:298
+# loads with strict=False, so a bad remap would load NOTHING and still emit
+# plausible-looking noise. Do not skip the script and hand-copy the file.
+#
+# CHOOSE A POCKET -- set exactly one source under `interference:`
+#
+#   (a) pocket_db + pocket_index   a row of a converted ASE db. This is the
+#                                  default below: complex 0 of the released
+#                                  CrossDocked test split.
+#
+#   (b) pocket_pdb + ref_sdf       a novel protein + a reference ligand pose
+#                                  marking the site. Preprocessed on the fly
+#                                  through ODDT/Biopython, reproducing the
+#                                  authors' released arrays bit-identically.
+#                                  Needs the [data] extra:
+#                                      pip install '.[data]' --no-deps
+#                                  (oddt, biopython, openbabel, rdkit)
+#                                  Worked example:
+#                                      pocket_db: null
+#                                      pocket_pdb: others/DiffPharma/example/14gs.pdb
+#                                      ref_sdf:    others/DiffPharma/example/14gs.sdf
+#
+# The ref_sdf ligand is used only to locate the pocket and is not copied into
+# the output -- generated ligands are sampled fresh, then written in the
+# input pocket's coordinate frame so they overlay on the original PDB.
+#
+# Ligand size is drawn from the 2D joint histogram CONDITIONED on the pocket
+# size, not a flat atom-count prior. Override with `mol_size: [20, 24, 28]`
+# to sample uniformly from a fixed list instead.
+
+defaults:
+  - tasks: diffusion_diffpharma
+  - interference: gen_diffpharma_pocket
+  - _self_
+
+name: "diffpharma_generate"
+chkpt_directory: ${asset:diffpharma/pretrained}
+atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F, others]
+seed: 42
+
+tasks:
+  size_distribution_path: ${asset:diffpharma/data/dataset_db/size_distribution.npy}
+
+interference:
+  pocket_db: ${asset:diffpharma/data/dataset_db/test.db}
+  pocket_index: 0
+
+  pocket_pdb: null
+  ref_sdf: null
+
+  num_generate: 20
+  batch_size: 4
+  num_steps: null   # null => the model's full T (500). Lower it to trade
+                    # sample quality for speed; 500 steps is ~16 s for 4.
+  mol_size: []      # empty => 2D size prior conditioned on the pocket size
+  output_path: "generated_diffpharma"
