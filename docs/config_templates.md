@@ -78,15 +78,14 @@ MolCraftDiff train docs/cfg_examples/train_diffusion
 | `docs/cfg_examples/gen_hybrid_cfg_gg.yaml` | `cfggg` — hybrid CFG + GG |
 | `docs/cfg_examples/gen_inpaint.yaml` | `inpaint` — structure inpainting |
 | `docs/cfg_examples/gen_outpaint.yaml` | `outpaint` — fragment extension |
-| `docs/cfg_examples/gen_silvr.yaml` | `silvr` — soft reference steering |
 
 ```bash
 MolCraftDiff generate docs/cfg_examples/gen_cfg
 ```
 
 :::{note}
-The structure-guided templates (`gen_inpaint`, `gen_outpaint`, `gen_silvr`)
-need a reference `.xyz`. Three are shipped with the zoo — fetch them with
+The structure-guided templates (`gen_inpaint`, `gen_outpaint`) need a
+reference `.xyz`. Three are shipped with the zoo — fetch them with
 `MolCraftDiff zoo fetch inputs/templates` — or point
 `condition_configs.reference_structure_path` at your own.
 :::

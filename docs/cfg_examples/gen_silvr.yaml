@@ -1,0 +1,48 @@
+# Tutorial 6: Structure-Guided Generation — SILVR (Soft Reference Steering)
+# Usage: MolCraftDiff generate docs/cfg_examples/gen_silvr
+#
+# Unlike inpaint/outpaint, SILVR freezes nothing: every atom stays mobile and
+# each reverse step nudges the latent towards a re-noised copy of the reference.
+# The output is a NEW molecule that resembles the reference rather than
+# containing it, which is what makes SILVR suitable for fragment merging —
+# the reference XYZ may hold several disconnected fragments.
+#
+# Runcie & Mey, "SILVR: Guided Diffusion for Molecule Generation",
+# J. Chem. Inf. Model. 2023, 63(19), 5996-6005. doi:10.1021/acs.jcim.3c00667
+
+defaults:
+  - data: mol_dataset
+  - tasks: diffusion
+  - interference: gen_silvr
+  - _self_
+
+chkpt_directory: "training_outputs/benchmark/EDM_geom/"  # <-- path to your trained model
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
+# The pull is applied per step, so its effect compounds over the trajectory.
+# Use the checkpoint's full step count; short runs drift off the reference.
+diffusion_steps: 900
+
+interference:
+  _target_: MolecularDiffusion.runmodes.generate.GenerativeFactory
+  task_type: silvr
+  sampling_mode: "ddpm"     # SILVR is DDPM-only; "ddim" raises
+  num_generate: 100
+  batch_size: 4             # batching is supported; one reference per run
+  max_mol_size: 100
+  # Reference atoms + atoms SILVR may invent. Must be >= the reference (below
+  # it is clamped up with a warning). Cannot be [0, 0] unless the checkpoint
+  # ships a node-size distribution to draw from.
+  mol_size: [30]
+  target_values: []
+  property_names: []
+  seed: 86
+  output_path: "${chkpt_directory}/output_silvr"
+
+  condition_configs:
+    reference_structure_path: "data/my_fragments.xyz"  # <-- your reference XYZ
+    condition_component: xh   # "x" steers geometry only, leaving elements free
+    n_retrys: 0               # retries are disabled for structure-guided modes
+    silvr_cfgs:
+      silvr_rate: 0.01        # the published working value; 0 = ignore, 1 = replace
+      silvr_rates: null       # optional per-atom list (length = reference atoms)
+      shift_centre: true      # true → coordinates come back in the binding site
