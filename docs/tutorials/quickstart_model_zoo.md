@@ -192,8 +192,6 @@ more, and nothing you already have.
 
 ---
 
----
-
 ## How assets are named
 
 Three kinds of thing, three prefixes — so you can tell what something is from
