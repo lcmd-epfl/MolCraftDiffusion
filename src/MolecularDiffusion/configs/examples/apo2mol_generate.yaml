@@ -61,7 +61,7 @@ tasks:
   net_cond_ckpt: ${asset:apo2mol/pminet/pminet}
 
 interference:
-  pocket_db: ${asset:apo2mol/data/apo2mol_smoke.db}
+  pocket_db: ${asset:inputs/apo2mol/8tv6/apo2mol_smoke.db}
   pocket_index: 0
   num_generate: 10
   # The prior's dense complex graph is the memory ceiling. Raise cautiously.

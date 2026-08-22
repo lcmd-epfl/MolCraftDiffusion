@@ -98,11 +98,13 @@ class DiffSMolShapeNodeDistribution:
         volume_hist: Optional[Dict[int, Dict[int, int]]] = None,
         bin_window: int = 1,
     ) -> None:
-        if not n_node_dist:
-            raise ValueError(
-                "DiffSMolShapeNodeDistribution needs a non-empty histogram."
-            )
-        self.n_node_dist = {int(k): int(v) for k, v in n_node_dist.items()}
+        # An empty histogram is tolerated at construction and only refused
+        # when a size is actually drawn. `_dataset_stats` is computed from
+        # `train_set` and is NOT persisted into the checkpoint, so on the
+        # generate path it is always empty -- raising here made every
+        # generate-from-checkpoint run fail, even with an explicit
+        # `interference.mol_size`, which needs no histogram at all.
+        self.n_node_dist = {int(k): int(v) for k, v in (n_node_dist or {}).items()}
         self._sizes = sorted(self.n_node_dist)
         self._weights = [self.n_node_dist[s] for s in self._sizes]
         self.volume_bins = volume_bins or []
@@ -111,9 +113,19 @@ class DiffSMolShapeNodeDistribution:
 
     @property
     def max_n_nodes(self) -> int:
-        return max(self._sizes)
+        # Empty on the generate path (see __init__): report 0 rather than
+        # letting `max([])` raise a bare, uninformative ValueError.
+        return max(self._sizes) if self._sizes else 0
 
     def sample(self, n_samples: int = 1) -> torch.Tensor:
+        if not self._sizes:
+            raise ValueError(
+                "DiffSMolShapeNodeDistribution has no size histogram, so it "
+                "cannot choose molecule sizes. Either set "
+                "`interference.mol_size` explicitly (e.g. [22]), or generate "
+                "from a checkpoint trained by this platform with a dataset "
+                "attached."
+            )
         return torch.tensor(
             random.choices(self._sizes, weights=self._weights, k=n_samples),
             dtype=torch.long,

@@ -74,7 +74,7 @@ tasks:
   # Inline and .smi molecules get an ETKDG conformer first, so write the
   # stereochemistry you want INTO the SMILES -- an unspecified centre has
   # nothing for the model to honour.
-  sample_input: ${asset:loqi/data/loqi_smoke.db}
+  sample_input: ${asset:data/chembl3d/stereo-200/loqi_smoke.db}
   sample_pool_limit: 2000
 
 interference:

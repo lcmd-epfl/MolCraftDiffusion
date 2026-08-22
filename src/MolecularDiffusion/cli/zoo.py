@@ -8,6 +8,7 @@ instead of turning back into a pile of scattered files.
 import difflib
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -373,6 +374,81 @@ def config_cmd(name, dest):
     shutil.copy2(src, target)
     click.echo(f"copied -> {target}")
     click.echo(f"edit it, then:  MolCraftDiff generate {target}")
+
+
+@zoo.command("bundle")
+@click.option("--out", type=click.Path(), default="zoo_bundle",
+              help="Directory to build the archive in")
+@click.option("--archive/--no-archive", default=True,
+              help="Also write a .tar.gz next to the tree")
+def bundle_cmd(out, archive):
+    """Build a self-contained, citable snapshot of the zoo.
+
+    Lays assets out in the CACHE layout, not the HuggingFace one, so the
+    unpacked archive is usable with a single `export MOLCRAFT_ASSETS=$(pwd)`
+    -- no unpacking logic and no special format. Only `redistribute: true`
+    assets are included; the manifest travels with them so the archive
+    records exactly what it holds.
+    """
+    import shutil          # noqa: PLC0415
+    import tarfile         # noqa: PLC0415
+
+    root = Path(out)
+    root.mkdir(parents=True, exist_ok=True)
+
+    staged = withheld = 0
+    total = 0
+    for key, info in sorted(_asset_map().items()):
+        if "alias" in info:
+            continue
+        if not info.get("redistribute"):
+            withheld += 1
+            continue
+        src_dir = assets.local_path(key)
+        if not src_dir.exists():
+            raise click.ClickException(
+                f"{key} is not in the local cache. Fetch everything first:\n"
+                f"  MolCraftDiff zoo fetch --all"
+            )
+        for spec in info.get("files") or []:
+            src = src_dir / spec["path"]
+            dest = root / key / spec["path"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.exists():
+                try:
+                    os.link(src, dest)
+                except OSError:
+                    shutil.copy2(src, dest)
+            total += spec["size"]
+        staged += 1
+
+    shutil.copy2(assets.MANIFEST, root / "zoo.yaml")
+    examples = Path(assets.__file__).parent / "configs" / "examples"
+    if examples.is_dir():
+        shutil.copytree(examples, root / "cfg_examples", dirs_exist_ok=True)
+
+    (root / "README.md").write_text(
+        "# MolCraftDiffusion — zoo snapshot\n\n"
+        "Unpack, point the platform at this directory, and run:\n\n"
+        "```bash\nexport MOLCRAFT_ASSETS=$(pwd)\n"
+        "MolCraftDiff generate examples/kgdiff_generate.yaml\n```\n\n"
+        "This layout IS the cache layout, so no import step is needed.\n\n"
+        f"Contains {staged} assets ({_human(total)}). `zoo.yaml` is the "
+        "manifest, with a sha256 for every file; `MolCraftDiff zoo verify "
+        "--all` checks them.\n\n"
+        f"{withheld} asset(s) are not included because their upstream licence "
+        "does not permit redistribution; `MolCraftDiff zoo recipe <asset>` "
+        "prints how to build each one locally.\n",
+        encoding="utf-8",
+    )
+
+    click.echo(f"  {staged} assets ({_human(total)}), {withheld} withheld")
+    click.echo(f"  -> {root}")
+    if archive:
+        tgz = root.with_suffix(".tar.gz")
+        with tarfile.open(tgz, "w:gz") as tar:
+            tar.add(root, arcname=root.name)
+        click.echo(f"  -> {tgz} ({_human(tgz.stat().st_size)})")
 
 
 @zoo.command("recipe")

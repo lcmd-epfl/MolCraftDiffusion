@@ -52,7 +52,7 @@ atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]
 seed: 42
 
 interference:
-  pocket_db: ${asset:kgdiff/data/kgdiff_smoke.db}
+  pocket_db: ${asset:data/crossdocked/pockets10a/kgdiff_smoke.db}
   pocket_index: 0
 
   num_generate: 20

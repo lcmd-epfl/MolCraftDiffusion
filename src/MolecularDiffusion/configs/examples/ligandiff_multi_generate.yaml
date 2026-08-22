@@ -99,7 +99,7 @@ interference:
   # removed ligands. 16-28 total leaves 8-20 atoms for the new ligands.
   mol_size: [16, 28]
   condition_configs:
-    reference_structure_path: ${asset:ligandiff_multi/data/reference_complex.xyz}
+    reference_structure_path: ${asset:inputs/ligandiff-multi/reference/reference_complex.xyz}
     # Optional: pin the denticity partition of the free coordination sites,
     # e.g. outpaint_cfgs: {denticity_split: [2, 2]}. Omitted so each sample
     # draws a random feasible partition from CN_OCT.

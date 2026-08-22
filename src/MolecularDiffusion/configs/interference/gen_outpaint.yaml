@@ -13,7 +13,7 @@ max_mol_size: 0              # code default; 0 = no cap. Caps randomized ([0,0])
 save_xyzrender_figures: false # code default
 output_path: generated_mol
 condition_configs:
-  reference_structure_path: ${asset:shared/templates/Cp_op.xyz}
+  reference_structure_path: ${asset:inputs/templates/Cp_op.xyz}
   condition_component: xh            # code default
   use_noised_conditioning: false     # code default
   n_retrys: 0                # retries are currently disabled for structure-guided generation

@@ -13,7 +13,7 @@ max_mol_size: 0              # code default; 0 = no cap
 save_xyzrender_figures: false # code default
 output_path: generated_mol
 condition_configs:
-  reference_structure_path: ${asset:shared/templates/CpHHH.xyz}
+  reference_structure_path: ${asset:inputs/templates/CpHHH.xyz}
   condition_component: xh            # code default; "x" restricts SILVR to coordinates
   n_retrys: 0                        # forced to 0 for structure-guided modes
   t_retry: 180

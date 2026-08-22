@@ -57,7 +57,7 @@ name: "ligandiff_generate_trained"
 
 # cli/generate.py accepts a file or a directory. See the note above -- the
 # `MolecularDiffusion/<id>/` segment is generated per run and will differ.
-chkpt_directory: "ligandiff_train/MolecularDiffusion/lbj7ecmk/checkpoints/last.ckpt"
+chkpt_directory: ???   # <- your own training run, e.g. ligandiff_train/MolecularDiffusion/<run-id>/checkpoints/last.ckpt
 
 seed: 42
 
@@ -87,4 +87,4 @@ interference:
   # scaffold.
   mol_size: [24, 38]
   condition_configs:
-    reference_structure_path: ${asset:ligandiff/data/reference_complex.xyz}
+    reference_structure_path: ${asset:inputs/ligandiff/reference/reference_complex.xyz}

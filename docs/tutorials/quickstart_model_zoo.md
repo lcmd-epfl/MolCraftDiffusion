@@ -192,6 +192,38 @@ more, and nothing you already have.
 
 ---
 
+---
+
+## How assets are named
+
+Three kinds of thing, three prefixes — so you can tell what something is from
+its name alone:
+
+| Prefix | What it is | Example |
+| :--- | :--- | :--- |
+| `data/` | a **corpus** — never named after a model | `data/qm9/graph3d` |
+| `inputs/` | a **run input** — a reference structure, a single protein target | `inputs/templates` |
+| *(model name)* | **weights** and their sidecars | `kgdiff/pretrained` |
+
+Corpora are named `data/<corpus>/<variant>`: the corpus first, then how it was
+processed. So the CrossDocked pockets that KGDiff, IPDiff and DiffSBDD all read
+are `data/crossdocked/pockets10a` — not named after whichever model happened to
+use them first. Different processings of one corpus sit together:
+
+```
+data/qm9/ase           data/qm9/graph3d          data/geom/ase
+data/qm9/ase-4k        data/qm9/graph3d-4k       data/geom/graph3d-val
+```
+
+Two practical consequences:
+
+- **Fetch a second model that shares a corpus and the download is already
+  done.** `zoo fetch --model ipdiff` reuses `data/crossdocked/pockets10a` if
+  kgdiff put it there.
+- **A model's own weights stay under its own name**, because those genuinely
+  belong to it. Only data moved.
+
+
 ## Command summary
 
 | Command | What it does |

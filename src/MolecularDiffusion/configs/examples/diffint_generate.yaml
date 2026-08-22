@@ -67,7 +67,7 @@ atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F]
 seed: 42
 
 interference:
-  pocket_db: ${asset:diffint/data/diffint_smoke.db}
+  pocket_db: ${asset:data/crossdocked/diffint/diffint_smoke.db}
   pocket_index: 0
 
   pocket_pdb: null

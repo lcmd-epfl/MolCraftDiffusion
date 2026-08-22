@@ -58,7 +58,7 @@ atom_vocab: [C, O, N, F, S, Cl, Br, I, P, "#"]
 seed: 42
 
 interference:
-  data_file: ${asset:diffdec/data/crossdocksingle_test_full.pt}
+  data_file: ${asset:data/crossdocked/diffdec/crossdocksingle_test_full.pt}
   complex_index: 0
 
   num_generate: 20

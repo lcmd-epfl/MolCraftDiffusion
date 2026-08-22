@@ -58,7 +58,7 @@ tasks:
 
 interference:
   # null => unconditional (the honest mode for these weights, see above)
-  reference_shape: ${asset:diffsmol/shapes/ref.pt}
+  reference_shape: ${asset:inputs/diffsmol/shapes/ref.pt}
   reference_key: null
   batch_size: 8
   num_generate: 100

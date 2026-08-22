@@ -52,10 +52,10 @@ atom_vocab: [C, N, O, S, B, Br, Cl, P, I, F, others]
 seed: 42
 
 tasks:
-  size_distribution_path: ${asset:diffpharma/data/dataset_db/size_distribution.npy}
+  size_distribution_path: ${asset:data/crossdocked/diffpharma/size_distribution.npy}
 
 interference:
-  pocket_db: ${asset:diffpharma/data/dataset_db/test.db}
+  pocket_db: ${asset:data/crossdocked/diffpharma/test.db}
   pocket_index: 0
 
   pocket_pdb: null

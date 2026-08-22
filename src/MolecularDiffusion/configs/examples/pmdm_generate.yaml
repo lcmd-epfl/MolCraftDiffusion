@@ -47,7 +47,7 @@ atom_vocab: [H, C, N, O, F, P, S, Cl, Se, others]
 seed: 42
 
 interference:
-  pocket_db: ${asset:pmdm/data/pmdm_smoke.db}
+  pocket_db: ${asset:data/crossdocked/pmdm/pmdm_smoke.db}
   pocket_index: 15
 
   num_generate: 24

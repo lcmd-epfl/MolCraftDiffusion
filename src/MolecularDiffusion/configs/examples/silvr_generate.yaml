@@ -59,7 +59,7 @@ interference:
   mol_size: [24]
   condition_configs:
     # The fragment(s) to steer towards. Elements must be in atom_vocab.
-    reference_structure_path: ${asset:silvr/data/reference.xyz}
+    reference_structure_path: ${asset:inputs/silvr/reference/reference.xyz}
     condition_component: xh   # "x" restricts SILVR to coordinates only
     n_retrys: 0               # forced to 0 for structure-guided modes
     silvr_cfgs:

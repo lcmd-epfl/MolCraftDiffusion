@@ -77,4 +77,4 @@ interference:
   n_frames: 0
   mol_size: [24, 38]
   condition_configs:
-    reference_structure_path: ${asset:ligandiff/data/reference_complex.xyz}
+    reference_structure_path: ${asset:inputs/ligandiff/reference/reference_complex.xyz}

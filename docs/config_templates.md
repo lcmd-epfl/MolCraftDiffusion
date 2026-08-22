@@ -87,7 +87,7 @@ MolCraftDiff generate docs/cfg_examples/gen_cfg
 :::{note}
 The structure-guided templates (`gen_inpaint`, `gen_outpaint`, `gen_silvr`)
 need a reference `.xyz`. Three are shipped with the zoo — fetch them with
-`MolCraftDiff zoo fetch shared/templates` — or point
+`MolCraftDiff zoo fetch inputs/templates` — or point
 `condition_configs.reference_structure_path` at your own.
 :::
 
