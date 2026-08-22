@@ -1,0 +1,69 @@
+# JODO PROPERTY-CONDITIONAL generation from the released `gap` checkpoint.
+#
+#   MolCraftDiff generate configs/jodo_cond_generate.yaml
+#
+# PREREQUISITES (three commands)
+#   MolCraftDiff data import-graph3d qm9 data/qm9_raw \
+#       data/jodo_qm9_cond_graph3d.db --targets
+#   python docs/model_integrations/jodo/scripts/fetch_zenodo_member.py \
+#       --record 8002902 --file exp_cond.zip \
+#       --out docs/model_integrations/jodo/checkpoints/raw/cond_gap \
+#       --member exp_cond/vpsde_qm9_cond_jodo_gap/checkpoints/checkpoint_40.pth
+#   python docs/model_integrations/jodo/scripts/convert_checkpoint.py cond_gap
+#
+#   The db is needed even for generation: it is where the molecule-size prior
+#   AND the property mean/MAD normalizer come from, neither of which upstream
+#   stores in the checkpoint. The converter bakes both into the .ckpt.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   One scalar: the HOMO-LUMO gap in eV. interference.target_values is the
+#   REQUESTED value in physical units -- the task normalizes it with the
+#   training set's mean/MAD before it reaches the network, exactly as upstream
+#   does. QM9's gap runs roughly 3-9 eV; 6.0 sits mid-distribution. Ask for
+#   something far outside the training range and you get extrapolation, not
+#   magic.
+#
+#   Other properties (mu, alpha, homo, lumo, cv) each have their own released
+#   checkpoint: fetch that member instead, convert it, and set
+#   tasks.condition / interference.property_names to match. Multi-property
+#   conditioning is not wired up in this pass.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. No property classifier is ported, so the platform's conditional seam
+#      warns and skips property scoring -- there is no automatic MAE number.
+#      Score the .sdf with your own predictor.
+#   2. The size prior and the mean/MAD normalizer come from the importer's QM9
+#      split, not upstream's `second_train` half of split_dict_cond_qm9.pt.
+#      Conditional numbers are therefore not paper-comparable. Every db row
+#      carries jodo_idx, the key that split file indexes on, so honouring it
+#      later is a data rebuild rather than a code change.
+#   3. Same 1000-step cost and .sdf-sidecar behaviour as jodo_generate.yaml.
+defaults:
+  - tasks: diffusion_jodo_cond
+  - interference: gen_conditional
+  - _self_
+
+name: "jodo_gen_qm9_cond_gap"
+chkpt_directory: ${asset:jodo/cond_gap/jodo_cond_gap_pretrained.ckpt}
+atom_vocab: [H, C, N, O, F]
+seed: 9
+
+# Sampling steps. Present explicitly so you can override it WITHOUT a leading
+# `+` (e.g. `diffusion_steps=50`). 1000 is upstream's faithful default;
+# upstream's README reports 50 is still good quality and is ~20x faster.
+# `tasks.sampling_steps` does NOT work -- the task is rebuilt from the
+# checkpoint's own model_config, so a tasks.* step count is silently ignored.
+diffusion_steps: 1000
+
+tasks:
+  condition: [gap]
+  sdf_output_path: jodo_gen_qm9_cond_gap/jodo_generated.sdf
+
+interference:
+  batch_size: 4
+  num_generate: 100
+  mol_size: [0, 0]         # [0,0] -> draw sizes from the QM9 size histogram
+  n_frames: 0
+  target_values: [6.0]     # requested HOMO-LUMO gap, in eV
+  property_names: ["gap"]
+  output_path: jodo_gen_qm9_cond_gap

@@ -28,12 +28,10 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from typing import Any, Optional
 
 import numpy as np
 import torch
-from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.nn import functional as F  # noqa: N812
 
@@ -62,45 +60,6 @@ try:
     from rdkit import Chem
 except ImportError:  # only the optional .sdf sidecar needs RDKit
     Chem = None
-
-
-_UNSET = object()
-_NULLS = frozenset({"null", "None", "none", "~", ""})
-
-
-def _generate_config_override(key: str, default: Any = None) -> Any:
-    """Recover ``tasks.<key>`` from the config the running process was invoked with.
-
-    Why this exists: for a checkpoint trained by this platform,
-    ``cli/generate.py`` rebuilds the task from the *training-time* config stored
-    in ``hyper_parameters.model_config`` (``core/engine_lightning.py:62-90``),
-    and only a short hardcoded allowlist of keys is taken from the generate
-    config (``cli/generate.py:277-281``). ``sdf_output_path`` is not on that
-    list, so the training-time value (``null``) silently wins and MiDi's bond
-    table -- the entire point of the model, absent from ``.xyz`` -- is lost with
-    no error. Reading the value back from the invocation keeps the fix inside
-    this task file: no core file changes, no other task class affected.
-
-    Precedence: a ``tasks.<key>=...`` CLI override, then the ``tasks:`` block of
-    the YAML named on the command line. Returns ``default`` when neither is
-    present (e.g. the task is driven from Python, not the CLI).
-    """
-    prefix = f"tasks.{key}="
-    for arg in sys.argv[1:]:
-        if arg.startswith(prefix):
-            raw = arg[len(prefix) :].strip().strip("'\"")
-            return None if raw in _NULLS else raw
-    for arg in sys.argv[1:]:
-        if arg.endswith((".yaml", ".yml")) and os.path.isfile(arg):
-            try:
-                cfg = OmegaConf.load(arg)
-            except Exception:  # noqa: BLE001 - a broken config is generate.py's problem
-                return default
-            tasks_cfg = cfg.get("tasks") if isinstance(cfg, DictConfig) else None
-            if isinstance(tasks_cfg, DictConfig) and key in tasks_cfg:
-                return tasks_cfg.get(key)
-            return default
-    return default
 
 
 def _charge_marginals(
@@ -158,7 +117,14 @@ class ModelTaskFactory:
     training dataset: MiDi's noise model needs the atom/bond/charge marginals
     and the size histogram *at construction time*, and neither is an
     ``nn.Module`` buffer, so neither survives in a checkpoint.
+
+    ``sdf_output_path`` is declared generation-time (docs §2.5b): the task is
+    rebuilt from the checkpoint's training-time config, where it is ``null``,
+    so without this declaration the generate config's value never arrives and
+    the bond sidecar -- the whole 2D half of the model -- is silently dropped.
     """
+
+    generation_time_keys = ("sdf_output_path",)
 
     def __init__(  # noqa: PLR0913
         self,
@@ -312,8 +278,7 @@ class MidiDiffusionTask(nn.Module):
         self.charge_offset = charge_offset
         self.n_charge_classes = n_charge_classes
         self.lambda_train = list(lambda_train)
-        self._sdf_output_path_cfg = sdf_output_path
-        self._sdf_output_path_resolved = _UNSET
+        self.sdf_output_path = sdf_output_path
 
         self.input_dims = Dims(
             X=self.n_atom_types,
@@ -619,35 +584,6 @@ class MidiDiffusionTask(nn.Module):
             self._write_sdf(atom_idx, charges, bond_types, coords, node_mask)
 
         return one_hot, charges, coords, node_mask.long()
-
-    @property
-    def sdf_output_path(self) -> Optional[str]:
-        """Where to write the bond sidecar, generate-config value winning.
-
-        Resolved once, lazily (the CLI argv is fixed for the process). A
-        checkpoint this platform trained carries the *training-time* value here,
-        which is ``null`` for any normal training run -- see
-        ``_generate_config_override`` for why the generate config cannot reach
-        the task through the usual path.
-        """
-        if self._sdf_output_path_resolved is _UNSET:
-            resolved = _generate_config_override(
-                "sdf_output_path", default=self._sdf_output_path_cfg
-            )
-            if resolved != self._sdf_output_path_cfg:
-                logger.info(
-                    "sdf_output_path from the generate config: %s "
-                    "(checkpoint/task config had %s)",
-                    resolved,
-                    self._sdf_output_path_cfg,
-                )
-            self._sdf_output_path_resolved = resolved
-        return self._sdf_output_path_resolved
-
-    @sdf_output_path.setter
-    def sdf_output_path(self, value: Optional[str]) -> None:
-        self._sdf_output_path_cfg = value
-        self._sdf_output_path_resolved = value
 
     def _write_sdf(  # noqa: PLR0913
         self,

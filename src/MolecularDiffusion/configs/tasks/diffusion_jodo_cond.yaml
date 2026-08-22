@@ -1,0 +1,20 @@
+# JODO on QM9, PROPERTY-CONDITIONAL -- upstream configs/vpsde_qm9_cond_jodo.py.
+#
+# Identical backbone to diffusion_jodo.yaml except that a non-empty `condition`
+# selects Cond_DGT_concat, which adds a small property MLP whose embedding is
+# ADDED to the time embedding (mol_gnn.py:685-687).
+#
+# Requires a db built with per-molecule targets:
+#   MolCraftDiff data import-graph3d qm9 data/qm9_raw <out.db> --targets
+# and data.target_fields listing the property. Property values are normalized
+# by the training set's mean/MAD, matching upstream's compute_property_mean_mad.
+#
+# `gap` is the smoke/default property; any of mu/alpha/homo/lumo/gap/cv works,
+# and each has its own released checkpoint. Multi-property (cond_ch 2) is out
+# of scope this pass.
+defaults:
+  - diffusion_jodo
+  - _self_
+
+condition: [gap]
+normalize_condition: mad

@@ -1,0 +1,24 @@
+# JODO on GEOM-Drugs, UNCONDITIONAL -- upstream configs/vpsde_geom_uncond_jodo.py,
+# the "media" variant (the unmodified config; base/large are CLI overrides).
+#
+# Deltas from diffusion_jodo.yaml, all from the upstream GEOM config and all
+# load-bearing against the released GEOM checkpoint:
+#   n_layers 8 -> 10, mlp_ratio 2 -> 4, spatial_cut_off 2.0 -> 3.0,
+#   edge_ch 2 -> 3 (include_aromatic: true).
+#
+# edge_ch: 3 means aromatic bonds ARE modelled, so the data config must set
+# kekulize: false (configs/data/jodo_geom_dataset.yaml).
+defaults:
+  - diffusion_jodo
+  - _self_
+
+n_layers: 10
+mlp_ratio: 4
+spatial_cut_off: 3.0
+edge_ch: 3
+
+# Generative-eval budget, tightened from diffusion_jodo.yaml's. GEOM molecules
+# run to 181 atoms with dense (B,N,N,3) edge tensors -- the largest allocation
+# of any model here -- so sampling during training is far costlier than on QM9.
+n_samples: 4
+batch_size: 1

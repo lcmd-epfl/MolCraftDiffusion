@@ -180,10 +180,16 @@ class GenerativeFactory:
                  save_xyzrender_figures: bool = False,
                  condition_configs={},
                  max_mol_size: int = 0,
+                 sdf_per_molecule: bool = False,
                  **kwargs,
     ):
 
         self.task = task
+        # Opt-in: write one molecule_XXXX.sdf beside each molecule_XXXX.xyz.
+        # Independent of the task's combined sdf_output_path sidecar -- both,
+        # either, or neither may be enabled. No-op for models that do not
+        # generate bonds (they never set task.last_bond_types).
+        self.sdf_per_molecule = sdf_per_molecule
         self.task_type = task_type
         self.num_generate = num_generate
         self.max_mol_size = max_mol_size
@@ -286,7 +292,93 @@ class GenerativeFactory:
                 if self.mol_size[0] == 0 and self.mol_size[1] == 0:
                     self.mol_size = [random.randint(14, 100)]
 
+    def _write_molecule_sdf(self, mol_idx: int, j: int, one_hot, charges, x, node_mask) -> None:
+        """Write ``molecule_<mol_idx>.sdf`` next to the matching ``.xyz``.
+
+        Bond-generating tasks stash their dense (B,N,N) bond matrix on
+        ``task.last_bond_types`` (MiDi, FlowMol, LoQI, JODO). The ``.xyz``
+        writer has no bond channel, so without this the 2D half of those
+        models is dropped at write time. Pairing is by construction: the
+        caller passes the same ``mol_idx`` it just gave ``_move_xyz``, and
+        ``j`` is that molecule's row in the current batch -- so the numbering
+        cannot drift the way a task-side counter would when a batch fails or
+        comes up short.
+
+        Silent no-op when the task generates no bonds. Chemistry failures are
+        warned and skipped: one unsanitizable sample must not kill a run.
+        """
+        bonds = getattr(self.task, "last_bond_types", None)
+        if bonds is None:
+            return
+        try:
+            from rdkit import Chem
+
+            from MolecularDiffusion.data.component.graph3d_dataset import (
+                build_rdkit_mol,
+            )
+            from ase.data import atomic_numbers as _atomic_numbers
+        except ImportError:
+            logger.warning("RDKit unavailable, skipping per-molecule .sdf")
+            return
+
+        vocab = getattr(self.task, "atom_vocab", None)
+        if vocab is None:
+            return
+        z_of_vocab = [_atomic_numbers[sym] for sym in vocab]
+
+        mask_j = node_mask[j].reshape(-1).cpu()
+        n = int(mask_j.sum())
+        if n == 0:
+            return
+        atom_idx = one_hot[j].argmax(dim=-1).cpu()
+        sub = bonds[j, :n, :n].cpu()
+        rows, cols = torch.triu_indices(n, n, offset=1)
+        keep = sub[rows, cols] > 0
+        bond_index = torch.stack((rows[keep], cols[keep])).numpy()
+        bond_type = sub[rows, cols][keep].numpy()
+        zs = [z_of_vocab[int(i)] for i in atom_idx[:n]]
+
+        path = os.path.join(self.output_path, f"molecule_{str(mol_idx).zfill(4)}.sdf")
+        try:
+            mol = build_rdkit_mol(
+                zs,
+                bond_index,
+                bond_type,
+                formal_charge=charges[j, :n].reshape(-1).cpu().numpy(),
+                coords=x[j, :n].cpu().numpy(),
+            )
+            writer = Chem.SDWriter(path)
+            writer.write(mol)
+            writer.close()
+        except Exception as exc:  # noqa: BLE001 - chemistry, not a bug
+            logger.warning("Skipping unsanitizable sample %d: %s", mol_idx, exc)
+
+    def _warn_if_bonds_dropped(self) -> None:
+        """Warn once when a bond-generating task is writing no bonds anywhere.
+
+        `.xyz` has no bond channel, so a task that stashed `last_bond_types`
+        with neither `tasks.sdf_output_path` nor `interference.sdf_per_molecule`
+        set is discarding half its output. That used to happen silently when a
+        bundled example config was run from outside the repo. One warning, only
+        for tasks that actually generate bonds -- bondless models never hit it.
+        """
+        if getattr(self, "_warned_bonds_dropped", False):
+            return
+        if getattr(self.task, "last_bond_types", None) is None:
+            return
+        if self.sdf_per_molecule or getattr(self.task, "sdf_output_path", None):
+            return
+        self._warned_bonds_dropped = True
+        logger.warning(
+            "%s generated bond orders but neither tasks.sdf_output_path nor "
+            "interference.sdf_per_molecule is set -- only .xyz is being "
+            "written, so the bonds are discarded. Set one of them to keep "
+            "them.",
+            type(self.task).__name__,
+        )
+
     def _move_xyz(self, src_path: str, mol_idx: int, trajectory_dir: str = None) -> str:
+        self._warn_if_bonds_dropped()
         dest_path = os.path.join(self.output_path, f"molecule_{str(mol_idx).zfill(4)}.xyz")
         shutil.move(src_path, dest_path)
         if self.save_xyzrender_figures:
@@ -448,6 +540,8 @@ class GenerativeFactory:
                         path_xyz = os.path.join(output_path_frame, f"molecule_000.xyz")
                         idx = i * self.batch_size + j
                         self._move_xyz(path_xyz, idx, trajectory_dir=output_path_frame)
+                        if self.sdf_per_molecule:
+                            self._write_molecule_sdf(idx, j, one_hot, charges, x, node_mask)
                 else:
                     if torch.all(one_hot == 0) or getattr(self.task, "atom_vocab", None) is None or one_hot.shape[-1] != len(self.task.atom_vocab):
                         save_xyz_file_atomic_numbers(
@@ -472,6 +566,8 @@ class GenerativeFactory:
                         path_xyz = os.path.join(self.output_path, f"molecule_{str(j).zfill(3)}.xyz")
                         idx = i * self.batch_size + j
                         self._move_xyz(path_xyz, idx)
+                        if self.sdf_per_molecule:
+                            self._write_molecule_sdf(idx, j, one_hot, charges, x, node_mask)
             except Exception as e:
                 fail_count += 1
                 self._fail_count += 1

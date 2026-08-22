@@ -1,0 +1,61 @@
+# QM9 for JODO's PROPERTY-CONDITIONAL runs: same graph3d build as
+# jodo_qm9_dataset.yaml plus the per-molecule QM9 property targets.
+#
+# Build the db first (the --targets flag writes the 19 gdb9 properties in
+# JODO/PyG order and units onto every row):
+#   MolCraftDiff data import-graph3d qm9 data/qm9_raw \
+#       data/jodo_qm9_cond_graph3d.db --targets
+#
+# STATED DEVIATION (recorded in the integration plan): upstream trains the
+# conditional model on its own `second_train` split from
+# split_dict_cond_qm9.pt, which is not reproduced here -- this db carries the
+# importer's QM9 split. Conditional metrics are therefore not directly
+# comparable with the paper. Every row does carry `jodo_idx` (the compacted
+# upstream index), which is exactly the key that split file indexes on, so
+# honouring it later is a data rebuild, not a code change.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/jodo_qm9_cond_graph3d.db
+dataset_name: qm9_jodo_cond
+
+atom_vocab: [H, C, N, O, F]
+with_hydrogen: True
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 29
+forbidden_atom: []
+
+data_type: graph3d
+
+bond_collate: dense
+center_coords: True
+graph3d_stats: True
+kekulize: True              # edge_ch: 2 -- see jodo_qm9_dataset.yaml
+use_stored_split: True
+
+# The six properties JODO conditions on, one released checkpoint each. Loaded
+# columns become per-batch keys; tasks.condition picks which one is used.
+target_fields: [mu, alpha, homo, lumo, gap, cv]
+
+train_ratio: 0.8
+batch_size: 128
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null
+
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

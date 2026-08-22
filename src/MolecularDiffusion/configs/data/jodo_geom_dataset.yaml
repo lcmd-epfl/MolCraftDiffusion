@@ -1,0 +1,70 @@
+# GEOM-Drugs as a 3D molecular graph with EXPLICIT BONDS, shaped for JODO.
+#
+# Build the db first (MiDi's GEOM pickles):
+#   wget -P data/geom_raw https://bits.csb.pitt.edu/files/geom_raw/val_data.pickle
+#   MolCraftDiff data import-graph3d geom data/geom_raw \
+#       data/geom_graph3d_val.db --max-conformers 1
+#
+# STATED DEVIATION (user decision, recorded in the integration plan): upstream
+# builds GEOM from the Harvard rdkit_folder via its own build_geom_dataset.py
+# and splits with split_dict_geom_drug_1.pt, indexing a 1.9 GB tensor file that
+# is deliberately NOT fetched here. The split and conformer selection therefore
+# differ from upstream's, so GEOM metrics are NOT paper-comparable. This
+# affects reported numbers only -- the released GEOM weights load and sample
+# correctly, because what they actually depend on is the atom vocabulary below.
+#
+# kekulize: false, unlike the QM9 configs. JODO's GEOM config sets
+# include_aromatic: true (edge_ch: 3), so aromatic bonds have their own channel
+# and must NOT be kekulized away.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/geom_graph3d_val.db
+dataset_name: geom_jodo_graph3d
+
+# JODO'S OWN 16-element order (datasets/datasets_config.py:41-43), NOT the
+# platform-usual or MiDi ordering. LOAD-BEARING: the stored atom_idx IS the
+# model's atom-type index, so a different order silently mislabels every atom
+# against the pretrained GEOM weights.
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Br, I, Hg, Bi]
+with_hydrogen: True
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 181               # config.data.max_node, vpsde_geom_uncond_jodo.py:30
+forbidden_atom: []
+
+data_type: graph3d
+
+bond_collate: dense
+center_coords: True
+graph3d_stats: True
+kekulize: False             # edge_ch: 3 keeps aromatic -- see the note above
+# Explicit false: a val-derived db labels every row "val", which would leave an
+# empty train set; the platform warns and falls back, but do not rely on that.
+use_stored_split: False
+
+train_ratio: 0.8
+# NOT a typo, and smaller than upstream's 16. graph3d materializes the dense
+# (N,N) bond matrix in the dataloader worker and GEOM molecules reach 180
+# atoms; the platform has no size-aware sampler, so batch size is the only
+# memory lever. Expect the worker, not the GPU, to be the bottleneck.
+batch_size: 8
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: 250000
+
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

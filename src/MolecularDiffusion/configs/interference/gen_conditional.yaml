@@ -12,3 +12,4 @@ n_frames: 0
 max_mol_size: 0              # code default; 0 = no cap
 save_xyzrender_figures: false # code default
 output_path: generated_mol
+sdf_per_molecule: false   # true -> also write molecule_XXXX.sdf beside each .xyz (bond models only)

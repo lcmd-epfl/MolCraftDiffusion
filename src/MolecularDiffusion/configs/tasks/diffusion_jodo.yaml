@@ -1,0 +1,72 @@
+# JODO: joint 2D-graph + 3D-geometry diffusion (Huang et al., NeurIPS 2023,
+# arXiv:2305.12347). QM9, UNCONDITIONAL -- upstream configs/vpsde_qm9_uncond_jodo.py.
+#
+# Generates the molecular graph AND the geometry in one continuous VP process:
+# bond orders and formal charges come out of the sampler directly, no
+# xyz2mol/OpenBabel perception. Unlike MiDi the bond channels are CONTINUOUS
+# (existence + order, thresholded at decode), which is why edge_ch is 2 here
+# and 3 only when aromatic bonds are kept.
+#
+# Requires data_type: graph3d with bond_collate: dense AND kekulize: true
+# (see configs/data/jodo_qm9_dataset.yaml): with edge_ch: 2 there is no
+# aromatic channel, so an aromatic bond would silently decode to "no bond".
+_target_: MolecularDiffusion.modules.tasks.diffusion_jodo.ModelTaskFactory
+task_type: diffusion_jodo
+
+# --- backbone (DGT_concat) ------------------------------------------------
+nf: 256                   # node hidden; edge hidden is nf // 4 = 64
+n_layers: 8
+n_heads: 16
+n_extra_heads: 2          # adjacency-driven attention heads
+dropout: 0.1
+mlp_ratio: 2
+spatial_cut_off: 2.0      # SQUARED-distance threshold (models/utils.py:110)
+edge_ch: 2                # 2 = exist + order; 3 adds the aromatic channel
+include_fc_charge: true   # one CONTINUOUS charge channel (no charge classes)
+cond_time: true
+dist_gbf: true
+gbf_name: CondGaussianLayer
+trans_name: TransMixLayer
+softmax_inf: true
+edge_quan_th: 0.0
+com: true                 # re-centre positions after every block
+pred_data: true           # predicts x0, not the noise
+self_cond: true           # feedback pass, dropped 50% of the time in training
+noise_align: true         # Kabsch-align the clean positions onto the noisy ones
+
+# --- diffusion ------------------------------------------------------------
+centered: true            # categorical features mapped to [-1, 1]
+normalize_factors: [1, 4, 4, 1]   # pos, atom type, formal charge, edge
+loss_weights: [1.0, 0.25, 0.1]    # pos, atom, edge
+reduce_mean: false        # losses summed over nodes, not averaged
+noise_schedule: cosine    # T = 0.9946 for cosine (numerically unstable at 1.0)
+beta_0: 0.1
+beta_1: 20.0
+sampling_steps: 1000      # ancestral steps; upstream reports 50 is still good
+
+# --- conditioning ---------------------------------------------------------
+# [] -> DGT_concat (unconditional). A non-empty list selects Cond_DGT_concat
+# and requires the property in data.target_fields; see diffusion_jodo_cond.yaml.
+condition: []
+normalize_condition: mad
+
+# Opt-in .sdf sidecar. The platform's writer emits .xyz, which has no bond
+# channel, so JODO's entire 2D half would be lost at write time. Set a path to
+# append every sampled molecule (atoms + bonds + charges + coords) to one .sdf.
+sdf_output_path: null
+
+# --- evaluator: generative analysis at eval time -------------------------
+# `task_type: diffusion_jodo` prefix-matches the "diffusion" entry in
+# eval.py's TASK_REGISTRY, so no registry change is needed. That entry is
+# higher_is_better with metric_key "Validity Relax and connected"; setting
+# `metrics: valid_posebuster` below selects the PoseBusters metric instead.
+generative_analysis: True
+use_posebuster: True          # PoseBusters must be installed (pip install posebusters)
+metrics: valid_posebuster     # requires use_posebuster: True
+postbuster_timeout: 120       # seconds per molecule before PoseBusters is abandoned
+# COST WARNING: every eval samples n_samples molecules through the FULL
+# reverse process. JODO's sampling_steps is 1000, so 48 samples is ~48k
+# network evaluations per eval -- far more than a training epoch on a small
+# set. Keep n_samples small, and/or lower sampling_steps for training runs.
+n_samples: 16
+batch_size: 4

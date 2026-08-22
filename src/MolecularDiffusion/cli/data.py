@@ -357,10 +357,13 @@ def rename_cmd(db, old, new):
 @click.option("--no-sanitize", is_flag=True,
               help="Parse without RDKit sanitization (exact MiDi QM9 parity; "
                    "bond class 4/AROMATIC will never appear)")
+@click.option("--targets", is_flag=True,
+              help="QM9 only: also store the 19 gdb9.sdf.csv property targets "
+                   "(PyG/JODO ordering and units) plus jodo_idx on every row")
 @click.option("--delete-raw", is_flag=True,
               help="Delete the raw download AFTER the db is written and verified")
 def import_graph3d_cmd(source, raw_dir, out_db, limit, max_conformers,
-                      no_sanitize, delete_raw):
+                      no_sanitize, targets, delete_raw):
     """Convert MiDi's raw QM9/GEOM data into a 3D-graph ASE database with explicit bonds.
 
     Stores upper-triangular real bonds (5-class vocabulary) plus raw signed
@@ -373,6 +376,8 @@ def import_graph3d_cmd(source, raw_dir, out_db, limit, max_conformers,
         argv += ["--limit", str(limit)]
     if no_sanitize:
         argv.append("--no-sanitize")
+    if targets:
+        argv.append("--targets")
     if delete_raw:
         argv.append("--delete-raw")
     raise SystemExit(mod.main(argv))

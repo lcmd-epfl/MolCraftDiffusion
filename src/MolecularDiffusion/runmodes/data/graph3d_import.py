@@ -14,6 +14,9 @@ Storage schema, one row per molecule/conformer::
               formal_charge   (N,)  int8, RAW SIGNED
               source          "qm9" | "geom"
               split           MiDi's split label, or ""
+              <extra>         optional scalar per-molecule fields (QM9 property
+                              targets + jodo_idx under ``--targets``); absent
+                              unless asked for, so existing dbs are unchanged
 
 Bond class 0 ("no bond") is never stored: absence from ``bond_index`` means no
 bond, and the no-bond count is derived at statistics/materialization time.
@@ -53,12 +56,21 @@ def _require_rdkit():
         ) from exc
 
 
-def mol_to_row(mol, sanitize_failed_ok: bool = False):
+def mol_to_row(
+    mol,
+    sanitize_failed_ok: bool = False,
+    extra: Optional[dict] = None,
+):
     """RDKit mol -> ``(Atoms, data_dict)`` for :func:`ase.db.core.Database.write`.
 
     Returns ``None`` when the molecule carries a bond type outside the canonical
     vocabulary (DATIVE, UNSPECIFIED, ...). Such molecules are counted and
     skipped rather than silently coerced to SINGLE.
+
+    ``extra`` merges caller-supplied *scalar* per-molecule fields (property
+    targets, an upstream row index, ...) into the written ``data`` dict. They
+    land in the row metadata, where the dataset reads them through
+    ``target_fields``. Default ``None`` -> the row schema is unchanged.
     """
     from ase import Atoms
     from rdkit import Chem
@@ -104,6 +116,8 @@ def mol_to_row(mol, sanitize_failed_ok: bool = False):
         "bond_type": bond_type,
         "formal_charge": charges,
     }
+    if extra:
+        data.update(extra)
     return atoms, data
 
 
@@ -112,11 +126,53 @@ def mol_to_row(mol, sanitize_failed_ok: bool = False):
 # ---------------------------------------------------------------------------
 
 
-def iter_qm9(raw_dir: str, sanitize: bool = True) -> Iterator[Tuple[object, str]]:
-    """Yield ``(mol, split)`` from MiDi's gdb9 raw directory.
+# Hartree -> eV and kcal/mol -> eV, and the per-column selector, exactly as
+# PyG's QM9 -- and JODO's copy of it, ``JODO/datasets/qm9_dataset.py:22-28``
+# -- apply them. Either one wrong silently shifts every conditioning value.
+_HAR2EV = 27.211386246
+_KCALMOL2EV = 0.04336414
+_QM9_CONVERSION = (
+    1.0, 1.0, _HAR2EV, _HAR2EV, _HAR2EV, 1.0, _HAR2EV, _HAR2EV, _HAR2EV,
+    _HAR2EV, _HAR2EV, 1.0, _KCALMOL2EV, _KCALMOL2EV, _KCALMOL2EV, _KCALMOL2EV,
+    1.0, 1.0, 1.0,
+)
+# ``cat([target[:, 3:], target[:, :3]], -1)`` over csv columns 1..19.
+_QM9_REORDER = (*range(3, 19), 0, 1, 2)
+
+
+def qm9_targets(raw_dir: str) -> Tuple[list, np.ndarray]:
+    """``gdb9.sdf.csv`` -> ``(names, values)`` in PyG/JODO order and units.
+
+    ``values`` is indexed by *raw SDF index*, so it is joinable with the
+    ``enumerate`` in :func:`iter_qm9` before the uncharacterized skip. Names
+    come from the csv header rather than a hardcoded list, so they cannot
+    drift out of step with the columns they label.
+    """
+    path = os.path.join(raw_dir, "gdb9.sdf.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{path} not found; needed for --targets.")
+    with open(path) as handle:
+        lines = handle.read().split("\n")
+    header = lines[0].split(",")[1:20]
+    rows = [[float(x) for x in line.split(",")[1:20]] for line in lines[1:-1]]
+    values = np.asarray(rows, dtype=np.float64)[:, _QM9_REORDER]
+    values *= np.asarray(_QM9_CONVERSION, dtype=np.float64)
+    return [header[i] for i in _QM9_REORDER], values
+
+
+def iter_qm9(
+    raw_dir: str, sanitize: bool = True, targets: bool = False
+) -> Iterator[Tuple]:
+    """Yield ``(mol, split)`` -- or ``(mol, split, extra)`` -- from gdb9.
 
     Skips the indices listed in ``uncharacterized.txt``, exactly as
     ``others/midi/midi/datasets/qm9_dataset.py:141-143`` does.
+
+    With ``targets=True`` each molecule additionally carries the 19 QM9
+    property targets under their csv names, plus ``jodo_idx`` -- the
+    *compacted* index of upstream's ``Data`` list (the SDF enumerated with
+    only the uncharacterized entries removed), so a published split file that
+    indexes into it is joinable.
     """
     from rdkit import Chem
 
@@ -134,12 +190,27 @@ def iter_qm9(raw_dir: str, sanitize: bool = True) -> Iterator[Tuple[object, str]
             skip = {int(x.split()[0]) - 1 for x in handle.read().split("\n")[9:-2]}
         logger.info("Skipping %d uncharacterized molecules", len(skip))
 
+    names, values = qm9_targets(raw_dir) if targets else ([], None)
+
     split_of = _qm9_split_map(raw_dir)
     supplier = Chem.SDMolSupplier(sdf, removeHs=False, sanitize=sanitize)
+    jodo_idx = -1
     for idx, mol in enumerate(supplier):
-        if idx in skip or mol is None:
+        if idx in skip:
             continue
-        yield mol, split_of.get(idx, "")
+        # counts every non-uncharacterized entry, as upstream does
+        jodo_idx += 1
+        if mol is None:
+            continue
+        if values is None:
+            yield mol, split_of.get(idx, "")
+        else:
+            extra = {
+                n: float(v)
+                for n, v in zip(names, values[idx], strict=True)
+            }
+            extra["jodo_idx"] = jodo_idx
+            yield mol, split_of.get(idx, ""), extra
 
 
 def ensure_qm9_splits(raw_dir: str) -> None:
@@ -265,14 +336,16 @@ def write_graph3d_db(
         iterator = tqdm(mol_iter, desc=f"Converting {source}")
 
     with db:
-        for mol, split in iterator:
+        for item in iterator:
+            mol, split, *rest = item
+            extra = rest[0] if rest else None
             if limit is not None and counts["written"] >= limit:
                 break
             try:
                 if mol.GetNumConformers() == 0:
                     counts["skipped_no_conformer"] += 1
                     continue
-                row = mol_to_row(mol)
+                row = mol_to_row(mol, extra=extra)
                 if row is None:
                     counts["skipped_bond_type"] += 1
                     continue
@@ -372,6 +445,12 @@ def main(argv=None) -> int:
         "bond class 4/AROMATIC will never appear)",
     )
     parser.add_argument(
+        "--targets",
+        action="store_true",
+        help="QM9 only: also write the 19 gdb9.sdf.csv property targets "
+        "(PyG/JODO ordering and units) plus jodo_idx to every row",
+    )
+    parser.add_argument(
         "--delete-raw",
         action="store_true",
         help="delete the raw download after the db is written AND verified",
@@ -383,8 +462,12 @@ def main(argv=None) -> int:
     sanitize = not args.no_sanitize
 
     if args.source == "qm9":
-        mol_iter = iter_qm9(args.raw_dir, sanitize=sanitize)
+        mol_iter = iter_qm9(
+            args.raw_dir, sanitize=sanitize, targets=args.targets
+        )
     else:
+        if args.targets:
+            parser.error("--targets is QM9 only")
         mol_iter = iter_geom(
             args.raw_dir, max_conformers=args.max_conformers, sanitize=sanitize
         )

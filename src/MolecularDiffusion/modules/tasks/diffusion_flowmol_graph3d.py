@@ -60,12 +60,6 @@ from MolecularDiffusion.modules.models.flowmol_graph3d import (
     get_upper_edge_mask,
 )
 
-# `.sdf`-sidecar override helper, solved once for MiDi. Read-only import: MiDi's
-# behaviour is unchanged. Promote to utils/ if a third model needs it.
-from MolecularDiffusion.modules.tasks.diffusion_midi import (
-    _generate_config_override,
-)
-
 # Histogram-backed size sampler, already used by TABASCO, FlowMol and MiDi.
 from MolecularDiffusion.modules.tasks.diffusion_tabasco import (
     TabascoNodeDistribution,
@@ -78,7 +72,6 @@ try:
 except ImportError:  # only the optional .sdf sidecar needs RDKit
     Chem = None
 
-_UNSET = object()
 
 
 def _plain(cfg: Any) -> dict:
@@ -287,7 +280,14 @@ class FlowMolGraph3DTaskFactory:
     (``cli/train.py:624-637``) hand over the dataset, which carries
     ``graph3d_stats`` and therefore the molecule-size histogram FlowMol needs
     for sampling.
+
+    ``sdf_output_path`` is declared generation-time (docs §2.5b): the task is
+    rebuilt from the checkpoint's training-time config, where it is ``null``,
+    so without this declaration the generate config's value never arrives and
+    the bond sidecar -- the whole 2D half of the model -- is silently dropped.
     """
+
+    generation_time_keys = ("sdf_output_path",)
 
     def __init__(  # noqa: PLR0913
         self,
@@ -531,8 +531,7 @@ class FlowMolGraph3DTask(nn.Module):
         )
         self.prop_dist_model = None  # unconditional-only
         self.last_bond_types: list | None = None
-        self._sdf_output_path_cfg = sdf_output_path
-        self._sdf_output_path_resolved = _UNSET
+        self.sdf_output_path = sdf_output_path
 
     # -- properties required by the contract ---------------------------------
 
@@ -842,37 +841,6 @@ class FlowMolGraph3DTask(nn.Module):
         )
 
     # -- .sdf sidecar --------------------------------------------------------
-
-    @property
-    def sdf_output_path(self) -> str | None:
-        """Where to write the bond sidecar, generate-config value winning.
-
-        Resolved once, lazily. For a checkpoint this platform trained, the task
-        is rebuilt from the *training-time* ``hyper_parameters.model_config`` and
-        only an allowlist of keys is taken from the generate config
-        (``cli/generate.py:277-281``) -- ``sdf_output_path`` is not on it, so the
-        training-time ``null`` would silently win and the bonds (the whole point
-        of this model) would be lost with no error. See MiDi's
-        ``_generate_config_override``, imported rather than copied.
-        """
-        if self._sdf_output_path_resolved is _UNSET:
-            resolved = _generate_config_override(
-                "sdf_output_path", default=self._sdf_output_path_cfg
-            )
-            if resolved != self._sdf_output_path_cfg:
-                logger.info(
-                    "sdf_output_path from the generate config: %s "
-                    "(checkpoint/task config had %s)",
-                    resolved,
-                    self._sdf_output_path_cfg,
-                )
-            self._sdf_output_path_resolved = resolved
-        return self._sdf_output_path_resolved
-
-    @sdf_output_path.setter
-    def sdf_output_path(self, value: str | None) -> None:
-        self._sdf_output_path_cfg = value
-        self._sdf_output_path_resolved = value
 
     def _write_sdf(self, mols: list) -> None:
         """Append the sampled molecules to ``sdf_output_path``.

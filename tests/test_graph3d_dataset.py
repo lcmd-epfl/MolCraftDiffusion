@@ -383,3 +383,106 @@ def test_datamodule_selects_the_requested_collate(tmp_path):
         _graph3d_module(tmp_path, db, "dense", bond_collate="dense").collate_fn
         is graph3d_dense_collate
     )
+
+
+# --- (g) writer extras: property targets + jodo_idx --------------------------
+
+
+def _fake_qm9_raw(tmp_path):
+    """A 3-molecule stand-in for MiDi's gdb9 raw dir, uncharacterized entry included."""
+    from rdkit import Chem
+
+    raw = tmp_path / "qm9_raw"
+    raw.mkdir()
+    writer = Chem.SDWriter(str(raw / "gdb9.sdf"))
+    for smi in ("C", "CC", "CCC"):
+        writer.write(_embed(smi))
+    writer.close()
+    # columns: mol_id + the 19 targets; values are the column index, so a
+    # mis-ordered reorder shows up as a wrong number rather than a wrong shape.
+    header = ["mol_id", "A", "B", "C", "mu", "alpha", "homo", "lumo", "gap",
+              "r2", "zpve", "u0", "u298", "h298", "g298", "cv", "u0_atom",
+              "u298_atom", "h298_atom", "g298_atom"]
+    lines = [",".join(header)]
+    for i in range(3):
+        lines.append(",".join([f"gdb_{i}"] + [str(float(c)) for c in range(1, 20)]))
+    (raw / "gdb9.sdf.csv").write_text("\n".join(lines) + "\n")
+    # header format of MiDi's uncharacterized.txt: 9 preamble lines, 2 trailing.
+    (raw / "uncharacterized.txt").write_text(
+        "\n".join(["#"] * 9 + ["2 junk"] + ["", ""])
+    )
+    return str(raw)
+
+
+def test_mol_to_row_extra_is_opt_in_and_merges(tmp_path):
+    from MolecularDiffusion.runmodes.data.graph3d_import import mol_to_row
+
+    base_atoms, base = mol_to_row(_embed("CCO"))
+    assert set(base) == {"smiles", "bond_index", "bond_type", "formal_charge"}
+
+    _, with_extra = mol_to_row(_embed("CCO"), extra={"gap": 0.25, "jodo_idx": 7})
+    assert with_extra["gap"] == 0.25 and with_extra["jodo_idx"] == 7
+    # the pre-existing schema is untouched -> existing dbs stay reproducible
+    assert with_extra["smiles"] == base["smiles"]
+    assert np.array_equal(with_extra["bond_index"], base["bond_index"])
+
+
+def test_iter_qm9_targets_reorder_units_and_jodo_idx(tmp_path):
+    from MolecularDiffusion.runmodes.data.graph3d_import import iter_qm9
+
+    raw = _fake_qm9_raw(tmp_path)
+
+    plain = list(iter_qm9(raw))
+    assert all(len(item) == 2 for item in plain)
+
+    rows = list(iter_qm9(raw, targets=True))
+    assert len(rows) == 2  # molecule index 1 is uncharacterized
+    assert all(len(item) == 3 for item in rows)
+    extras = [item[2] for item in rows]
+
+    # index 1 is skipped, so the compacted upstream index jumps 0 -> ...
+    assert [e["jodo_idx"] for e in extras] == [0, 1]
+
+    e = extras[0]
+    # csv column values are 1..19; PyG order puts mu (col 4) first, A (col 1) 17th
+    assert e["mu"] == pytest.approx(4.0)          # conversion 1.0
+    assert e["homo"] == pytest.approx(6.0 * 27.211386246)
+    assert e["gap"] == pytest.approx(8.0 * 27.211386246)
+    assert e["cv"] == pytest.approx(15.0)         # conversion 1.0
+    assert e["u0_atom"] == pytest.approx(16.0 * 0.04336414)
+    assert e["A"] == pytest.approx(1.0)
+    assert len(e) == 20                            # 19 targets + jodo_idx
+
+
+def test_written_targets_come_back_through_target_fields(tmp_path):
+    from ase.db import connect
+
+    from MolecularDiffusion.runmodes.data.graph3d_import import (
+        iter_qm9,
+        write_graph3d_db,
+    )
+
+    raw = _fake_qm9_raw(tmp_path)
+    out = str(tmp_path / "targets.db")
+    counts = write_graph3d_db(iter_qm9(raw, targets=True), out, "qm9", verbose=False)
+    assert counts["written"] == 2
+
+    ds = Graph3DDataset(
+        root=str(tmp_path),
+        ase_db_path=out,
+        dataset_name="targets",
+        max_atom=64,
+        atom_vocab=VOCAB,
+        target_fields=["gap", "mu"],
+    )
+    assert ds.get_property("gap").tolist() == pytest.approx(
+        [8.0 * 27.211386246] * 2
+    )
+    assert ds.get_property("alpha_not_asked_for") is None
+    # and the old writer path still emits exactly the old schema
+    plain = str(tmp_path / "plain.db")
+    write_graph3d_db(iter_qm9(raw), plain, "qm9", verbose=False)
+    row = next(connect(plain).select(limit=1))
+    assert set(row.data) == {
+        "smiles", "bond_index", "bond_type", "formal_charge", "source", "split"
+    }

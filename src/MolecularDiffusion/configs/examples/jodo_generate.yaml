@@ -1,0 +1,81 @@
+# JODO generation from the RELEASED pretrained QM9 unconditional weights.
+#
+#   MolCraftDiff generate configs/jodo_generate.yaml
+#
+# PREREQUISITES (two commands)
+#   1. The graph3d QM9 db -- the molecule-size prior comes from it, and it is
+#      not part of the upstream checkpoint:
+#        MolCraftDiff data import-graph3d qm9 data/qm9_raw data/qm9_graph3d.db
+#   2. Fetch and convert the released weights (~551 MB, partial-fetched out of
+#      a 2.8 GB Zenodo archive rather than downloaded whole):
+#        python docs/model_integrations/jodo/scripts/fetch_zenodo_member.py \
+#            --record 8002902 --file exp_uncond.zip \
+#            --out docs/model_integrations/jodo/checkpoints/raw/qm9 \
+#            --member exp_uncond/vpsde_qm9_jodo/checkpoints/checkpoint_30.pth
+#        python docs/model_integrations/jodo/scripts/convert_checkpoint.py qm9
+#
+#      The converter re-derives nf / n_layers / edge_ch / atom_types /
+#      conditional-ness from the tensor shapes (a JODO checkpoint carries NO
+#      hyperparameter blob), asserts them against the upstream config, remaps
+#      all 351 tensors with 0 dropped, substitutes the EMA weights -- which is
+#      what upstream evaluates with -- and verifies after loading the result
+#      back through cli/generate.py's real path. cli/generate.py loads with
+#      strict=False, so an unverified remap would load NOTHING and still emit
+#      plausible-looking molecules.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   Nothing. Unconditional QM9 generation. What it GENERATES is the unusual
+#   part: 3D coordinates, atom types, FORMAL CHARGES and BOND ORDERS, all
+#   diffused jointly in one continuous process. Sizes are drawn from the QM9
+#   atom-count histogram (mol_size: [0,0]).
+#
+# OUTPUT
+#   .xyz files under interference.output_path, plus -- because .xyz has no bond
+#   channel and JODO's whole 2D half lives there -- an .sdf sidecar with bonds,
+#   formal charges and coordinates. Set tasks.sdf_output_path to null to turn
+#   the sidecar off. Molecules RDKit refuses to sanitize are skipped from the
+#   .sdf with a warning (their .xyz is still written), so the .sdf doubles as a
+#   validity filter.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. The size prior comes from the platform's QM9 db, which uses the
+#      importer's split rather than JODO's split_dict_qm9.pt. Reported metrics
+#      are therefore not directly comparable with the paper's.
+#   2. sampling_steps: 1000 is upstream's default and costs 1000 network
+#      evaluations per batch. Upstream reports 50 steps is still good quality:
+#      override with `+diffusion_steps=50` for a fast run (~20x). NOTE the
+#      leading `+`, and NOT `tasks.sampling_steps` -- the task is rebuilt from
+#      the checkpoint's own model_config, so a tasks.* step count is silently
+#      ignored. Measured: 8 molecules at 1000 steps = 223 s, at 50 = 11.6 s.
+#   3. The `charges` channel in the platform's sample() tuple carries SIGNED
+#      FORMAL CHARGES, not atomic numbers; element identity comes from the
+#      one-hot channel.
+#   4. Ancestral sampling only. DPM-solver fast sampling is not ported.
+defaults:
+  - tasks: diffusion_jodo
+  - interference: gen_unconditional
+  - _self_
+
+name: "jodo_gen_qm9_pretrained"
+chkpt_directory: ${asset:jodo/pretrained/jodo_qm9_pretrained.ckpt}
+atom_vocab: [H, C, N, O, F]
+seed: 9
+
+# Sampling steps. Present explicitly so you can override it WITHOUT a leading
+# `+` (e.g. `diffusion_steps=50`). 1000 is upstream's faithful default;
+# upstream's README reports 50 is still good quality and is ~20x faster.
+# `tasks.sampling_steps` does NOT work -- the task is rebuilt from the
+# checkpoint's own model_config, so a tasks.* step count is silently ignored.
+diffusion_steps: 1000
+
+tasks:
+  # Bond sidecar. Appends, so the file accumulates across batches -- delete it
+  # between runs if you want a clean one.
+  sdf_output_path: jodo_gen_qm9_pretrained/jodo_generated.sdf
+
+interference:
+  batch_size: 4
+  num_generate: 100
+  mol_size: [0, 0]         # [0,0] -> draw sizes from the QM9 size histogram
+  n_frames: 0
+  output_path: jodo_gen_qm9_pretrained

@@ -1048,6 +1048,61 @@ assets:
     redistribute: true
     upstream:
       source: trained in-house; published in the MolCraftDiffusion resource bundle
+  jodo/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: jodo_qm9_pretrained.ckpt
+      sha256: cd78b487f9ace4624c3604bc0f6babf726ac5031995383f3c9df052744925dc9
+      size: 110271768
+    license: CC-BY-4.0
+    redistribute: true
+    upstream:
+      repo: https://github.com/GRAPH-0/JODO
+      download: https://zenodo.org/records/8002902
+      source: code MIT; weights archive CC-BY-4.0
+  jodo/cond_gap:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: jodo_cond_gap_pretrained.ckpt
+      sha256: a46db0909374a6c52c63bd7b8765b76e0c79f84e39cbbd04bdbcccd78a1e3097
+      size: 111619759
+    license: CC-BY-4.0
+    redistribute: true
+    upstream:
+      repo: https://github.com/GRAPH-0/JODO
+      download: https://zenodo.org/records/8002902
+      source: code MIT; weights archive CC-BY-4.0
+  jodo/geom_uncond:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: jodo_geom_pretrained.ckpt
+      sha256: 5dc34f9fea0ca7d990ceb5f200172569d4f2175755437cdbc8a38892d88e0441
+      size: 147545131
+    license: CC-BY-4.0
+    redistribute: true
+    upstream:
+      repo: https://github.com/GRAPH-0/JODO
+      download: https://zenodo.org/records/8002902
+      source: code MIT; weights archive CC-BY-4.0
+  data/qm9/graph3d-targets:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: jodo_qm9_cond_graph3d.db
+      sha256: dec17bcaa1f86013fa5411ca1d06edbcef3fb1726bfec8529f735b70da11272f
+      size: 290107392
+    license: CC0-1.0
+    redistribute: true
+    upstream:
+      source: QM9 (gdb9.sdf + gdb9.sdf.csv), imported with MolCraftDiff data import-graph3d
+        qm9 --targets
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -1455,3 +1510,33 @@ models:
     variants:
       default:
         checkpoint: guidance/formed-s1t1
+  jodo:
+    family: bond-generating-diffusion
+    task_type: diffusion_jodo
+    tags:
+    - unconditional
+    - property-conditional
+    - bond-generating
+    - qm9
+    - geom
+    variants:
+      default:
+        checkpoint: jodo/pretrained
+        data: data/qm9/graph3d
+        configs:
+        - jodo_generate.yaml
+      cond_gap:
+        checkpoint: jodo/cond_gap
+        data: data/qm9/graph3d-targets
+        configs:
+        - jodo_cond_generate.yaml
+      geom_uncond:
+        checkpoint: jodo/geom_uncond
+        data: data/geom/graph3d-val
+    summary: JODO diffuses coordinates, atom types, formal charges AND bond orders
+      jointly in one continuous process, so a sample arrives with its bond table already
+      drawn. It is the bond-generating model that holds up when the sampling budget
+      is cut (upstream reports 1000 steps down to ~50), and the only one here that
+      also generates to a requested QM9 property value. The GEOM variant is converted
+      and verified tensor-for-tensor, and generates drug-sized molecules (33-51 atoms,
+      4/4 valid on a 50-step check).

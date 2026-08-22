@@ -1,0 +1,68 @@
+# QM9 as a 3D molecular graph with EXPLICIT BONDS, shaped for JODO
+# (unconditional). Modelled on configs/data/midi_qm9_dataset.yaml, which is
+# left untouched; the two differ only in dataset_name (cache key) -- JODO and
+# MiDi want the same kekulized QM9 distribution for the same reason.
+#
+# Build the db first (129,011 molecules, MiDi's published split, explicit H):
+#   MolCraftDiff data import-graph3d qm9 data/qm9_raw data/qm9_graph3d.db
+#
+# STATED DEVIATION (user decision, recorded in the integration plan): this
+# reuses the existing db and MiDi's stored split rather than rebuilding against
+# JODO's own split_dict_qm9.pt. The released JODO weights therefore saw a
+# different train/test partition, so metrics computed here are NOT directly
+# comparable with the paper. It affects reported numbers only, never weight
+# loading or sample quality.
+#
+# kekulize: true is LOAD-BEARING, not cosmetic. JODO reads gdb9 with
+# sanitize=False (datasets/qm9_dataset.py:214), so its QM9 runs set
+# include_aromatic: false and the model has NO aromatic channel (edge_ch: 2).
+# An aromatic bond reaching an edge_ch: 2 model decodes to "no bond"
+# (datasets/build_dataset.py:151) -- silently, with no error.
+#
+# Bond classes: 0=none 1=SINGLE 2=DOUBLE 3=TRIPLE 4=AROMATIC.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/qm9_graph3d.db
+dataset_name: qm9_midi_kekulized   # same cache as MiDi: identical build knobs
+
+# JODO's QM9 atom order (datasets/datasets_config.py) -- H first, as MiDi's.
+atom_vocab: [H, C, N, O, F]
+with_hydrogen: True
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 29                # config.data.max_node, vpsde_qm9_uncond_jodo.py:30
+forbidden_atom: []
+
+data_type: graph3d
+
+# --- graph3d-specific ------------------------------------------------------
+bond_collate: dense         # padded (B,N,N) int matrix; the task compresses it
+center_coords: True
+graph3d_stats: True         # supplies the molecule-size histogram for sampling
+kekulize: True              # see the note above -- load-bearing for edge_ch: 2
+use_stored_split: True
+
+# --- shared DataModule knobs ---------------------------------------------
+train_ratio: 0.8
+batch_size: 128             # upstream's QM9 batch size (qm9cfg:73)
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null
+
+# Present for schema parity with the point-cloud configs; unused here.
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false
