@@ -75,6 +75,69 @@ def zoo():
     """Pretrained weights, datasets and example configs."""
 
 
+def _users_of(key):
+    """Who reads this asset: model variants, plus bundled example configs."""
+    users = {
+        name for name, model in _models().items() if key in _assets_of(name)
+    }
+    examples = Path(assets.__file__).parent / "configs" / "examples"
+    for cfg in sorted(examples.glob("*.yaml")) if examples.is_dir() else []:
+        try:
+            refs = _config_assets(cfg)
+        except click.ClickException:
+            continue
+        for ref in refs:
+            # refs may name a file inside an asset -- resolve to its owner.
+            try:
+                owner, _ = assets._resolve_key(ref)  # noqa: SLF001
+            except (KeyError, ValueError):
+                continue
+            if owner == key:
+                users.add(cfg.stem.replace("_generate", ""))
+    return sorted(users)
+
+
+def _list_data(fetched, as_json):
+    rows = []
+    for key, info in sorted(_asset_map().items()):
+        if not key.startswith(("data/", "inputs/")):
+            continue
+        have = _cached(key)
+        if fetched and not have:
+            continue
+        rows.append(
+            {
+                "name": key,
+                "size": assets.total_size(key),
+                "license": info.get("license", ""),
+                "redistribute": bool(info.get("redistribute")),
+                "used_by": _users_of(key),
+                "cached": have,
+            }
+        )
+
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        click.echo(
+            "No corpora match. Cache root: " + str(assets.assets_root())
+        )
+        return
+
+    width = max(len(r["name"]) for r in rows)
+    click.echo(f"{'':2}{'CORPUS':<{width}}  {'SIZE':>9}  USED BY")
+    for row in rows:
+        mark = "*" if row["cached"] else " "
+        users = ", ".join(row["used_by"]) or "-"
+        note = "" if row["redistribute"] else "  (build locally)"
+        click.echo(
+            f"{mark:2}{row['name']:<{width}}  {_human(row['size']):>9}  "
+            f"{users}{note}"
+        )
+    click.echo(f"\n* = already in {assets.assets_root()}")
+
+
 @zoo.command("list")
 @click.option("--tag", "-t", multiple=True, help="Filter by tag (repeatable)")
 @click.option("--family", "-f", default=None, help="Filter by model family")
@@ -82,10 +145,19 @@ def zoo():
     "--fetched", is_flag=True, help="Only models already in the cache"
 )
 @click.option(
+    "--data",
+    "as_data",
+    is_flag=True,
+    help="List data corpora instead of models",
+)
+@click.option(
     "--json", "as_json", is_flag=True, help="Machine-readable output"
 )
-def list_cmd(tag, family, fetched, as_json):
-    """List models in the zoo."""
+def list_cmd(tag, family, fetched, as_json, as_data):
+    """List models in the zoo, or corpora with ``--data``."""
+    if as_data:
+        _list_data(fetched, as_json)
+        return
     rows = []
     for name, model in sorted(_models().items()):
         tags = model.get("tags") or []
@@ -369,7 +441,9 @@ def config_cmd(name, dest):
     if target.is_dir():
         target = target / src.name
     if target.exists():
-        raise click.ClickException(f"{target} already exists -- not overwriting")
+        raise click.ClickException(
+            f"{target} already exists -- not overwriting"
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, target)
     click.echo(f"copied -> {target}")
@@ -377,10 +451,17 @@ def config_cmd(name, dest):
 
 
 @zoo.command("bundle")
-@click.option("--out", type=click.Path(), default="zoo_bundle",
-              help="Directory to build the archive in")
-@click.option("--archive/--no-archive", default=True,
-              help="Also write a .tar.gz next to the tree")
+@click.option(
+    "--out",
+    type=click.Path(),
+    default="zoo_bundle",
+    help="Directory to build the archive in",
+)
+@click.option(
+    "--archive/--no-archive",
+    default=True,
+    help="Also write a .tar.gz next to the tree",
+)
 def bundle_cmd(out, archive):
     """Build a self-contained, citable snapshot of the zoo.
 
@@ -390,8 +471,8 @@ def bundle_cmd(out, archive):
     assets are included; the manifest travels with them so the archive
     records exactly what it holds.
     """
-    import shutil          # noqa: PLC0415
-    import tarfile         # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import tarfile  # noqa: PLC0415
 
     root = Path(out)
     root.mkdir(parents=True, exist_ok=True)

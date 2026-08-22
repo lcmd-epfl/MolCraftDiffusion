@@ -46,6 +46,13 @@ STUB = HEADER + textwrap.dedent(
           - {path: demo.db, sha256: "%(sha)s", size: 5}
       other/data:
         alias: demo/data
+      data/corpus/variant:
+        kind: dataset
+        host: datasets
+        license: CC0
+        redistribute: yes
+        files:
+          - {path: corpus.db, sha256: "%(sha)s", size: 5}
     models:
       demo:
         family: test-family
@@ -60,6 +67,10 @@ STUB = HEADER + textwrap.dedent(
         family: test-family
         variants:
           default: {checkpoint: demo/pretrained, data: other/data}
+      corpususer:
+        family: test-family
+        variants:
+          default: {checkpoint: demo/pretrained, data: data/corpus/variant}
     """
 )
 
@@ -88,6 +99,15 @@ def test_list_shows_models(env):
     assert result.exit_code == 0
     assert "demo" in result.output
     assert "test-family" in result.output
+
+
+def test_list_data_shows_corpora_and_their_readers(env):
+    """`--data` is the only way to discover a corpus -- it is not a model."""
+    result = _run("list", "--data")
+    assert result.exit_code == 0
+    assert "data/corpus/variant" in result.output
+    assert "corpususer" in result.output          # USED BY column
+    assert "demo/pretrained" not in result.output  # weights are not corpora
 
 
 def test_info_reports_licences_and_cache_state(env):
