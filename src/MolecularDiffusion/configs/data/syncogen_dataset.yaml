@@ -1,0 +1,75 @@
+# SynSpace: building-block/reaction graphs + conformers, for SynCoGen.
+#
+# NOT one of the platform's three data_types. SynCoGen's nodes are reaction
+# building blocks and its edges are reaction templates -- there is no atom-type
+# channel and no chemical-bond channel, so `pointcloud`, `pyg` and `graph3d` all
+# describe something else. Rather than add a fourth platform representation, this
+# config points `_target_` straight at a task-owned sibling data module (the
+# approved plan, Option A). Nothing under MolecularDiffusion/data/ is involved
+# and no existing dataset builder is touched.
+#
+# The batch stays upstream's own torch_geometric `Data`/`Batch` end to end.
+#
+# BUILD THE SMOKE SLICE FIRST:
+#   curl -L -o docs/model_integrations/syncogen/data/raw/synspace_original_graphs.pt.gz \
+#     https://huggingface.co/datasets/DreiSSB/SynSpace/resolve/main/synspace_original_graphs.pt.gz
+#   python docs/model_integrations/syncogen/scripts/convert_dataset.py
+#
+# That script's header explains what is real published data (the graphs) and what
+# is derived locally (the conformers -- ETKDG+MMFF, not upstream's GFN-xTB).
+_target_: MolecularDiffusion.modules.models.syncogen.datamodule.SyncogenDataModule
+
+# --- paths (no defaults: nothing here ships with the package) --------------
+graphs_path: ???
+conformers_path: ???
+# Required only when load_pharmacophores is true.
+pharmacophore_path: null
+# Building blocks + reactions + compatibility + fragment features + meta.
+# Process-global state, loaded before any model class is constructed.
+vocab_dir: ???
+
+# --- shape -----------------------------------------------------------------
+# Max building blocks per molecule. MUST equal tasks.max_bbs -- it sizes the
+# dense (B, N, N) reaction matrix the backbone consumes.
+max_bbs: 5
+
+# --- what to load per item -------------------------------------------------
+# MUST match the same two keys in configs/tasks/diffusion_syncogen*.yaml.
+load_bonds: true            # ground-truth bonds from the conformer store; BondLengthLoss
+load_pharmacophores: false  # true for the diffusion_syncogen_pharm variant
+# The published conformer store holds several conformers per molecule and
+# upstream samples among them. A locally derived smoke store holds one, so leave
+# this false there -- there is nothing to sample among.
+sample_conformer: false
+
+# --- splits ----------------------------------------------------------------
+train_size: 0.9
+validation_size: 0.1
+test_size: 0.0
+shuffle_train: true
+valid_seed: null
+coord_mask_value: 0.0
+
+# --- loading ---------------------------------------------------------------
+batch_size: 4
+eval_batch_size: 4
+num_workers: 0
+
+# --- read by cli/train.py off cfg.data, never off the data module ----------
+# cli/train.py builds its factory `overrides` dict from these four keys
+# (cli/train.py:638-675). They are declared here for that reason alone; the data
+# module swallows them.
+#
+# meta.json:atom_types, heavy atoms only. Must equal tasks.atom_vocab.
+atom_vocab: [C, N, O, B, F, Cl, Br, S]
+# false: SynCoGen has no per-atom one-hot node feature to size. With it true the
+# n_dim probe would infer a spurious extra-feature dimension and inject
+# extra_norm_values the factory has no use for.
+use_ohe_feature: false
+allow_unknown: false
+node_feature_choice: null
+
+# Inert label. The platform's three dataset builders are bypassed entirely; this
+# key exists so anything reading cfg.data.data_type sees a name rather than a
+# missing key.
+data_type: syncogen

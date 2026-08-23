@@ -1,9 +1,26 @@
 # graph3d data for ET-Flow. Bonds are CONDITIONING here, never generated.
 #
-# Build the db first:
+# Defaults to the MULTI-CONFORMER GEOM-QM9 db, which is what ET-Flow actually
+# wants: 988,850 rows over ~133k molecules, mean 8.3 conformers each, 80.6% of
+# molecules carrying more than one geometry. The conformational distribution IS
+# the training signal for this model family -- a one-conformer db converges to
+# something that emits a single plausible pose per input and scores poorly on
+# ensemble coverage (COV/MAT).
+#
+# Build it with:
+#   curl -sL "https://dataverse.harvard.edu/api/access/datafile/4327252" \
+#       | tar -xf - -C <raw_dir>          # 50.1 GB, served UNcompressed
+#   python scripts/build_geom_multiconf.py \
+#       --source <raw_dir>/rdkit_folder/qm9 \
+#       --out data/geom_qm9_multiconf.db --max-conformers 30
+#
+# Conformers are kept top-30 by Boltzmann weight, as upstream does. The split is
+# a deterministic 80/10/10; pass --split-npy to honour torsional diffusion's
+# published split instead (a separate download). Which one was used is recorded
+# in the db metadata, so a run can never silently claim a fidelity it lacks.
+#
+# For the single-conformer de novo corpus instead (smoke tests only):
 #   MolCraftDiff data import-graph3d qm9 <raw_dir> data/qm9_graph3d.db
-# or, for a multi-conformer set (which is what ET-Flow actually wants):
-#   python docs/model_integrations/ditmc/scripts/convert_dataset.py --help
 #
 # kekulize MUST stay false. ET-Flow's network never sees a bond ORDER -- its
 # edge channel is a bare bonded/not-bonded flag -- so aromaticity reaches it
@@ -15,8 +32,12 @@ _target_: MolecularDiffusion.runmodes.train.DataModule
 
 root: data/
 filename: null
-ase_db_path: data/qm9_graph3d.db
-dataset_name: etflow_qm9
+ase_db_path: data/geom_qm9_multiconf.db
+# NOTE: the preprocessed cache is keyed on this name
+# (`processed_data_<dataset_name>_graph3d.pt`). It changed with the switch
+# to the multi-conformer db -- reusing `etflow_qm9` would have silently
+# loaded the old single-conformer cache instead of the new corpus.
+dataset_name: etflow_geom_qm9_multiconf
 
 atom_vocab: [H, C, N, O, F]
 with_hydrogen: True          # ET-Flow is all-atom; hydrogens carry the geometry

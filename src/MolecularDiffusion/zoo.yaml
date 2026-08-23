@@ -764,8 +764,7 @@ assets:
       size: 14241792
     license: gated (upstream terms)
     redistribute: false
-    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution
-      not granted
+    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution not granted
     upstream:
       download: https://huggingface.co/datasets/AIDD-LiLab/Apo2Mol_Dataset
   data/apo2mol/pairs-train:
@@ -777,8 +776,7 @@ assets:
       size: 588201984
     license: gated (upstream terms)
     redistribute: false
-    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution
-      not granted
+    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution not granted
     upstream:
       download: https://huggingface.co/datasets/AIDD-LiLab/Apo2Mol_Dataset
   data/apo2mol/pairs-val:
@@ -790,8 +788,7 @@ assets:
       size: 30232576
     license: gated (upstream terms)
     redistribute: false
-    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution
-      not granted
+    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution not granted
     upstream:
       download: https://huggingface.co/datasets/AIDD-LiLab/Apo2Mol_Dataset
   data/geom/graph3d-flowmol3:
@@ -1101,8 +1098,7 @@ assets:
     license: CC0-1.0
     redistribute: true
     upstream:
-      source: QM9 (gdb9.sdf + gdb9.sdf.csv), imported with MolCraftDiff data import-graph3d
-        qm9 --targets
+      source: QM9 (gdb9.sdf + gdb9.sdf.csv), imported with MolCraftDiff data import-graph3d qm9 --targets
   etflow/drugs_o3:
     kind: checkpoint
     host: models
@@ -1131,6 +1127,153 @@ assets:
       repo: https://github.com/shenoynikhil/ETFlow
       download: https://zenodo.org/records/14226681
       source: code MIT; weights archive CC-BY-4.0
+  syncogen/pharm:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: syncogen_pharm_pretrained.ckpt
+      sha256: 7c3fd1f8fa2caf1053317d57077929e5ed62c55d2bdc2739deb9457c219cfb03
+      size: 127896906
+    license: MIT
+    redistribute: true
+    upstream:
+      repo: https://github.com/andreirekesh/SynCoGen
+      download: https://huggingface.co/DreiSSB/SynCoGen-SynSpace-Conditional
+      source: 'weights MIT per the HF model card (cardData.license: mit, ungated); the GitHub code repo
+        itself carries NO licence -- see syncogen/vocabulary'
+      script: docs/model_integrations/syncogen/scripts/convert_checkpoint.py
+  inputs/syncogen/reference:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: syncogen_reference.sdf
+      sha256: 74653a0e1dc9ce632aa8167d795256376a9ce730f6ce013d0b844a9cb63fdd02
+      size: 1916
+    license: MIT
+    redistribute: true
+    upstream:
+      download: https://huggingface.co/datasets/DreiSSB/SynSpace
+      source: one molecule assembled from a row of synspace_original_graphs.pt (SynSpace, MIT, ungated);
+        coordinates embedded locally with RDKit ETKDG+MMFF. Reference ligand for pharmacophore-conditioned
+        generation.
+      script: docs/model_integrations/syncogen/scripts/convert_dataset.py
+  syncogen/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: syncogen_pretrained.ckpt
+      sha256: 29805d052d1bb53144986a9fa88abce898e0fe4bb32140e8f044f2f184f759e5
+      size: 127897716
+    license: MIT
+    redistribute: true
+    upstream:
+      repo: https://github.com/andreirekesh/SynCoGen
+      download: https://huggingface.co/DreiSSB/SynCoGen-SynSpace-Unconditional
+      source: 'weights MIT per the HF model card (cardData.license: mit, ungated); the GitHub code repo
+        itself carries NO licence -- see syncogen/vocabulary'
+      script: docs/model_integrations/syncogen/scripts/convert_checkpoint.py
+  syncogen/vocabulary:
+    kind: dataset
+    rev: main
+    files:
+    - path: building_blocks.json
+      sha256: 376cef76a0c800888ce655d4b93927b9dbd951b6f332af7ba3717d9de4d1e044
+      size: 3773
+    - path: compatibility.pt
+      sha256: 16a5b4593c919c66b8c1252c3644c2e6f798f1fa543c9ca410e7bf46b1964654
+      size: 6458
+    - path: fragment_features.pt
+      sha256: 46a8b7ff55d072263038d82862aa90cc26655a9512084567693d17f8640cbafa
+      size: 708640
+    - path: meta.json
+      sha256: f0b1b124b0c6b3539eda22e69563f9fa84c442ca043895f4131e9d2fbf786545
+      size: 266
+    - path: reactions.json
+      sha256: 7f133dbf66a6b937b1c204520951bbb92ba091166330d24ca6def9730865f7de
+      size: 3420
+    license: none (all rights reserved)
+    redistribute: false
+    reason: the vocabulary ships ONLY in the upstream GitHub repo, which carries no licence at all (no
+      LICENSE file at commit 6b38eec, none on the current default branch, GitHub Licensing API returns
+      404). The MIT terms on the HuggingFace weight and dataset repos do not extend to it.
+    upstream:
+      repo: https://github.com/andreirekesh/SynCoGen
+      commit: 6b38eec26ccc687b32808c37aefdf75a4a30f1da
+      source: vocabulary/original/ (five files, copied verbatim)
+      note: REQUIRED to instantiate either checkpoint. load_vocabulary(vocab_dir) populates N_BUILDING_BLOCKS
+        / N_REACTIONS / COMPATIBILITY / FRAGMENT_ATOMFEATS as process-global state before any model class
+        is built, so weights without it cannot be loaded at all.
+  data/synspace/2k:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: subset_provenance.json
+      sha256: 1e2981924ceb5107706e81c6ec1b782f25680fce5b88177457c0883678d150c0
+      size: 538
+    - path: synspace_conformers.lmdb/data.mdb
+      sha256: 7a180ea09ad2d0699b95a6a7f11364b81ad1f53d99f6ab0ce7f0f217c6dea022
+      size: 102047744
+    - path: synspace_graphs.pt
+      sha256: ac56d945d69663b5fd765e120521f009e30544c025312cd46c60711cdf727ef9
+      size: 2813562
+    - path: synspace_pharmacophores.lmdb/data.mdb
+      sha256: 7790bb9d096caef789da6dae5720894bcad8d7bf309eafc31b328240f8037a3f
+      size: 9588736
+    license: MIT
+    redistribute: true
+    reason: 'Real published SynSpace rows (graphs + GFN-xTB conformers + pharmacophores), sampled with
+      scripts/subset_synspace.py --n 2000 --seed 42. The upstream dataset is MIT and ungated (huggingface.co/api/datasets/DreiSSB/SynSpace,
+      cardData.license: mit, gated: false).'
+    upstream:
+      repo: https://huggingface.co/datasets/DreiSSB/SynSpace
+      download: https://huggingface.co/datasets/DreiSSB/SynSpace/resolve/main/
+      script: docs/model_integrations/syncogen/scripts/subset_synspace.py
+      note: Full corpus is 622,766 molecules / 33 GB unpacked and is NOT hosted here - fetch the three
+        archives from the repo above and run scripts/prepare_synspace.py. This asset is the 2,000-molecule
+        slice.
+  data/geom/graph3d-multiconf-qm9:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: geom_qm9_multiconf.db
+      sha256: 553e623d8eee4250f460e323166d23b59fc5b8332d553871d598550c2924731b
+      size: 1751814144
+    license: CC0-1.0
+    redistribute: true
+    upstream:
+      download: https://dataverse.harvard.edu/api/access/datafile/4327252
+      source: >-
+        GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per
+        the Dataverse API. rdkit_folder/qm9 converted with
+        scripts/build_geom_multiconf.py --max-conformers 30: 988,850 rows over
+        ~133k molecules, top-30 conformers per molecule by Boltzmann weight,
+        deterministic 80/10/10 split (NOT torsional diffusion's published
+        split.npy -- recorded in the db metadata).
+  data/geom/graph3d-multiconf-drugs:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: geom_drugs_multiconf.db
+      sha256: 684f26abdf61038f33864b8d0f9d2cc78221786cdcbe80fc668fcecf7b865e6f
+      size: 28753068032
+    license: CC0-1.0
+    redistribute: true
+    upstream:
+      download: https://dataverse.harvard.edu/api/access/datafile/4327252
+      source: >-
+        GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per
+        the Dataverse API. rdkit_folder/drugs converted with
+        scripts/build_geom_multiconf.py --max-conformers 30: 7,173,739 rows
+        over ~304k molecules (mean 21.7 conformers each, 52.6 atoms), top-30 by
+        Boltzmann weight, deterministic 80/10/10 split. 28.75 GB -- confirm
+        hosting before staging. Needs atom_vocab [H,B,C,N,O,F,Al,Si,P,S,Cl,As,
+        Br,I,Hg,Bi] and max_atom well above 29.
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -1145,10 +1288,9 @@ models:
         extra:
           pminet: apo2mol/pminet
         data: inputs/apo2mol/8tv6
-    summary: "Apo2Mol (AAAI 2026, arXiv 2511.14559) \u2014 de-novo 3D ligand design\
-      \ conditioned on an **apo** (ligand-free) pocket, jointly generating the ligand\
-      \ *and* a holo-like pocket conformation. It is the only pocket model in this\
-      \ repo that emits a co-generated pocket."
+    summary: "Apo2Mol (AAAI 2026, arXiv 2511.14559) \u2014 de-novo 3D ligand design conditioned on an\
+      \ **apo** (ligand-free) pocket, jointly generating the ligand *and* a holo-like pocket conformation.\
+      \ It is the only pocket model in this repo that emits a co-generated pocket."
   diffdec:
     family: scaffold-decoration
     task_type: diffusion_diffdec
@@ -1160,9 +1302,9 @@ models:
       default:
         checkpoint: diffdec/pretrained
         data: data/crossdocked/diffdec
-    summary: 'DiffDec performs scaffold decoration: given a scaffold, an anchor atom
-      and a protein pocket, it grows the R-group. Architecturally a fork of DiffLinker,
-      so it shares that model package with the scaffold/R-group naming swapped in.'
+    summary: 'DiffDec performs scaffold decoration: given a scaffold, an anchor atom and a protein pocket,
+      it grows the R-group. Architecturally a fork of DiffLinker, so it shares that model package with
+      the scaffold/R-group naming swapped in.'
   diffint:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffint
@@ -1173,10 +1315,9 @@ models:
       default:
         checkpoint: diffint/pretrained
         data: data/crossdocked/diffint
-    summary: DiffInt is DiffSBDD's pocket-conditioned DDPM with explicit hydrogen-bond
-      interaction pseudo-atoms added to the pocket representation. Its entire contribution
-      is a data-layer trick, not an architecture change -- the backbone is reused
-      verbatim.
+    summary: DiffInt is DiffSBDD's pocket-conditioned DDPM with explicit hydrogen-bond interaction pseudo-atoms
+      added to the pocket representation. Its entire contribution is a data-layer trick, not an architecture
+      change -- the backbone is reused verbatim.
   difflinker:
     family: fragment-linking
     task_type: diffusion_difflinker
@@ -1186,9 +1327,8 @@ models:
     variants:
       default:
         data: data/zinc/difflinker
-    summary: DiffLinker generates the 3D linker that joins a set of given molecular
-      fragments, keeping the fragment atoms fixed and growing only the connecting
-      atoms.
+    summary: DiffLinker generates the 3D linker that joins a set of given molecular fragments, keeping
+      the fragment atoms fixed and growing only the connecting atoms.
   diffpharma:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffpharma
@@ -1199,11 +1339,10 @@ models:
       default:
         checkpoint: diffpharma/pretrained
         data: data/crossdocked/diffpharma
-    summary: "DiffPharma is a pocket-conditioned E(3)-equivariant diffusion model\
-      \ whose denoiser runs over **four** node sets \u2014 ligand (noised), full-atom\
-      \ pocket, H-bond pseudo-particles (`interh`), hydrophobic pseudo-particles (`interhp`)\
-      \ \u2014 with only the ligand noised. Integrated as a whole new architecture\
-      \ + task (docs/adding_new_models.md \xA72), with **no core file modified**."
+    summary: "DiffPharma is a pocket-conditioned E(3)-equivariant diffusion model whose denoiser runs\
+      \ over **four** node sets \u2014 ligand (noised), full-atom pocket, H-bond pseudo-particles (`interh`),\
+      \ hydrophobic pseudo-particles (`interhp`) \u2014 with only the ligand noised. Integrated as a whole\
+      \ new architecture + task (docs/adding_new_models.md \xA72), with **no core file modified**."
   diffsbdd:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffsbdd
@@ -1221,12 +1360,11 @@ models:
       fullatom_joint_moad:
         data: data/crossdocked/pockets10a
         checkpoint: diffsbdd/fullatom_joint_moad
-    summary: 'DiffSBDD is a pocket-conditioned E(3)-equivariant DDPM over 3D point
-      clouds (coordinates + 10-class element one-hot, heavy atoms only, no bonds).
-      Both of its generative modes are ported: `pocket_conditioning` (`ConditionalDDPM`,
-      the pocket is clean context) and `joint` (`EnVariationalDiffusion`, ligand and
-      pocket diffused together), plus RePaint-style `inpaint()` in both modes for
-      scaffold hopping / linker design.'
+    summary: 'DiffSBDD is a pocket-conditioned E(3)-equivariant DDPM over 3D point clouds (coordinates
+      + 10-class element one-hot, heavy atoms only, no bonds). Both of its generative modes are ported:
+      `pocket_conditioning` (`ConditionalDDPM`, the pocket is clean context) and `joint` (`EnVariationalDiffusion`,
+      ligand and pocket diffused together), plus RePaint-style `inpaint()` in both modes for scaffold
+      hopping / linker design.'
   diffsmol:
     family: shape-conditioned-diffusion
     task_type: diffusion_diffsmol
@@ -1239,11 +1377,10 @@ models:
         checkpoint: diffsmol/pretrained
         extra:
           reference_shape: inputs/diffsmol/shapes
-    summary: 'DiffSMol is a shape-conditioned hybrid DDPM: continuous Gaussian diffusion
-      on positions plus discrete D3PM categorical diffusion on atom types, conditioned
-      on a 128x3 vector-neuron shape latent via classifier-free guidance. Bonds and
-      aromaticity were dropped by the approved gate resolution (FlowMol precedent);
-      shape conditioning was kept and is the user''s primary requirement.'
+    summary: 'DiffSMol is a shape-conditioned hybrid DDPM: continuous Gaussian diffusion on positions
+      plus discrete D3PM categorical diffusion on atom types, conditioned on a 128x3 vector-neuron shape
+      latent via classifier-free guidance. Bonds and aromaticity were dropped by the approved gate resolution
+      (FlowMol precedent); shape conditioning was kept and is the user''s primary requirement.'
   ditmc:
     family: conformer-generation
     task_type: diffusion_ditmc
@@ -1261,11 +1398,10 @@ models:
       so3:
         data: data/qm9/graph3d-400-ditmc
         checkpoint: ditmc/so3
-    summary: "DiTMC is a **conformer generator**, not a de novo generator. You hand\
-      \ it a molecule you already have \u2014 its atoms and bonds \u2014 and it returns\
-      \ 3D conformers of *that* molecule. All three published variants (`dit_ape`,\
-      \ `dit_rpe`, `dit_so3`) were reimplemented in PyTorch, including the `e3x` surface\
-      \ `dit_so3` depends on."
+    summary: "DiTMC is a **conformer generator**, not a de novo generator. You hand it a molecule you\
+      \ already have \u2014 its atoms and bonds \u2014 and it returns 3D conformers of *that* molecule.\
+      \ All three published variants (`dit_ape`, `dit_rpe`, `dit_so3`) were reimplemented in PyTorch,\
+      \ including the `e3x` surface `dit_so3` depends on."
   equifm:
     family: flow-matching
     task_type: diffusion_equifm
@@ -1276,9 +1412,9 @@ models:
     variants:
       default:
         checkpoint: equifm/pretrained
-    summary: 'EquiFM (MolFM) is equivariant flow matching with hybrid probability
-      transport: an optimal-transport path for coordinates and a variance-preserving
-      path for atom features, integrated with a fixed-step RK4 solver.'
+    summary: 'EquiFM (MolFM) is equivariant flow matching with hybrid probability transport: an optimal-transport
+      path for coordinates and a variance-preserving path for atom features, integrated with a fixed-step
+      RK4 solver.'
   flowmol_graph3d:
     family: bond-generating-flow
     task_type: diffusion_flowmol_graph3d
@@ -1290,9 +1426,9 @@ models:
     variants:
       default:
         checkpoint: flowmol_graph3d/pretrained
-    summary: FlowMol3 is a bond-generating flow-matching model over GEOM-Drugs, using
-      CTMC masking interpolants with self-conditioning and fake atoms. It emits an
-      explicit bond table alongside coordinates, so samples need no bond perception.
+    summary: FlowMol3 is a bond-generating flow-matching model over GEOM-Drugs, using CTMC masking interpolants
+      with self-conditioning and fake atoms. It emits an explicit bond table alongside coordinates, so
+      samples need no bond perception.
   gcdm:
     family: equivariant-diffusion
     task_type: diffusion
@@ -1307,10 +1443,9 @@ models:
         checkpoint: gcdm/qm9_alpha
       qm9_uncond:
         checkpoint: gcdm/qm9_uncond
-    summary: GCDM is geometry-complete diffusion built on a GCPNet backbone. Because
-      it plugs into the platform's own diffusion task, it inherits property conditioning,
-      CFG, gradient guidance and inpainting -- more generation modes than the source
-      repo itself offers, plus a property-optimization run mode.
+    summary: GCDM is geometry-complete diffusion built on a GCPNet backbone. Because it plugs into the
+      platform's own diffusion task, it inherits property conditioning, CFG, gradient guidance and inpainting
+      -- more generation modes than the source repo itself offers, plus a property-optimization run mode.
   ipdiff:
     family: pocket-conditioned-diffusion
     task_type: diffusion_ipdiff
@@ -1323,13 +1458,12 @@ models:
         extra:
           ipnet: ipdiff/ipnet
         data: data/crossdocked/pockets10a
-    summary: 'IPDiff is TargetDiff''s pocket-conditioned DDPM plus a *frozen pretrained
-      interaction prior* (IPNet/BAPNet): the prior''s 128-d node features are concatenated
-      into the denoiser''s token embeddings ("prior conditioning") and drive a learned
-      shift term `k_t * shift_t_mlp_pos([h_bap_lig, t])` inside the forward noising
-      process and the reverse posterior ("prior shifting"). At sampling time the prior
-      is re-run on the current predicted x0 every reverse step, so each step costs
-      roughly two forward passes.'
+    summary: 'IPDiff is TargetDiff''s pocket-conditioned DDPM plus a *frozen pretrained interaction prior*
+      (IPNet/BAPNet): the prior''s 128-d node features are concatenated into the denoiser''s token embeddings
+      ("prior conditioning") and drive a learned shift term `k_t * shift_t_mlp_pos([h_bap_lig, t])` inside
+      the forward noising process and the reverse posterior ("prior shifting"). At sampling time the prior
+      is re-run on the current predicted x0 every reverse step, so each step costs roughly two forward
+      passes.'
   kgdiff:
     family: pocket-conditioned-diffusion
     task_type: diffusion_kgdiff
@@ -1340,9 +1474,9 @@ models:
       default:
         checkpoint: kgdiff/pretrained
         data: data/crossdocked/pockets10a
-    summary: KGDiff = TargetDiff + a per-atom affinity ("value") head that acts as
-      its own classifier guide during sampling. Pocket-conditioned ligand generation,
-      one checkpoint for both denoising and guidance.
+    summary: KGDiff = TargetDiff + a per-atom affinity ("value") head that acts as its own classifier
+      guide during sampling. Pocket-conditioned ligand generation, one checkpoint for both denoising and
+      guidance.
   ligandiff:
     family: metal-complex-diffusion
     task_type: diffusion_ligandiff
@@ -1353,10 +1487,9 @@ models:
       default:
         checkpoint: ligandiff/pretrained
         data: data/tmc/ligandiff
-    summary: LigandDiff (JCTC 2024) regenerates one ligand of a 3D transition-metal
-      complex while holding the metal and the remaining ligands fixed. It is a fork
-      of DiffLinker's EDM stack, so the already-integrated `modules/tasks/diffusion_difflinker.py`
-      served as the template.
+    summary: LigandDiff (JCTC 2024) regenerates one ligand of a 3D transition-metal complex while holding
+      the metal and the remaining ligands fixed. It is a fork of DiffLinker's EDM stack, so the already-integrated
+      `modules/tasks/diffusion_difflinker.py` served as the template.
   ligandiff_multi:
     family: metal-complex-diffusion
     task_type: diffusion_ligandiff_multi
@@ -1368,9 +1501,9 @@ models:
       default:
         checkpoint: ligandiff_multi/pretrained
         data: data/tmc/ligandiff-multi
-    summary: multi-LigandDiff regenerates several ligands at once around a fixed transition-metal
-      centre, from replacing two ligands up to building a whole octahedral coordination
-      sphere. It reuses the LigandDiff model package unchanged.
+    summary: multi-LigandDiff regenerates several ligands at once around a fixed transition-metal centre,
+      from replacing two ligands up to building a whole octahedral coordination sphere. It reuses the
+      LigandDiff model package unchanged.
   loqi:
     family: conformer-generation
     task_type: diffusion_loqi
@@ -1385,9 +1518,9 @@ models:
       pretrained:
         data: data/chembl3d/stereo-200
         checkpoint: loqi/pretrained
-    summary: 'Two variants shipped from one task module, one per released checkpoint:
-      `diffusion_loqi` (VDM diffusion, 25 steps, self-conditioning) and `diffusion_loqi_flow`
-      (continuous flow matching, velocity prediction, rigid OT).'
+    summary: 'Two variants shipped from one task module, one per released checkpoint: `diffusion_loqi`
+      (VDM diffusion, 25 steps, self-conditioning) and `diffusion_loqi_flow` (continuous flow matching,
+      velocity prediction, rigid OT).'
   midi:
     family: bond-generating-diffusion
     task_type: diffusion_midi
@@ -1399,10 +1532,9 @@ models:
       default:
         checkpoint: midi/pretrained
         data: data/qm9/graph3d-4k
-    summary: "MiDi is the first model in this platform that **generates the molecular\
-      \ graph itself** \u2014 bond orders and formal charges are diffused jointly\
-      \ with the 3D coordinates, so a sample arrives with an explicit bond table instead\
-      \ of needing post-hoc perception (xyz2mol / OpenBabel)."
+    summary: "MiDi is the first model in this platform that **generates the molecular graph itself** \u2014\
+      \ bond orders and formal charges are diffused jointly with the 3D coordinates, so a sample arrives\
+      \ with an explicit bond table instead of needing post-hoc perception (xyz2mol / OpenBabel)."
   nextmol:
     family: llm-plus-diffusion
     task_type: diffusion_nextmol
@@ -1416,10 +1548,9 @@ models:
         extra:
           mollama: nextmol/mollama
         data: data/qm9/graph3d-400-nextmol
-    summary: NExT-Mol pairs a 1D molecular language model (MoLlama, which proposes
-      a molecule as a SELFIES string) with DMT, a diffusion transformer that predicts
-      that molecule's 3D conformer. Only the 3D half was converted; MoLlama is used
-      as published.
+    summary: NExT-Mol pairs a 1D molecular language model (MoLlama, which proposes a molecule as a SELFIES
+      string) with DMT, a diffusion transformer that predicts that molecule's 3D conformer. Only the 3D
+      half was converted; MoLlama is used as published.
   pmdm:
     family: pocket-conditioned-diffusion
     task_type: diffusion_pmdm
@@ -1430,11 +1561,10 @@ models:
       default:
         checkpoint: pmdm/pretrained
         data: data/crossdocked/pmdm
-    summary: "PMDM is integrated **as intended \u2014 pocket-conditioned, structure-based\
-      \ 3D molecular generation**. The ligand point cloud is the diffused variable;\
-      \ the protein pocket point cloud is a fixed conditioning input carrying genuine\
-      \ CrossDocked pocket data (element, amino-acid type, backbone flag). No dummy\
-      \ pocket, no degenerate unconditional mode."
+    summary: "PMDM is integrated **as intended \u2014 pocket-conditioned, structure-based 3D molecular\
+      \ generation**. The ligand point cloud is the diffused variable; the protein pocket point cloud\
+      \ is a fixed conditioning input carrying genuine CrossDocked pocket data (element, amino-acid type,\
+      \ backbone flag). No dummy pocket, no degenerate unconditional mode."
   silvr:
     family: sampling-method
     task_type: (interference only)
@@ -1444,10 +1574,10 @@ models:
     variants:
       default:
         data: inputs/silvr/reference
-    summary: 'SILVR is **not a new model or backbone**. It is an inference-time guidance
-      / generation method layered on the existing EDM (`EnVariationalDiffusion` +
-      `GeomMolecularGenerative`). It adds no network, no loss, no dataset and no `tasks.task_type`;
-      it adds one new `interference.task_type: silvr`.'
+    summary: 'SILVR is **not a new model or backbone**. It is an inference-time guidance / generation
+      method layered on the existing EDM (`EnVariationalDiffusion` + `GeomMolecularGenerative`). It adds
+      no network, no loss, no dataset and no `tasks.task_type`; it adds one new `interference.task_type:
+      silvr`.'
   edm-qm9:
     family: equivariant-diffusion
     task_type: diffusion
@@ -1561,13 +1691,12 @@ models:
       geom_uncond:
         checkpoint: jodo/geom_uncond
         data: data/geom/graph3d-val
-    summary: JODO diffuses coordinates, atom types, formal charges AND bond orders
-      jointly in one continuous process, so a sample arrives with its bond table already
-      drawn. It is the bond-generating model that holds up when the sampling budget
-      is cut (upstream reports 1000 steps down to ~50), and the only one here that
-      also generates to a requested QM9 property value. The GEOM variant is converted
-      and verified tensor-for-tensor, and generates drug-sized molecules (33-51 atoms,
-      4/4 valid on a 50-step check).
+    summary: JODO diffuses coordinates, atom types, formal charges AND bond orders jointly in one continuous
+      process, so a sample arrives with its bond table already drawn. It is the bond-generating model
+      that holds up when the sampling budget is cut (upstream reports 1000 steps down to ~50), and the
+      only one here that also generates to a requested QM9 property value. The GEOM variant is converted
+      and verified tensor-for-tensor, and generates drug-sized molecules (33-51 atoms, 4/4 valid on a
+      50-step check).
   etflow:
     family: conformer-generation
     task_type: diffusion_etflow
@@ -1585,13 +1714,51 @@ models:
       qm9-o3:
         checkpoint: etflow/qm9_o3
         data: data/qm9/graph3d-400-ditmc
-    summary: ET-Flow is a conformer generator, not a de novo generator -- you hand it a molecule's
-      atoms and bonds and it returns 3D conformers of that molecule. Equivariant flow matching
-      from a harmonic prior, ~8.3M params. Both published o3 variants are converted tensor-for-tensor
-      (488/488 drugs-o3, 492/492 qm9-o3). drugs-o3 is the default, for drug-like molecules over
-      the 16-element vocab; qm9-o3 covers small C/N/O/F molecules and scored 0.029 A median RMSD
-      on held-out QM9. drugs-so3 is deliberately not shipped -- upstream's yaml and its loader
-      schema disagree about post-hoc parity switching. One connected molecule at a time -- a salt
-      or multi-fragment input makes the harmonic prior diverge, usually without raising. Training
-      on GEOM-Drugs needs a Drugs db you build yourself; the bundled train config reads the QM9
-      corpus above.
+    summary: ET-Flow is a conformer generator, not a de novo generator -- you hand it a molecule's atoms
+      and bonds and it returns 3D conformers of that molecule. Equivariant flow matching from a harmonic
+      prior, ~8.3M params. Both published o3 variants are converted tensor-for-tensor (488/488 drugs-o3,
+      492/492 qm9-o3). drugs-o3 is the default, for drug-like molecules over the 16-element vocab; qm9-o3
+      covers small C/N/O/F molecules and scored 0.029 A median RMSD on held-out QM9. drugs-so3 is deliberately
+      not shipped -- upstream's yaml and its loader schema disagree about post-hoc parity switching. One
+      connected molecule at a time -- a salt or multi-fragment input makes the harmonic prior diverge,
+      usually without raising. Training on GEOM-Drugs needs a Drugs db you build yourself; the bundled
+      train config reads the QM9 corpus above.
+  syncogen:
+    family: synthesizable-generation
+    task_type: diffusion_syncogen
+    tags:
+    - synthesizable
+    - building-blocks
+    - unconditional
+    - pharmacophore
+    - flow-matching
+    variants:
+      default:
+        checkpoint: syncogen/pretrained
+        extra:
+          vocabulary: syncogen/vocabulary
+        configs:
+        - syncogen_generate.yaml
+      pharmacophore:
+        checkpoint: syncogen/pharm
+        extra:
+          vocabulary: syncogen/vocabulary
+        data: inputs/syncogen/reference
+        configs:
+        - syncogen_pharm_generate.yaml
+      train-2k:
+        data: data/synspace/2k
+        extra:
+          vocabulary: syncogen/vocabulary
+        configs:
+        - syncogen_train.yaml
+    summary: 'SynCoGen (arXiv 2507.11818) is the only model here whose output comes with a recipe: every
+      molecule is assembled from catalogue building blocks joined by real reactions, so what you get is
+      something you can order and make. Nodes are building blocks and edges are reaction identities --
+      masked (absorbing) discrete diffusion over that graph, run jointly with flow matching over atom
+      coordinates, and chemical bonds are DERIVED by RDKit assembly at the end rather than generated.
+      Two released checkpoints, two task_types: `diffusion_syncogen` (unconditional) and `diffusion_syncogen_pharm`
+      (conditioned on one reference ligand''s pharmacophores; not CFG -- the points enter as extra virtual
+      nodes). Molecules top out at five building blocks and are limited to the 93-block, 19-reaction catalogue.
+      NOTE: `syncogen/vocabulary` is required to instantiate either checkpoint and is NOT redistributable
+      -- build it locally with `MolCraftDiff zoo recipe syncogen/vocabulary`.'

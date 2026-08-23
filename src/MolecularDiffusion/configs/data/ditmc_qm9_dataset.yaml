@@ -13,8 +13,11 @@ _target_: MolecularDiffusion.runmodes.train.DataModule
 
 root: data/
 filename: null
-ase_db_path: data/qm9_graph3d.db
-dataset_name: ditmc_qm9
+ase_db_path: data/geom_qm9_multiconf.db
+# Cache is keyed on this name (`processed_data_<name>_graph3d.pt`);
+# it changed with the db so the old single-conformer cache is not
+# silently reused (and stays valid for anything still using that db).
+dataset_name: ditmc_geom_qm9_multiconf
 
 atom_vocab: [H, C, N, O, F]
 with_hydrogen: True          # DiTMC is all-atom; hydrogens carry the geometry

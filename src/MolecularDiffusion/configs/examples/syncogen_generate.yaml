@@ -1,0 +1,90 @@
+# SynCoGen generation from the RELEASED pretrained UNCONDITIONAL weights.
+#
+#   MolCraftDiff generate configs/syncogen_generate.yaml
+#
+# PREREQUISITES (two commands, ~1 GB of download, NO dataset needed)
+#   1. The vocabulary already ships at
+#      docs/model_integrations/syncogen/data/vocabulary/ (a copy of upstream's
+#      `vocabulary/original`, MIT).
+#   2. Fetch and convert the released weights:
+#
+#        curl -L -o docs/model_integrations/syncogen/checkpoints/raw/synspace_original_uncond.ckpt \
+#          https://huggingface.co/DreiSSB/SynCoGen-SynSpace-Unconditional/resolve/main/synspace_original_uncond.ckpt
+#        curl -L -o docs/model_integrations/syncogen/checkpoints/raw/synspace_original_cond.ckpt \
+#          https://huggingface.co/DreiSSB/SynCoGen-SynSpace-Conditional/resolve/main/synspace_original_cond.ckpt
+#        python docs/model_integrations/syncogen/scripts/convert_checkpoint.py
+#
+#   THE 6.3 GB SYNSPACE DATASET IS NOT REQUIRED. Everything generation needs --
+#   the architecture, the weights, the fragment-count prior -- is in the task
+#   config and the checkpoint.
+#
+# WHAT THE CONVERTER DOES, AND WHY IT MATTERS
+#   Upstream keeps a 0.9999 EMA of the backbone OUTSIDE state_dict and copies it
+#   in before every sample, so the tensors it really samples from are the EMA
+#   shadow parameters. The converter folds those into the backbone (436 tensors
+#   for this variant; 1 buffer, the sinusoidal position table, carried verbatim
+#   because it is not a learned parameter), then loads the result back through
+#   cli/generate.py's own path and asserts every live tensor is byte-identical.
+#   That check is not ceremony: cli/generate.py loads with strict=False, so a bad
+#   remap would load nothing and still emit plausible-looking molecules.
+#
+# WHAT THE MODEL CONDITIONS ON
+#   Nothing. For pharmacophore-conditioned generation from the other released
+#   checkpoint, use configs/syncogen_pharm_generate.yaml.
+#
+# OUTPUT
+#   .xyz files under interference.output_path, plus -- because .xyz has no bond
+#   channel and a SynCoGen molecule's whole value is that it comes with a
+#   synthesis route -- bonds in two forms:
+#     * molecule_XXXX.sdf beside each .xyz (interference.sdf_per_molecule),
+#       rebuilt through the platform's build_rdkit_mol from a dense bond matrix;
+#     * one combined .sdf (tasks.sdf_output_path) written from upstream's OWN
+#       assembled molecules, so its aromaticity perception survives verbatim.
+#   The two agree on every molecule's constitutional graph, which makes the pair
+#   a free consistency check. Set either to null to turn it off.
+#
+# KNOWN LIMITATIONS BAKED INTO THESE DEFAULTS
+#   1. `mol_size` counts BUILDING BLOCKS, not atoms. [0,0] draws from the exact
+#      SynSpace histogram (3: 15.8%, 4: 38.8%, 5: 45.4%). Any explicit range must
+#      sit inside [3, 5]; GenerativeFactory clamps against max(n_node_dist) = 5
+#      and raises if the range inverts.
+#   2. Not every sampled graph assembles. A molecule needs mutually compatible
+#      building blocks, reactions AND reaction centres, and the released weights
+#      clear that gate roughly 7 times in 8. Rather than write empty .xyz files,
+#      sample() retries a round up to tasks.max_sample_attempts times and raises
+#      if it still cannot fill the batch.
+#   3. `interference.n_frames` must stay 0. Denoising trajectories do not exist
+#      upstream -- the sampler returns only the endpoint -- so a nonzero value
+#      raises rather than producing a misleading single-frame GIF.
+#   4. The `charges` channel carries SIGNED FORMAL CHARGES, not atomic numbers;
+#      element identity comes from the one-hot channel. (This vocabulary's
+#      building blocks are neutral, so in practice they are all 0.)
+#   5. Synthesizability is claimed by construction, not verified here. Upstream's
+#      aizynth/syntheseus/posebusters/xTB evaluation suite is deliberately not
+#      ported: upstream's own README states those tools need conflicting RDKit
+#      versions and separate environments.
+defaults:
+  - tasks: diffusion_syncogen
+  - interference: gen_unconditional
+  - _self_
+
+name: "syncogen_gen_uncond_pretrained"
+chkpt_directory: ${asset:syncogen/pretrained/syncogen_pretrained.ckpt}
+atom_vocab: [C, N, O, B, F, Cl, Br, S]
+seed: 9
+
+tasks:
+  vocab_dir: ${asset:syncogen/vocabulary}
+  eval_batch_size: 8
+  # Appends, so the file accumulates across batches -- delete it between runs
+  # for a clean one.
+  sdf_output_path: generated_syncogen/syncogen_generated.sdf
+  max_sample_attempts: 5
+
+interference:
+  batch_size: 8
+  num_generate: 32
+  mol_size: [0, 0]           # [0,0] -> draw fragment counts from the SynSpace histogram
+  n_frames: 0                # must stay 0; see limitation 3
+  sdf_per_molecule: true
+  output_path: generated_syncogen

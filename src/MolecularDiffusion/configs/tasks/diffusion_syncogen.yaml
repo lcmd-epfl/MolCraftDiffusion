@@ -1,0 +1,129 @@
+# SynCoGen -- UNCONDITIONAL variant.
+#
+# Joint absorbing-state (masked) diffusion over a building-block/reaction graph
+# and conditional flow matching over coordinates, with a SEMLA graph-transformer
+# backbone. Every molecule comes with a synthesis recipe: nodes are catalogue
+# building blocks, edges are reaction templates, and bonds are recovered by RDKit
+# assembly rather than generated.
+#
+# Upstream: https://github.com/andreirekesh/SynCoGen (MIT),
+# commit 6b38eec26ccc687b32808c37aefdf75a4a30f1da; arXiv:2507.11818.
+# Every value below is the one in configs/experiments/synspace_original_uncond.gin
+# and the component gins it includes -- see the Hyperparameter Provenance table in
+# docs/model_integrations/syncogen/INTEGRATION_PLAN.md for the file:line of each.
+#
+# WHY TWO TASK CONFIGS. diffusion_syncogen_pharm.yaml is not a switch on this
+# one: the released conditional checkpoint is a different network
+# (SemlaPharmGenerator, extra pharmacophore embeddings) and the two shipped
+# experiments also differ on `scale_noise`. cli/generate.py validates a
+# checkpoint's saved task_type against the generate config, so the split is what
+# stops the wrong weights loading silently under strict=False.
+_target_: MolecularDiffusion.modules.tasks.diffusion_syncogen.ModelTaskFactory
+task_type: diffusion_syncogen
+
+# REQUIRED. SynCoGen's vocabulary is process-global state loaded before the model
+# is constructed (see modules/models/syncogen/vocab.py); there is no sensible
+# package-relative default, so every user config sets it. A copy of upstream's
+# `vocabulary/original` lives at
+# docs/model_integrations/syncogen/data/vocabulary/.
+vocab_dir: null
+
+backbone: semla
+
+# --- SEMLA backbone (configs/model/semla.gin) ------------------------------
+d_model: 384
+d_message: 128
+n_coord_sets: 64
+n_layers: 12
+n_head: 32
+d_message_hidden: 128
+d_edge: 128
+coord_norm: length
+size_emb: 64
+pos_emb: 64
+# Max building blocks per molecule. Sizes the positional embeddings and the
+# Conv2d atom->fragment pooling, so it is an ARCHITECTURE key: changing it
+# invalidates the released weights.
+max_bbs: 5
+
+# gin's semla.gin says False, but Diffusion.__init__ passes its own
+# `self_conditioning` positionally through get_backbone (diffusion.py:48-55,
+# :115) and both shipped experiments set Diffusion.self_conditioning = True. The
+# gin default is dead code. True is what the released weights were trained with.
+self_conditioning: true
+
+# Conditional variant only; harmless here (SemlaGenerator ignores it).
+pharm_subset: 7
+
+# --- diffusion / flow objective --------------------------------------------
+# LinearNoise sigma_min/sigma_max. The experiment gin OVERRIDES linear.gin's
+# 0.0/10.0 defaults; these are the experiment values.
+noise_sigma_min: 1.0e-3
+noise_sigma_max: 7.0
+num_sample_steps: 100
+sampling_eps: 1.0e-3
+antithetic_sampling: true
+importance_sampling: false
+sampling_noise_removal: true    # the extra final denoise pass
+use_compat: true                # compatibility-masked decoding
+time_conditioning: true         # consumed before the backbone; SEMLA takes no t
+train_rot_align: true
+augmentations: [center, random_rotate, normalize]
+
+# THE ONE OBJECTIVE KEY THAT DIFFERS BETWEEN THE TWO SHIPPED EXPERIMENTS.
+scale_noise: true
+scale_noise_factor: 0.2
+
+inference_annealing: true
+annealing_coef: 10.0
+
+# Upstream kept an EMA of the backbone inside the model and copied it in before
+# sampling. Here the platform owns EMA (trainer.ema_decay, saved with the
+# checkpoint), so the in-model copy is off. The released weights' EMA is not
+# lost: scripts/convert_checkpoint.py folds the EMA shadow parameters INTO the
+# backbone, which is exactly the tensor set upstream sampled from.
+ema_decay: 0.0
+
+# --- loss weights (identical in both shipped experiments) ------------------
+nll_coef: 1.0
+mse_coef: 1.0
+bond_length_coef: 0.2
+pairwise_distance_coef: 0.4
+pairwise_distance_threshold: 5.0
+smooth_lddt_coef: 0.4
+loss_t_threshold: 0.25
+
+# --- data-shape flags ------------------------------------------------------
+# MUST match configs/data/syncogen_dataset.yaml. `_compute_step_loss` reads them
+# to decide whether to look for batch.bonds / batch.pharm_types, so a mismatch is
+# an AttributeError mid-training, not a warning.
+load_bonds: true            # required by BondLengthLoss
+load_pharmacophores: false
+
+# --- run configuration -----------------------------------------------------
+# Fragment-count prior. Exact histogram over ALL 622,766 SynSpace graphs, from
+# docs/model_integrations/syncogen/data/syncogen_num_fragments_probs.json
+# (written by scripts/convert_dataset.py). Config-owned rather than
+# dataset-derived so generation from the released weights needs no dataset at
+# all. Note a "size" here is a FRAGMENT count, so a generate config's mol_size
+# must be [0, 0] or a range inside [3, 5].
+num_fragments_probs:
+  "3": 0.157541
+  "4": 0.388355
+  "5": 0.454105
+
+eval_batch_size: 4
+# Generation-time only: a reference .sdf whose pharmacophores condition the run.
+# Meaningless for this unconditional variant; declared for schema parity.
+reference_ligand: null
+# Optional combined .sdf sidecar, written from build_rdkit's own molecules.
+# Independent of interference.sdf_per_molecule -- either, both or neither.
+sdf_output_path: null
+# A sampled graph can carry a reaction the assembler rejects. Retry a round
+# rather than emit an empty .xyz for the failed rows.
+max_sample_attempts: 5
+
+# meta.json:atom_types, heavy atoms only. Asserted against the loaded vocabulary
+# at build time: save_xyz_file and _write_molecule_sdf both index it
+# positionally, so a mismatch mislabels every element instead of raising.
+atom_vocab: [C, N, O, B, F, Cl, Br, S]

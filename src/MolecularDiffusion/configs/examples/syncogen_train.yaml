@@ -1,0 +1,131 @@
+# SynCoGen training on a REAL slice of published SynSpace, resolved from the zoo.
+#
+#   MolCraftDiff zoo fetch --config syncogen_train.yaml
+#   MolCraftDiff train syncogen_train.yaml
+#
+# PREREQUISITES (one command, ~110 MB)
+#   `zoo fetch` above pulls two assets and nothing else:
+#     data/synspace/2k    2,000 molecules of the published corpus -- real
+#                         graphs, real GFN-xTB conformers, real pharmacophores
+#     syncogen/vocabulary the 93-block / 19-reaction catalogue, which is
+#                         process-global state loaded BEFORE any model class is
+#                         built. It is not optional: without it nothing
+#                         constructs. (Not hosted -- `zoo fetch` prints the
+#                         recipe; see its note below.)
+#
+# WHAT THIS TRAINS, AND WHAT IT DOES NOT
+#   2,000 molecules against a 31.9 M-parameter model. It converges to something
+#   that generates valid, assemblable molecules -- a measured 4/4 sanitizable at
+#   ~29% assembly-gate clearance after 30 epochs -- and it overfits: validation
+#   loss bottoms around epoch 9 and climbs after. That is the expected shape at
+#   this data size and is the point of the config: a correct training run you can
+#   finish in minutes, not a good model.
+#
+#   For a real run, point `data.*` at the full corpus instead:
+#
+#     python docs/model_integrations/syncogen/scripts/prepare_synspace.py
+#
+#   which fetches the three published archives (6.0 GB) and unpacks them to
+#   622,766 molecules / 33 GB at docs/model_integrations/syncogen/data/synspace/.
+#   That corpus is deliberately NOT a zoo asset: upstream already hosts it under
+#   MIT, and re-hosting 33 GB to duplicate a public download helps nobody.
+#
+# TWO THINGS THAT WILL BITE YOU IF YOU REPOINT THIS CONFIG
+#   1. THE SPLIT CACHE IS KEYED ON THE GRAPHS FILE'S PARENT DIRECTORY, not on
+#      the graphs file itself (modules/models/syncogen/data/dataloader.py:92-94).
+#      Two corpora in one directory share one cache, and the second silently
+#      trains on the first one's splits -- pointing at the full 622,766-graph
+#      corpus while it sat beside an 80-molecule slice yielded train=72, valid=8,
+#      with no warning. Give every corpus its own directory. Changing
+#      train_size/validation_size also does nothing until you delete `splits/`.
+#   2. `batch_size: 64` -- upstream's value -- DOES NOT FIT ON A 24 GB GPU. SEMLA
+#      attends at atom resolution over a fully connected graph, so batch 64 x 5
+#      blocks x 16 atom slots = 5,120 atoms with quadratic attention and edge
+#      tensors; it OOMs on the first step at ~22.5 GB. Scale batch_size down and
+#      accumulate_grad_batches up by the same factor: the product is the
+#      effective batch, and 16 x 16 == upstream's 64 x 4 == 256.
+#
+# HYPERPARAMETER FIDELITY
+#   Every value below is upstream's, from configs/experiments/
+#   synspace_original_uncond.gin and the files it includes -- optimiser, clipping,
+#   precision, EMA, effective batch. The architecture and all five loss terms come
+#   from configs/tasks/diffusion_syncogen.yaml, which mirrors the same gin.
+#   ONE deviation, and it is a platform limit rather than a choice: upstream uses
+#   transformers' get_constant_schedule_with_warmup with 2,500 warmup steps,
+#   stepped per optimizer step. core/engine_lightning.py implements no lambdalr
+#   branch and hardcodes interval "epoch", and an unrecognised scheduler name
+#   falls through to NO scheduler with only a warning. `scheduler: null` is a
+#   constant LR -- upstream's steady state exactly, missing only the ramp.
+
+defaults:
+  - data: syncogen_dataset
+  - tasks: diffusion_syncogen
+  - logger: default          # swap for `wandb` to log a real run
+  - trainer: default
+  - engine: lightning
+  - hydra: default
+  - _self_
+
+name: "syncogen_synspace_2k"
+tags: ["syncogen", "synspace", "building-blocks", "masked-diffusion", "flow-matching"]
+seed: 42
+
+data:
+  graphs_path: ${asset:data/synspace/2k/synspace_graphs.pt}
+  conformers_path: ${asset:data/synspace/2k/synspace_conformers.lmdb}
+  pharmacophore_path: ${asset:data/synspace/2k/synspace_pharmacophores.lmdb}
+  vocab_dir: ${asset:syncogen/vocabulary}
+  max_bbs: 5
+  train_size: 0.9
+  validation_size: 0.1
+  test_size: 0.0
+  load_bonds: true            # required by BondLengthLoss
+  # This slice ships pharmacophores, but this is the UNCONDITIONAL task. Setting
+  # this true auto-switches the backbone to semla_pharm (core.py:117) -- for that,
+  # use `tasks: diffusion_syncogen_pharm` and set it deliberately.
+  load_pharmacophores: false
+  # Live here: 10,732 conformers for 2,000 molecules (~5.4 each), so a molecule
+  # presents different geometry across epochs, as upstream's runs do.
+  sample_conformer: true
+  batch_size: 16              # 16 x accumulate 16 == upstream's 64 x 4
+  eval_batch_size: 16
+  num_workers: 0
+
+tasks:
+  vocab_dir: ${asset:syncogen/vocabulary}
+  eval_batch_size: 16
+  # num_fragments_probs is inherited from configs/tasks/diffusion_syncogen.yaml:
+  # the histogram over all 622,766 published graphs. Correct for this slice too,
+  # which is a uniform random sample of that corpus. If you train on a DIFFERENT
+  # corpus, recompute it -- generation draws molecule sizes from this value, not
+  # from your dataset.
+
+trainer:
+  num_epochs: 30
+  validation_interval: 5
+  # A SynCoGen checkpoint is ~500 MB and the bundled default keeps every
+  # validation checkpoint (cli/train.py:439 turns save_every_val_epoch into
+  # save_top_k=-1). Nothing downstream needs them: ModelCheckpoint is always
+  # built with save_last=True and generation resolves to last.ckpt.
+  save_every_val_epoch: false
+  save_top_k: 1
+  output_path: "logs/syncogen_synspace_2k"
+  optimizer_choice: "adamw"   # upstream Optimizer block, both experiments
+  lr: 3.0e-4
+  weight_decay: 1.0e-5
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  scheduler: null             # see HYPERPARAMETER FIDELITY above
+  ema_decay: 0.9999           # configs/training/ema.gin
+  grad_clip_value: 1.0        # configs/training/trainer.gin
+  gradient_clip_mode: "norm"
+  # Both shipped experiments override trainer.gin's "bf16-mixed" with "32".
+  precision: 32
+
+engine:
+  # SynCoGen's vocabulary lives in module-level globals loaded by the data
+  # module's __init__, so a worker must inherit them by FORK. Linux forks by
+  # default; under spawn, set this to 0 or workers see a vocabulary of Nones.
+  num_workers: 0
+  trainer_config:
+    accumulate_grad_batches: 16
