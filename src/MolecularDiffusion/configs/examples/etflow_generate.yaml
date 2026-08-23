@@ -1,0 +1,94 @@
+# @package _global_
+# Conformer generation with ET-Flow, from the CONVERTED PRETRAINED weights.
+#
+#   MolCraftDiff generate configs/etflow_generate.yaml
+#
+# PREREQUISITE -- run once (~100 MB download, then a few seconds):
+#
+#   D=docs/model_integrations/etflow/checkpoints/raw && mkdir -p "$D"
+#   curl -L https://zenodo.org/api/records/14226681/files/drugs-o3.ckpt/content \
+#        -o "$D/drugs-o3.ckpt"
+#   python docs/model_integrations/etflow/scripts/convert_checkpoint.py \
+#        --variant drugs-o3
+#
+# That script rebuilds this task, asserts a STRICT BIJECTION between its
+# state_dict and the checkpoint's (488 tensors, zero renamed, zero dropped),
+# writes
+#   docs/model_integrations/etflow/checkpoints/converted/etflow_drugs_o3_pretrained.ckpt
+# and then loads the result back through cli/generate.py and compares the live
+# tensors byte-for-byte. Those assertions are load-bearing: cli/generate.py
+# loads with strict=False, so a bad or absent remap loads NOTHING, raises no
+# error, and still emits plausible-looking conformers. Do not skip the script
+# and hand-copy anything.
+#
+# WHICH WEIGHTS. Two variants are published and both are converted the same
+# way:
+#   drugs-o3  GEOM-Drugs. The default here and upstream's own default. Use it
+#             for drug-like molecules. atom_vocab must be the 16-element list
+#             below.
+#   qm9-o3    GEOM-QM9. Small molecules, C/N/O/F only. Swap chkpt_directory to
+#             .../etflow_qm9_o3_pretrained.ckpt AND atom_vocab to
+#             [H, C, N, O, F] -- a molecule with an element outside the vocab
+#             is silently dropped from the input pool.
+# `drugs-so3` is deliberately NOT shipped: upstream's yaml and its own loader
+# schema disagree about whether post-hoc parity switching is on, so the
+# stereochemistry of its output is ambiguous. See the integration ledger.
+#
+# WHAT IT CONDITIONS ON: the atoms and bonds of the molecule you supply, and
+# nothing else. Set `interference.sample_input` below -- an inline SMILES list,
+# a .smi/.txt, a .sdf, or a graph3d .db. Coordinates are generated, never read
+# from the input; when you pass a file that carries geometry, that geometry is
+# used only as the RMSD reference and to read the stereochemistry, never as
+# model input.
+#
+# KNOWN LIMITATIONS baked into these weights:
+#   * ONE CONNECTED MOLECULE ONLY, and nothing checks for you. A salt or any
+#     multi-fragment input makes the harmonic prior blow up, usually without
+#     raising -- you get back a hugely exploded structure, hundreds of A
+#     across, and an absurd `rmsd` column. Split it, or drop the counter-ion.
+#   * Stereochemistry comes from the input's 3D. A SMILES input gets an ETKDG
+#     conformer embedded first, so write the stereo you want INTO the SMILES or
+#     it is lost before the model ever sees it.
+#   * The `rmsd` column in conformers.csv is distance to the INPUT geometry.
+#     For SMILES input that "reference" is itself an ETKDG guess -- read it as
+#     a conformational spread, not as accuracy.
+#
+# This uses the SHARED conformer mode (gen_conformer), the same one DiTMC, LoQI
+# and NExT-Mol use, so the input keys and the output layout are identical
+# across all of them.
+defaults:
+  - tasks: diffusion_etflow
+  - interference: gen_conformer
+  - hydra: default
+  - _self_
+
+name: "etflow_generate"
+seed: 42
+
+# cli/generate.py accepts a file or a directory here. The architecture is
+# rebuilt from this checkpoint's own hyper_parameters.model_config, so the
+# `tasks:` block above cannot silently disagree with the weights.
+chkpt_directory: ${asset:etflow/drugs_o3/etflow_drugs_o3_pretrained.ckpt}
+
+# cli/generate.py reads cfg.atom_vocab unconditionally under struct mode.
+# GEOM-Drugs elements -- MUST match the checkpoint above.
+atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Br, I, Hg, Bi]
+
+interference:
+  # CHANGE ME: an inline SMILES list, or a path to .smi/.txt/.sdf/graph3d .db.
+  sample_input:
+    - "CC(=O)Oc1ccccc1C(=O)O"                # aspirin
+    - "CC(C)Cc1ccc(cc1)C(C)C(=O)O"           # ibuprofen
+  conformers_per_molecule: 10
+  batch_size: 5
+  # ET-Flow's own sampler settings, forwarded verbatim to generate_conformers().
+  # With sampler_type: ode (upstream's shipped setting) s_churn/t_min/t_max/std
+  # are inert -- they only matter for sampler_type: stochastic.
+  sampler_kwargs:
+    n_timesteps: 50
+    sampler_type: ode
+    s_churn: 1.0
+    t_min: 1.0e-04
+    t_max: 0.9999
+    std: 1.0
+  output_path: generated_etflow

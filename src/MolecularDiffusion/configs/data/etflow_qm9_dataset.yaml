@@ -1,0 +1,64 @@
+# graph3d data for ET-Flow. Bonds are CONDITIONING here, never generated.
+#
+# Build the db first:
+#   MolCraftDiff data import-graph3d qm9 <raw_dir> data/qm9_graph3d.db
+# or, for a multi-conformer set (which is what ET-Flow actually wants):
+#   python docs/model_integrations/ditmc/scripts/convert_dataset.py --help
+#
+# kekulize MUST stay false. ET-Flow's network never sees a bond ORDER -- its
+# edge channel is a bare bonded/not-bonded flag -- so aromaticity reaches it
+# ONLY through the atom features (`atom.GetIsAromatic()` and the hybridization
+# column, commons/utils.py:97-105). Kekulizing would zero that column and shift
+# hybridization for every ring atom, i.e. change the conditioning distribution
+# the published weights were trained on.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/qm9_graph3d.db
+dataset_name: etflow_qm9
+
+atom_vocab: [H, C, N, O, F]
+with_hydrogen: True          # ET-Flow is all-atom; hydrogens carry the geometry
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 29
+forbidden_atom: []
+
+data_type: graph3d
+
+# --- graph3d-specific ------------------------------------------------------
+# raw -> PyG Batch. The task's adapter mirrors the stored upper triangle into
+# the flat bidirectional edge list ET-Flow wants; a dense (B,N,N) matrix would
+# be the wrong shape entirely.
+bond_collate: raw
+center_coords: True
+graph3d_stats: False         # ET-Flow needs NO dataset statistics at all
+kekulize: False              # <- see the header
+use_stored_split: True
+
+# --- shared DataModule knobs ---------------------------------------------
+train_ratio: 0.8
+# The transformer attends over bonds + a 10 A radius graph capped at 32
+# neighbours, so cost grows with atoms, not with N^2 pairs. 64 is upstream's
+# own drugs-o3 batch size; 128 is what qm9-o3 used.
+batch_size: 64
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null
+
+# Present for schema parity with the point-cloud configs; unused here.
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

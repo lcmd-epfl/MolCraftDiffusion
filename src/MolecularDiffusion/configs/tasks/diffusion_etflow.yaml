@@ -1,0 +1,86 @@
+# ET-Flow -- equivariant flow matching CONFORMER GENERATOR.
+#
+# Hassan, Shenoy, Lee, Stark, Thaler, Beaini, "ET-Flow: Equivariant Flow
+# Matching for Molecular Conformer Generation", NeurIPS 2024
+# (arXiv:2410.22388). Weights: doi:10.5281/zenodo.14226681 (CC-BY-4.0).
+# Code: https://github.com/shenoynikhil/ETFlow (MIT).
+#
+# This model does NOT invent molecules. You give it a molecule (atoms + bonds)
+# and it returns 3D conformers of exactly that molecule. There is no
+# unconditional mode -- generation goes through the shared conformer mode,
+# configs/interference/gen_conformer.yaml (set interference.sample_input to
+# your molecules), and task.sample() raises.
+#
+# It also needs a CONNECTED graph -- a salt, or anything in two pieces, is not
+# supported and is not caught. The prior is a Gaussian whose covariance is the
+# inverse bond Laplacian; extra zero eigenvalues make 1/sqrt(D) blow up. The
+# NaN guard almost never fires, so what comes back is usually a hugely
+# exploded structure instead of an error. Split multi-fragment inputs before
+# generating.
+#
+# Bonds reach the network as a bare BONDED/NOT-BONDED flag -- `edge_attr_dim: 1`
+# below is that one indicator column, not a bond-order channel. Bond ORDER
+# reaches it through the atom features instead (aromatic flag, hybridization,
+# degree, implicit valence, H count), which is why the dataset config must keep
+# `kekulize: false`.
+#
+# Every default below is upstream's own `commons/configs.py` schema -- the file
+# `BaseFlow.from_default()` uses to reconstruct each released checkpoint, which
+# takes precedence over `configs/*.yaml` wherever the two disagree. Changing
+# any of them makes the published weights unloadable.
+_target_: MolecularDiffusion.modules.tasks.diffusion_etflow.ETFlowTaskFactory
+
+task_type: diffusion_etflow
+
+model:
+  # --- TorchMD-ET transformer (the vector field) ---------------------------
+  hidden_channels: 160
+  num_layers: 20
+  num_heads: 8
+  num_rbf: 64
+  rbf_type: expnorm         # the only type upstream ships or types
+  trainable_rbf: true
+  activation: silu
+  attn_activation: silu
+  neighbor_embedding: true
+  cutoff_lower: 0.0
+  # ALSO the radius-graph cutoff (models/utils.py:68): the edge set is bonds
+  # union radius_graph(pos, r=cutoff_upper), rebuilt at every step.
+  cutoff_upper: 10.0
+  max_z: 100                # the embedding is indexed by raw atomic number
+  # MUST stay 10: it is the width of atom_to_feature_vector(), not a knob.
+  node_attr_dim: 10
+  # The bonded/not-bonded indicator, concatenated onto the RBF expansion.
+  edge_attr_dim: 1
+  distance_influence: both
+  reduce_op: sum
+  qk_norm: true
+  clip_during_norm: true
+  # false in BOTH shipped o3 checkpoints. true splits the value projection
+  # into 4 parts, making the network SO(3)- rather than O(3)-equivariant
+  # (chirality-aware by construction) -- that is the `so3` variant, which is
+  # NOT integrated in this pass: its yaml and its loader schema disagree about
+  # parity_switch, so the stereochemistry of its output is ambiguous.
+  so3_equivariant: false
+  # PER-VARIANT: false for drugs-o3, true for qm9-o3 (configs.py:119,193).
+  # It adds a LayerNorm inside each output block, so it changes the state_dict
+  # key layout -- it must match the checkpoint you load.
+  output_layer_norm: false
+
+flow:
+  # Interpolant noise: x_t = t*x1 + (1-t)*x0 + sigma*sqrt(t(1-t))*eps.
+  sigma: 0.1
+  # `harmonic` = a Gaussian whose covariance is the inverse bond-graph
+  # Laplacian, so the prior sample already looks roughly like a bonded
+  # molecule. `gaussian` is upstream's ablation.
+  prior_type: harmonic
+  harmonic_alpha: 1.0
+  # After sampling, compare the signed volume at every tetrahedral centre with
+  # the input's chiral tag and reflect the WHOLE molecule if it came out
+  # wrong. Set to null to turn it off. A no-op for achiral inputs.
+  parity_switch: post_hoc
+  # uniform on [1e-4, 0.9999], ONE draw per molecule. `logit_norm` is the
+  # alternative upstream implements but never ships.
+  sample_time_dist: uniform
+  # Radius-graph neighbour cap (model.py:58; in no config upstream).
+  max_num_neighbors: 32

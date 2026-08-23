@@ -1103,6 +1103,34 @@ assets:
     upstream:
       source: QM9 (gdb9.sdf + gdb9.sdf.csv), imported with MolCraftDiff data import-graph3d
         qm9 --targets
+  etflow/drugs_o3:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: etflow_drugs_o3_pretrained.ckpt
+      sha256: 3e68f8207793a61709b7362b3fc5b283461b6294c31127e3ee5da509e7051185
+      size: 33527014
+    license: CC-BY-4.0
+    redistribute: true
+    upstream:
+      repo: https://github.com/shenoynikhil/ETFlow
+      download: https://zenodo.org/records/14226681
+      source: code MIT; weights archive CC-BY-4.0
+  etflow/qm9_o3:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: etflow_qm9_o3_pretrained.ckpt
+      sha256: 57c7ce13185b18447bd05dc4e65ef331ca5112211bc94d751da600b730475b8c
+      size: 33529226
+    license: CC-BY-4.0
+    redistribute: true
+    upstream:
+      repo: https://github.com/shenoynikhil/ETFlow
+      download: https://zenodo.org/records/14226681
+      source: code MIT; weights archive CC-BY-4.0
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -1540,3 +1568,30 @@ models:
       also generates to a requested QM9 property value. The GEOM variant is converted
       and verified tensor-for-tensor, and generates drug-sized molecules (33-51 atoms,
       4/4 valid on a 50-step check).
+  etflow:
+    family: conformer-generation
+    task_type: diffusion_etflow
+    tags:
+    - conformer
+    - flow-matching
+    - equivariant
+    - geom-drugs
+    - qm9
+    variants:
+      drugs-o3:
+        checkpoint: etflow/drugs_o3
+        configs:
+        - etflow_generate.yaml
+      qm9-o3:
+        checkpoint: etflow/qm9_o3
+        data: data/qm9/graph3d-400-ditmc
+    summary: ET-Flow is a conformer generator, not a de novo generator -- you hand it a molecule's
+      atoms and bonds and it returns 3D conformers of that molecule. Equivariant flow matching
+      from a harmonic prior, ~8.3M params. Both published o3 variants are converted tensor-for-tensor
+      (488/488 drugs-o3, 492/492 qm9-o3). drugs-o3 is the default, for drug-like molecules over
+      the 16-element vocab; qm9-o3 covers small C/N/O/F molecules and scored 0.029 A median RMSD
+      on held-out QM9. drugs-so3 is deliberately not shipped -- upstream's yaml and its loader
+      schema disagree about post-hoc parity switching. One connected molecule at a time -- a salt
+      or multi-fragment input makes the harmonic prior diverge, usually without raising. Training
+      on GEOM-Drugs needs a Drugs db you build yourself; the bundled train config reads the QM9
+      corpus above.
