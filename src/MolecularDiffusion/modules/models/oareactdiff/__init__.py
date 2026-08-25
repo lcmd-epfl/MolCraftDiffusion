@@ -1,0 +1,44 @@
+"""OA-ReactDiff: object-aware SE(3) diffusion over reactant / TS / product.
+
+Duan, Du, Jia & Kulik, *Accurate transition state generation with an
+object-aware equivariant elementary reaction diffusion model*, Nature
+Computational Science 2023. Ported from
+https://github.com/chenruduan/OAReactDiff at commit 543aaa8 (MIT).
+
+The package holds the network and the diffusion process only. Its data layer
+lives in ``data/component/oareactdiff_data.py`` (beside the shared
+``reaction_data.py`` container) and its task in
+``modules/tasks/diffusion_oareactdiff.py``.
+
+See ``docs/model_integrations/oareactdiff/INTEGRATION_PLAN.md``.
+"""
+
+from MolecularDiffusion.modules.models.oareactdiff.dynamics import (
+    BaseDynamics,
+    EGNNDynamics,
+)
+from MolecularDiffusion.modules.models.oareactdiff.en_diffusion import (
+    EnVariationalDiffusion,
+)
+from MolecularDiffusion.modules.models.oareactdiff.leftnet import LEFTNet
+from MolecularDiffusion.modules.models.oareactdiff.normalizer import (
+    FEATURE_MAPPING,
+    Normalizer,
+)
+from MolecularDiffusion.modules.models.oareactdiff.schedule import (
+    DiffSchedule,
+    PredefinedNoiseSchedule,
+    get_repaint_schedule,
+)
+
+__all__ = [
+    "FEATURE_MAPPING",
+    "BaseDynamics",
+    "DiffSchedule",
+    "EGNNDynamics",
+    "EnVariationalDiffusion",
+    "LEFTNet",
+    "Normalizer",
+    "PredefinedNoiseSchedule",
+    "get_repaint_schedule",
+]

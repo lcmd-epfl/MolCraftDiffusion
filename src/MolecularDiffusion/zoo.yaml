@@ -1247,13 +1247,10 @@ assets:
     redistribute: true
     upstream:
       download: https://dataverse.harvard.edu/api/access/datafile/4327252
-      source: >-
-        GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per
-        the Dataverse API. rdkit_folder/qm9 converted with
-        scripts/build_geom_multiconf.py --max-conformers 30: 988,850 rows over
-        ~133k molecules, top-30 conformers per molecule by Boltzmann weight,
-        deterministic 80/10/10 split (NOT torsional diffusion's published
-        split.npy -- recorded in the db metadata).
+      source: 'GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per the Dataverse API.
+        rdkit_folder/qm9 converted with scripts/build_geom_multiconf.py --max-conformers 30: 988,850 rows
+        over ~133k molecules, top-30 conformers per molecule by Boltzmann weight, deterministic 80/10/10
+        split (NOT torsional diffusion''s published split.npy -- recorded in the db metadata).'
   data/geom/graph3d-multiconf-drugs:
     kind: dataset
     host: datasets
@@ -1266,14 +1263,192 @@ assets:
     redistribute: true
     upstream:
       download: https://dataverse.harvard.edu/api/access/datafile/4327252
-      source: >-
-        GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per
-        the Dataverse API. rdkit_folder/drugs converted with
-        scripts/build_geom_multiconf.py --max-conformers 30: 7,173,739 rows
-        over ~304k molecules (mean 21.7 conformers each, 52.6 atoms), top-30 by
-        Boltzmann weight, deterministic 80/10/10 split. 28.75 GB -- confirm
-        hosting before staging. Needs atom_vocab [H,B,C,N,O,F,Al,Si,P,S,Cl,As,
-        Br,I,Hg,Bi] and max_atom well above 29.
+      source: 'GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per the Dataverse API.
+        rdkit_folder/drugs converted with scripts/build_geom_multiconf.py --max-conformers 30: 7,173,739
+        rows over ~304k molecules (mean 21.7 conformers each, 52.6 atoms), top-30 by Boltzmann weight,
+        deterministic 80/10/10 split. 28.75 GB -- confirm hosting before staging. Needs atom_vocab [H,B,C,N,O,F,Al,Si,P,S,Cl,As,
+        Br,I,Hg,Bi] and max_atom well above 29.'
+  oareactdiff/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: oareactdiff_pretrained.ckpt
+      sha256: 8f7458cbf79e95106fbbce1e4c25823c9a5801e81cd3c30c386ea49ca1e76cc8
+      size: 42687545
+    license: MIT
+    redistribute: true
+    reason: 'Upstream OA-ReactDiff is MIT. Vendored LICENSE file is the MIT text, "Copyright (c) 2023
+      Chenru Duan" (1069 B, sha256 459ebc04...eee3), and api.github.com/repos/chenruduan/OAReactDiff returns
+      license.spdx_id: MIT (the /license endpoint resolves it to path LICENSE, size 1069 -- same file).
+      The weights are the authors'' own property under that licence.'
+    upstream:
+      repo: https://github.com/chenruduan/OAReactDiff
+      commit: 543aaa8ec4c0193089f6cdbd3ad3b1534cc280a9
+      source: pretrained-ts1x-diff.ckpt (in-tree, 213,078,375 B)
+      script: docs/model_integrations/oareactdiff/scripts/convert_checkpoint.py
+      note: 'Conversion is REQUIRED, not cosmetic: the upstream Lightning checkpoint pickles a class reference
+        to oa_reactdiff.model.leftnet.LEFTNet, so torch.load raises ModuleNotFoundError without that package
+        importable. The converter shims it (installs nothing) and re-prefixes to task.ddpm.*. 247 of 248
+        tensors map one-for-one by name and shape with zero renaming; the 248th (sampling_schedule.gamma_module.gamma,
+        (151,)) is a non-learned lookup table proved torch.equal to a freshly built PredefinedNoiseSchedule(''polynomial_2'',
+        150, 1e-5). Smaller than the source because optimizer state, loops and callbacks are dropped.'
+  data/transition1x/reactions:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: t1x_source_train.pkl
+      sha256: ac34507d5411ed4d6086c980699dda3064e6bebc5638e7f283a8b5839ac7d4bf
+      size: 34405642
+    - path: t1x_source_valid.pkl
+      sha256: 71e435ba031135a721fa0cd1f01434b7ddd99b29d1ada38b89ed4446a1b4b65a
+      size: 34183746
+    license: MIT
+    redistribute: true
+    reason: 'MIT at BOTH layers, audited separately. (1) The corpus: Transition1x is published on Figshare
+      as article 19614657, doi 10.6084/m9.figshare.19614657.v4 (Mathias Schreiner), whose API record declares
+      license {"value": 3, "name": "MIT"}; that deposit holds file id 36035789, Transition1x.h5, which
+      is the exact file the project''s own download_t1x.py fetches. (2) The preprocessing into these pickles
+      is OA-ReactDiff''s, MIT. NOTE for future auditors: the Transition1x GitLab CODE repo (gitlab.com/matschreiner/Transition1x)
+      carries no licence at all -- API license: null, and LICENSE/LICENSE.md/LICENSE.txt/COPYING all 404
+      on main -- but it ships only a downloader and a loader, no data, so nothing redistributed here derives
+      from it.'
+    upstream:
+      repo: https://github.com/chenruduan/OAReactDiff
+      commit: 543aaa8ec4c0193089f6cdbd3ad3b1534cc280a9
+      source: REBUILT FROM THE PRIMARY DEPOSIT, not copied from the OA-ReactDiff repo. Figshare article
+        19614657 / file id 36035789, Transition1x.h5, 6,623,929,000 B, doi 10.6084/m9.figshare.19614657.v4.
+        The 6.6 GB raw file is deleted after conversion; re-fetch with the download URL below.
+      corpus: https://gitlab.com/matschreiner/Transition1x
+      download: https://figshare.com/ndownloader/files/36035789
+      script: 'docs/model_integrations/oareactdiff/scripts/build_from_source.py (reads the HDF5 `data` group
+        -- 10,073 reactions with reactant/transition_state/product EXPLICITLY labelled, so no
+        highest-energy-image heuristic is needed -- and emits upstream''s exact pickle schema, so the data
+        module reads the result with no code change). From source: positions, charges (Z), num_atoms,
+        formula, rxn, energies, forces, and ediff (recomputed as E(object) - E(TS), which reproduces
+        upstream''s stored values to 0.0). Carried over from upstream''s pickles because they are
+        cheminformatics products absent from the deposit: smi, fragments, single_fragment, uff_positions,
+        and use_ind. VERIFIED against the pickles OA-ReactDiff ships: on all 7,516 single-fragment reactions
+        the two agree to 2.7e-07 A with energies identical to the last bit; the 2,557 multi-fragment
+        reactions disagree by up to 23.05 A because upstream RE-POSED their separated fragments while
+        keeping the original DFT energies. single_frag_only: true excludes those, so every reaction the
+        model trains on is provably faithful to the deposit. The older scripts/convert_dataset.py stages
+        upstream''s pickles instead and needs no download; it is kept as a fallback.'
+      note: 'ONE corpus, two index-carrying views -- not two corpora. Both pickles hold the SAME 10,073
+        reactions (identical rxn fingerprints); they differ only in the use_ind list each carries (9,000
+        vs 1,073), so the published split lives INSIDE the files and use_by_ind: true is what applies
+        it. Registered as one asset for exactly that reason: fetching ''the validation set'' alone would
+        misrepresent what the file is. Intersected with single_fragment: 6,733 train / 783 valid reactions,
+        doubled by swapping_react_prod. Reactant/TS/product share atom count AND atom ordering on all
+        10,073 rows. Elements {H,C,N,O}; F is in the model''s vocabulary but absent from the corpus. Upstream
+        ships no test.pkl. These two files are the 10,073-reaction ENDPOINT slice (reactant / transition
+        state / product only). The full Transition1x.h5 is 6.6 GB because it also carries every NEB path
+        image -- ~9.6 M DFT calculations -- which this model never reads; it is deliberately NOT hosted
+        here, fetch it from the Figshare URL above if you need the paths, energies along the path, or
+        forces on intermediate images.'
+  reactot/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: reactot_pretrained.ckpt
+      sha256: dd0bd3e0f8d0df8e07a959dc53a6857acd3ad6bf7e69513874fb46d16158b9f6
+      size: 42665092
+    license: MIT
+    redistribute: true
+    reason: 'MIT is the USER''S EXPLICIT DECISION, recorded after all three sources below were shown to
+      them; it is not an inference from any single one. THREE conflicting values exist and all three were
+      verified by the Registrar: (1) the target repo''s LICENSE file is Creative Commons Attribution-NonCommercial-ShareAlike
+      4.0 International (20,850 B, sha256 7399d96e...9aaa94); (2) the same repo''s pyproject.toml:14 says
+      license = { text = "MIT" } with the MIT OSI classifier, and that file is demonstrably stale -- it
+      still carries name = "oa_reactdiff", the predecessor project; (3) api.github.com/repos/deepprinciple/react-ot
+      returns license.spdx_id: NOASSERTION, key "other" -- the API could not classify the CC text, which
+      is NOT a finding of "unlicensed". (4) Zenodo record 13131875, which hosts the byte-identical weights
+      as sb-pretrained.ckpt (42,699,153 B), declares metadata.license.id: cc-by-4.0, open access -- this
+      is the licence attached to the actual artifact redistributed here and it permits redistribution with
+      attribution. PUBLISH STEP: surface this three-way licence conflict (repo LICENSE CC BY-NC-SA 4.0 /
+      pyproject.toml MIT / Zenodo cc-by-4.0) to the user for confirmation before uploading these weights.'
+    upstream:
+      repo: https://github.com/deepprinciple/react-ot
+      commit: 6dfccd0112cf6b504da80ad2516ff8e5ab8bade1
+      source: reactot-pretrained.ckpt (in-tree at the repo root, 42,699,153 B); the same file is published
+        on Zenodo record 13131875 as sb-pretrained.ckpt at that exact size.
+      download: https://zenodo.org/records/13131875
+      doi: 10.5281/zenodo.13131875
+      script: docs/model_integrations/reactot/scripts/convert_checkpoint.py
+      note: 'Conversion is REQUIRED, not cosmetic: the upstream Lightning checkpoint pickles a class reference
+        to reactot.model.leftnet.LEFTNet, so torch.load raises ModuleNotFoundError without that package
+        importable. The converter shims it (installs nothing) and rewraps into the platform''s {state_dict:
+        {task.*}, task_type, hyper_parameters} layout. The remap is the IDENTITY -- ReactOTTask.ddpm is
+        an EnSB whose .dynamics is the same EGNNDynamics, so the source prefix ddpm.dynamics. is already
+        the destination prefix. All 246 of 246 tensors (10,645,911 parameters) are placed, 0 dropped, 0
+        unexpected, 0 missing, every shape matched, and the Tester independently confirmed 246/246 torch.equal
+        to upstream''s file both on disk and in the LIVE task after cli/generate.py''s real load_model.
+        That proof matters because generate loads with strict=False and the model is pos_only: a bad remap
+        would load nothing and still emit plausible geometry, since atom identities are copied from the
+        input reaction and the R/P midpoint the bridge starts from already sits ~0.4 A from the true TS.
+        Smaller than the source because optimizer state, loops and callbacks are dropped. NOT the GFN2-xTB-pretrained
+        variant the NMI paper credits with a further ~25% improvement -- no second checkpoint ships. Measured
+        here over the full 1,073-reaction published held-out split at ode/nfe=10: mean 0.1827 A / median
+        0.0920 A Kabsch RMSD to the DFT transition state, beating the do-nothing R/P-midpoint floor (0.4340
+        / 0.4041) on 91.3% of reactions, flat from nfe=10 to nfe=100.'
+  data/transition1x/reactions_rpsb:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: reactot_ts1x_train.pkl
+      sha256: 8ccacaa1004fac3fa30862ae2721803e0d3fc6337fd7fabcb9e7e0b3a06cf9cf
+      size: 56072324
+    - path: reactot_ts1x_valid.pkl
+      sha256: 9833ce11c164e53efce09ccb426952ee7c47a937c846b4e505aa5778e68220f5
+      size: 55877397
+    license: MIT
+    redistribute: true
+    reason: 'Redistributable at BOTH layers, audited separately, and the user''s MIT decision for React-OT
+      covers the preprocessing layer. (1) THE CORPUS: Transition1x is published on Figshare as article 19614657,
+      doi 10.6084/m9.figshare.19614657.v4 (Mathias Schreiner), whose API record declares license {"value":
+      3, "name": "MIT"} -- the same audit as data/transition1x/reactions. (2) THE PREPROCESSING: these pickles
+      are React-OT''s own mutual R/P/TS alignment, published by the authors on Zenodo record 13131875 as
+      train_rpsb_all.pkl / valid_rpsb_all.pkl, whose metadata.license.id reads cc-by-4.0 (open access, verified
+      against the Zenodo API) -- permissive, redistribution allowed with attribution. React-OT''s own repo
+      licence is the three-way conflict described on reactot/pretrained, settled by the user as MIT. PUBLISH
+      STEP: surface this three-way licence conflict (repo LICENSE CC BY-NC-SA 4.0 / pyproject.toml MIT /
+      Zenodo cc-by-4.0) to the user for confirmation before uploading these weights.'
+    upstream:
+      repo: https://github.com/deepprinciple/react-ot
+      commit: 6dfccd0112cf6b504da80ad2516ff8e5ab8bade1
+      corpus: https://gitlab.com/matschreiner/Transition1x
+      download: https://zenodo.org/records/13131875
+      doi: 10.5281/zenodo.13131875
+      source: 'FETCHED from Zenodo record 13131875: train_rpsb_all.pkl (55,458,032 B, md5 701a4576...) and
+        valid_rpsb_all.pkl (55,263,120 B, md5 b9ca5d76...), 110,721,152 B total. These are React-OT''s own
+        authoritative pickles, the exact filenames pl_trainer.py:881,891 names.'
+      script: docs/model_integrations/reactot/scripts/convert_dataset.py
+      note: 'A SECOND VIEW OF THE SAME CORPUS AS data/transition1x/reactions, NOT A DUPLICATE, and the two
+        are NOT interchangeable for React-OT -- registered separately for that measured reason. Same 10,073
+        reactions, same molecules to machine precision (per-object Kabsch RMSD max 2.1e-14 A across all
+        rows, so neither file has different chemistry), but the rpsb files pose reactant, TS and product
+        in a MUTUALLY ALIGNED frame (''rpsb'' = reactant/product prepared for the Schrodinger bridge): no
+        single rotation aligns all three in the t1x_source files, and the joint R|TS|P Kabsch RMSD between
+        the families is 0.088-0.107 A mean, up to 1.8 A. For OA-ReactDiff that is pure gauge and invisible
+        -- RePaint keeps a separate SE(3) frame per object. For React-OT it is DATA, because the bridge
+        starts from x1 = (r_pos + p_pos)/2, which mixes the two frames: substituting perturbs the starting
+        structure by 0.031-0.039 A mean and up to 1.4 A, against a midpoint only ~0.4 A from the true TS
+        and a model reporting 0.09 A median RMSD -- the perturbation is the size of the quantity being measured.
+        CONVERSION IS REQUIRED, not a copy: the Zenodo pickles carry no `smi` and no `ediff`, both of which
+        data/component/oareactdiff_data.py:225-228 reads for every item, so a raw *_rpsb_all.pkl raises
+        KeyError: ''smi'' on row 0. The converter derives ediff from the fetched files'' OWN DFT energies
+        (E(object) - E(transition_state)) and cross-checks against the in-tree values at max |delta| = 0.0,
+        and copies smi BY ROW INDEX from data/transition1x/reactions -- sound only because row alignment
+        is PROVED first: rxn ids, use_ind, single_fragment, num_atoms and all atomic numbers are identical
+        on all 10,073 rows of both splits. Nothing else is touched and no coordinate is modified. ONE corpus,
+        two index-carrying views: both files hold all 10,073 reactions and differ only in the use_ind list
+        each carries, so the published split lives INSIDE the files and use_by_ind: true is what applies
+        it. React-OT trains with single_frag_only: FALSE (unlike OA-ReactDiff), giving 9,000 train / 1,073
+        held-out reactions. R/TS/P share atom count AND ordering on all 10,073 rows. Elements {H,C,N,O};
+        F is in the model''s vocabulary but absent from the corpus.'
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -1390,13 +1565,13 @@ models:
     - equivariant
     variants:
       ape:
-        data: data/qm9/graph3d-400-ditmc
+        data: data/geom/graph3d-multiconf-qm9
         checkpoint: ditmc/ape
       rpe:
-        data: data/qm9/graph3d-400-ditmc
+        data: data/geom/graph3d-multiconf-qm9
         checkpoint: ditmc/rpe
       so3:
-        data: data/qm9/graph3d-400-ditmc
+        data: data/geom/graph3d-multiconf-qm9
         checkpoint: ditmc/so3
     summary: "DiTMC is a **conformer generator**, not a de novo generator. You hand it a molecule you\
       \ already have \u2014 its atoms and bonds \u2014 and it returns 3D conformers of *that* molecule.\
@@ -1547,7 +1722,7 @@ models:
         checkpoint: nextmol/pretrained
         extra:
           mollama: nextmol/mollama
-        data: data/qm9/graph3d-400-nextmol
+        data: data/geom/graph3d-multiconf-qm9
     summary: NExT-Mol pairs a 1D molecular language model (MoLlama, which proposes a molecule as a SELFIES
       string) with DMT, a diffusion transformer that predicts that molecule's 3D conformer. Only the 3D
       half was converted; MoLlama is used as published.
@@ -1709,11 +1884,12 @@ models:
     variants:
       drugs-o3:
         checkpoint: etflow/drugs_o3
+        data: data/geom/graph3d-multiconf-drugs
         configs:
         - etflow_generate.yaml
       qm9-o3:
         checkpoint: etflow/qm9_o3
-        data: data/qm9/graph3d-400-ditmc
+        data: data/geom/graph3d-multiconf-qm9
     summary: ET-Flow is a conformer generator, not a de novo generator -- you hand it a molecule's atoms
       and bonds and it returns 3D conformers of that molecule. Equivariant flow matching from a harmonic
       prior, ~8.3M params. Both published o3 variants are converted tensor-for-tensor (488/488 drugs-o3,
@@ -1762,3 +1938,47 @@ models:
       nodes). Molecules top out at five building blocks and are limited to the 93-block, 19-reaction catalogue.
       NOTE: `syncogen/vocabulary` is required to instantiate either checkpoint and is NOT redistributable
       -- build it locally with `MolCraftDiff zoo recipe syncogen/vocabulary`.'
+  oareactdiff:
+    family: reaction-diffusion
+    task_type: diffusion_oareactdiff
+    tags:
+    - transition-state
+    - reaction-conditioned
+    - object-aware
+    - inpainting
+    variants:
+      default:
+        checkpoint: oareactdiff/pretrained
+        data: data/transition1x/reactions
+        configs:
+        - oareactdiff_generate.yaml
+  reactot:
+    family: reaction-diffusion
+    task_type: diffusion_reactot
+    tags:
+    - transition-state
+    - reaction-conditioned
+    - object-aware
+    - schrodinger-bridge
+    - optimal-transport
+    - deterministic
+    variants:
+      default:
+        checkpoint: reactot/pretrained
+        data: data/transition1x/reactions_rpsb
+        configs:
+        - reactot_generate.yaml
+    summary: 'React-OT (Duan, Liu, Du, ..., Kulik, Nature Machine Intelligence 2025, doi:10.1038/s42256-025-01010-0;
+      preprint arXiv:2404.13430 under a different title) generates the transition state of an elementary
+      reaction from its reactant and product geometries. It is the successor to oareactdiff and shares that
+      model''s object-aware LEFTNet backbone and Transition1x corpus, but it is NOT a diffusion model: it
+      integrates a Schrodinger bridge / optimal-transport process from the R/P midpoint (r_pos + p_pos)/2
+      to the TS, so the `diffusion_` task_type prefix is a platform naming convention, not a claim about
+      the objective. THE MODEL IS DETERMINISTIC (ot_ode: true, sigma: 0.0 -- no Gaussian is drawn anywhere),
+      so ONE SAMPLE IS THE ANSWER: num_generate: 20 returns twenty identical files, and there is no best-of-N
+      to rank and no confidence model to rank it with, which is the paper''s central claim. pos_only --
+      it predicts coordinates and copies atom identities from the input reaction, so there is no unconditional
+      mode and you must supply a reaction. `num_steps` IS upstream''s --nfe, the number of network evaluations;
+      10 is the documented default and accuracy is flat from there to 100. Requires data/transition1x/reactions_rpsb
+      specifically -- see that asset''s note for why the sibling data/transition1x/reactions is NOT a valid
+      substitute for this model.'

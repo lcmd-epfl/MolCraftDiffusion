@@ -1,0 +1,126 @@
+# @package _global_
+# Transition-state generation from React-OT's CONVERTED PRETRAINED weights
+# (upstream `reactot-pretrained.ckpt`, the paper's Transition1x model).
+#
+#   MolCraftDiff generate configs/reactot_generate.yaml
+#
+# Duan, Liu, Du, ..., Kulik, "Optimal transport for generating transition
+# states in chemical reactions", Nature Machine Intelligence (2025),
+# doi:10.1038/s42256-025-01010-0. Preprint, under a DIFFERENT title:
+# arXiv:2404.13430.
+#
+# PREREQUISITES -- run once each, if not already done:
+#
+#   python docs/model_integrations/reactot/scripts/convert_checkpoint.py
+#   python docs/model_integrations/reactot/scripts/convert_dataset.py --fetch
+#
+# The weights ship inside the React-OT repo (they are also on Zenodo record
+# 13131875 as sb-pretrained.ckpt, the same 42,699,153 bytes), so nothing is
+# downloaded for the checkpoint. It still cannot be loaded directly: it
+# pickles a reference to the class `reactot.model.leftnet.LEFTNet`, so
+# torch.load raises ModuleNotFoundError without the upstream package
+# importable. The converter shims that (nothing is installed), rewraps the
+# tensors, and -- crucially -- PROVES the mapping. cli/generate.py loads with
+# strict=False, so a bad remap would load NOTHING and still emit
+# plausible-looking geometry: pos_only means atom identities are copied from
+# the input reaction either way, and the R/P midpoint this model starts from
+# already sits only ~0.4 A from the true transition state. The converter
+# asserts all 246 tensors placed, 0 dropped, 0 unexpected, every shape
+# matching, and then re-loads through the real load_model path to confirm
+# every live tensor is byte-identical to the source. Do not hand-copy it.
+#
+# The DATA fetch is 110.7 MB and IS needed -- see configs/reactot_train.yaml
+# for why no other Transition1x preprocessing is a valid substitute here.
+#
+# AND YOU ALSO NEED A REACTION -- there is no unconditional mode. The model
+# is pos_only: it predicts coordinates and cannot invent atom identities, so
+# it always starts from a reactant and a product, already atom-mapped to each
+# other.
+#
+# WHAT THE MODEL CONDITIONS ON. One elementary reaction: the reactant and
+# product geometries, held at their true coordinates as two separate objects
+# in the graph at every network call. The transition state is produced by
+# integrating a Schrodinger bridge from the MIDPOINT of those two geometries,
+# (r_pos + p_pos)/2, in `num_steps` network evaluations. The reaction comes
+# from one row of a Transition1x pickle, read with the released filters
+# (single_frag_only FALSE -- React-OT handles reactions where molecules come
+# together or fall apart -- and use_by_ind) but WITHOUT swapping_react_prod,
+# so a generator does not silently hand back the reverse reaction. With
+# reactot_ts1x_valid.pkl below, `reaction_index` indexes the 1,073 HELD-OUT
+# reactions of the published split: index 0 is one this checkpoint never saw.
+#
+# WHAT YOU GET. `molecule_NNN.xyz` transition states, plus `reactant.xyz`,
+# `product.xyz` and `reference_ts.xyz` written once, so the output folder is
+# self-describing and a sample can be scored against the DFT transition state
+# without going back to the pickle.
+#
+# ONE SAMPLE IS THE ANSWER, and that is the point of this model. With
+# ot_ode: true and sigma: 0.0 no Gaussian is drawn anywhere: run it twice and
+# you get the same structure. There is no best-of-5 to rank and no confidence
+# model to rank it with -- React-OT's whole claim is that it does not need
+# one. `num_generate: 20` would give you twenty identical files. If you want
+# a spread, vary `reaction_index`, not `num_generate`.
+#
+# KNOWN LIMITATIONS baked into the defaults:
+#
+#   * `num_steps` IS upstream's --nfe: the number of network evaluations, not
+#     a fraction of the 3000-step bridge grid. Upstream is three-way
+#     inconsistent (README 10, checkpoint 25, evaluation.py 100); 10 is the
+#     documented user-facing command and the speed claim, so it is the
+#     default. Raising it to 25 or 100 is supported and costs linearly.
+#     NEVER leave it unset: the fallback is the model's T, i.e. 3000
+#     evaluations, 300x the intended cost.
+#   * The `ode` solver's step is a VENDORED single fixed-grid midpoint (RK2)
+#     update, numerically identical to torchdiffeq's Midpoint._step_func.
+#     torchdiffeq is NOT a dependency of this platform and is not imported
+#     anywhere; `method` values other than `midpoint` raise, naming
+#     `pip install torchdiffeq` as the upgrade path.
+#   * The GFN2-xTB-PRETRAINED variant is NOT this checkpoint. The NMI paper
+#     reports a further ~25% improvement from xTB pretraining; no second
+#     checkpoint ships and the pretraining corpus is not in the Zenodo
+#     record. Do not compare numbers from this config against that variant's.
+#   * H / C / N / O only in practice (F is in the vocabulary but absent from
+#     Transition1x), and reactions of roughly 4-23 atoms.
+#   * The output still needs a DFT saddle-point confirmation. Because the
+#     model is deterministic, you cannot sample your way out of a bad answer.
+#
+# FOR REFERENCE, and read the statistic, not just the number: the in-repo
+# README reports a MEAN RMSD of 0.103 A over the set-aside Transition1x test
+# reactions; the published NMI version reports a MEDIAN RMSD of 0.053 A and a
+# median barrier-height error of 1.06 kcal/mol. Mean and median over a
+# right-skewed RMSD distribution are different statistics, not a
+# contradiction.
+
+# NOTE the shared `gen_ts` here rather than `gen_reactot_ts`: this config
+# drives the model through interference/gen_ts.yaml, whose `_target_` is
+# TSGenerator itself and which picks ReactOTTSGenerator off the loaded task.
+# React-OT's own knobs still work, because dispatch reaches the concrete
+# subclass first. Use interference: gen_reactot_ts instead if you would
+# rather have those knobs defaulted for you.
+defaults:
+  - tasks: diffusion_reactot
+  - interference: gen_ts
+  - _self_
+
+name: "reactot_generate"
+chkpt_directory: ${asset:reactot/pretrained/reactot_pretrained.ckpt}
+# Column order of ATOM_MAPPING. F is in the vocabulary but absent from
+# Transition1x.
+atom_vocab: [H, C, N, O, F]
+seed: 42
+
+interference:
+  reaction_source: ${asset:data/transition1x/reactions_rpsb/reactot_ts1x_valid.pkl}
+  reaction_index: 0
+
+  # One deterministic sample. See "ONE SAMPLE IS THE ANSWER" above.
+  num_generate: 1
+  batch_size: 1
+
+  # Upstream's published `--solver ode --nfe 10`.
+  num_steps: 10
+  solver: ode
+  method: midpoint
+  atol: 1.0e-02
+  rtol: 1.0e-02
+  output_path: "generated_reactot"

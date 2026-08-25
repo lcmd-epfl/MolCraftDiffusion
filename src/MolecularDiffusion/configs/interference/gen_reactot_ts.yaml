@@ -1,0 +1,74 @@
+# Transition-state generation for React-OT.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel
+# for "which reaction", so this model bypasses it exactly as the pocket
+# models and OA-ReactDiff do. Nothing below is React-OT-only plumbing: the
+# loop is modules/tasks/pocket_generator.py::PocketGenerator, the reaction
+# handling on top of it (read one Reaction, size the TS from it, write
+# reactant/product/reference_ts.xyz beside the samples) is
+# modules/tasks/ts_generator.py::TSGenerator, and the `_target_` below is
+# the thin subclass that adds only what is this model's -- which corpus,
+# which collate, and the solver knobs. It overrides no PocketGenerator hook
+# and writes no run() loop.
+#
+# THIS config exists for the solver knobs (`solver`, `method`, `atol`,
+# `rtol`) and for the deterministic-sampler defaults below, none of which
+# the shared config defaults. For a run needing none of that,
+# interference/gen_ts.yaml carries the keys every TS model shares and picks
+# the subclass off the task -- there, this file's `reaction_pkl` is spelled
+# `reaction_source` (the same key; either name works on either config, both
+# together raise). BUT SET `num_steps` THERE: gen_ts.yaml defaults it to
+# null, which would fall back to the model's 3000-step bridge grid, i.e. 300
+# network evaluations for every one you wanted.
+#
+# THE SAMPLER IS DETERMINISTIC. ot_ode: true and sigma: 0.0 mean no Gaussian
+# is drawn anywhere, so `num_generate: 20` would give you twenty identical
+# structures, not an ensemble -- hence the defaults of 1 and 1 below. This
+# is the real user-facing difference from gen_oareactdiff_ts.yaml, whose
+# whole protocol is best-of-5. There is nothing to rank here: one run, one
+# answer. The run header says so too.
+#
+# There is no unconditional mode. The model is pos_only -- it cannot invent
+# atom identities -- so it always needs a reactant and a product.
+_target_: MolecularDiffusion.modules.tasks.diffusion_reactot.ReactOTTSGenerator
+
+# A Transition1x pickle in React-OT's schema, e.g.
+# docs/model_integrations/reactot/data/reactot_ts1x_valid.pkl (built by
+# scripts/convert_dataset.py from Zenodo record 13131875).
+# It is read with the released filters (single_frag_only FALSE -- React-OT
+# trains on multi-fragment reactions -- and use_by_ind) but WITHOUT
+# swapping_react_prod, so `reaction_index` indexes the 1,073 held-out
+# reactions of the published split.
+reaction_pkl: ???
+reaction_index: 0
+
+# One deterministic sample. See the note above.
+num_generate: 1
+batch_size: 1
+
+# NUM_STEPS IS UPSTREAM'S --nfe: the number of network evaluations, not a
+# fraction of the 3000-step bridge grid. 10 is the README's published
+# command (`--solver ode --nfe 10`) and the speed claim. Upstream is
+# three-way inconsistent -- the checkpoint says 25, evaluation.py says 100 --
+# so raising it to 25 or 100 is a documented, supported thing to try.
+num_steps: 10
+
+# The README's published solver. `ddpm` is the other implemented option:
+# upstream's train-script default and what their shipped FastAPI service
+# runs. It is deterministic too (ot_ode: true skips its Gaussian term) and
+# needs no extra dependency. Upstream's third solver, `ei`, is an
+# unpublished exponential-integrator variant and is out of scope.
+solver: ode
+# The single fixed-grid midpoint (RK2) update, VENDORED inline -- numerically
+# identical to torchdiffeq's Midpoint._step_func. torchdiffeq is not a
+# dependency of this platform and is not imported anywhere. Any other value
+# raises, naming `pip install torchdiffeq` as the upgrade path.
+method: midpoint
+# Dead parameters: torchdiffeq ignores tolerances for fixed-grid solvers.
+# Upstream threads 1e-2 through to no effect; so do we, for fidelity.
+atol: 1.0e-02
+rtol: 1.0e-02
+
+seed: 42                     # does not change the structure; see above
+device: null                 # null => cuda if available
+output_path: generated_reactot

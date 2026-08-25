@@ -1,0 +1,79 @@
+# Transition1x reactions for React-OT, read straight from React-OT's own
+# preprocessed pickles. There is no ASE db and no bond graph: the data module
+# (data/component/oareactdiff_data.py) reads the .pkl directly.
+#
+# THE DATA MODULE IS THE ONE OA-ReactDiff ALREADY USES, unedited. React-OT is
+# the direct successor to OA-ReactDiff -- same authors, same corpus, same
+# reactant/TS/product triple, same flat (representations, conditions) batch
+# layout -- so the class name says OAReactDiff while two models now ride it.
+# That is a mild wart, kept deliberately: renaming it would break three
+# shipped configs and a zoo entry to buy nothing. Every difference between
+# the two models' data handling is a constructor kwarg, and they are all
+# below.
+#
+# THE SPLIT IS INSIDE THE FILES, NOT BETWEEN THEM. The train and valid
+# pickles contain the SAME 10,073 reactions; they differ only in the
+# `use_ind` list each carries (9,000 vs 1,073). So `use_by_ind: true` is what
+# actually separates train from validation -- with it false, or with both
+# paths pointing at one file, you validate on training reactions. 1,073 is
+# exactly the "set-aside test reactions" of React-OT's README.
+#
+# Upstream ships no test.pkl, so test_set reuses the validation split.
+_target_: MolecularDiffusion.data.component.oareactdiff_data.OAReactDiffDataModule
+
+train_pkl: ???
+# null => reuse train_pkl (and warn, because that is almost never wanted).
+valid_pkl: null
+
+# --- upstream's dataset filters, at their released settings ------------ #
+# THE ONE VALUE THAT DIFFERS FROM oareactdiff_ts1x_dataset.yaml, and it is
+# React-OT's capability claim: it trains on reactions where two molecules
+# come together or fall apart, which OA-ReactDiff's released weights never
+# saw. 9,000 train / 1,073 valid reactions instead of 6,733 / 783.
+# It is also why the choice of pickle matters here and did not for
+# OA-ReactDiff -- the multi-fragment rows are exactly the ones where
+# different Transition1x preprocessings disagree (upstream re-posed the
+# separated fragments). Use React-OT's own *_rpsb_all-derived pickles.
+single_frag_only: false
+# Also train on every reaction backwards (product -> reactant, same TS).
+# Doubles the set. The released checkpoint's training_config says true, which
+# overrides train_rpsb_ts1x.py's False; the checkpoint wins.
+swapping_react_prod: true
+# Honour the published 9,000 / 1,073 split. See the note above.
+use_by_ind: true
+# Subtract each object's own centre of mass. Effectively mandatory: the
+# bridge lives on the zero-CoM subspace PER OBJECT, which is what lets
+# reactant, TS and product keep independent SE(3) frames.
+center: true
+# The ninth feature column is the ATOMIC NUMBER, not a formal charge
+# (upstream's `charges` key holds Z). Zeroing it contradicts the released
+# weights; only meaningful when training from scratch.
+zero_charge: false
+
+# null = every reaction; set an int to cap each split (smoke tests).
+limit: null
+
+# Upstream's `bz`. NB upstream additionally batches by sum(n_atoms^2) <= 2800
+# with PyG's DynamicBatchSampler; this platform exposes a fixed batch_size
+# only, and adding a size-aware sampler would mean editing the shared data
+# layer for one model. Declared deviation -- see the plan's Hyperparameter
+# Provenance table.
+batch_size: 14
+num_workers: 0
+
+# --- keys cli/train.py reads off cfg.data ------------------------------ #
+# Output atom vocabulary, in the column order of ATOM_MAPPING
+# (datasets_config.py:1-7). F is in the vocabulary but absent from
+# Transition1x.
+atom_vocab: [H, C, N, O, F]
+# The Reaction dataclass exposes no `node_feature`/`x`, so train.py infers
+# n_dim = 0; with use_ohe_feature false the base feature dim is 0 too, so no
+# spurious extra_norm_values are injected into the task.
+use_ohe_feature: false
+allow_unknown: false
+node_feature_choice: null
+
+# Documentation only -- nothing dispatches on it. runmodes/train/data.py's
+# DataModule (the only thing that switches on data_type) is bypassed
+# entirely, because cfg.data._target_ names the datamodule directly.
+data_type: reaction

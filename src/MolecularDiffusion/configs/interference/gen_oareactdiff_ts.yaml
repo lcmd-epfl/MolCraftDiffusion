@@ -1,0 +1,61 @@
+# Transition-state generation for OA-ReactDiff.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel
+# for "which reaction", so this model bypasses it exactly as the pocket
+# models do. Nothing below is OA-ReactDiff-only plumbing: the reverse loop
+# is modules/tasks/pocket_generator.py::PocketGenerator, the reaction
+# handling on top of it (read one Reaction, size the TS from it, write
+# reactant/product/reference_ts.xyz beside the samples) is
+# modules/tasks/ts_generator.py::TSGenerator, and the `_target_` below is
+# the thin subclass that adds only what is this model's -- which corpus,
+# which collate, and the RePaint knobs. A future TS model subclasses
+# TSGenerator and writes a config like this one. cli/generate.py only calls
+# `instantiate(cfg.interference, task=task)` then `.run()`.
+#
+# THIS config exists for RePaint's knobs (`resamplings`, `jump_length`,
+# `noise_schedule`) and for `num_steps: 250`, none of which the shared
+# config defaults. For a run needing none of that, interference/gen_ts.yaml
+# carries the eight keys every TS model shares and picks the subclass off
+# the task -- there, this file's `reaction_pkl` is spelled `reaction_source`
+# (the same key; either name works on either config, both together raise).
+#
+# The shared interference/gen_pocket.yaml is NOT an option, for either
+# config: its nine keys are POCKET keys (`pocket_db`, `pocket_index`,
+# `mol_size`) and none of them describe a reaction. There is no `mol_size`
+# here on purpose: a transition state has exactly the atoms of its reactant
+# and product, so a size prior would be a lie.
+#
+# There is no unconditional mode. The released checkpoint is pos_only, i.e.
+# it cannot invent atom identities, so it always needs a reaction to start
+# from.
+_target_: MolecularDiffusion.modules.tasks.diffusion_oareactdiff.OAReactDiffTSGenerator
+
+# An upstream Transition1x pickle, e.g.
+# docs/model_integrations/oareactdiff/data/t1x_source_valid.pkl.
+# It is read with the released filters (single_frag_only, use_by_ind) but
+# WITHOUT swapping_react_prod, so with t1x_source_valid.pkl `reaction_index`
+# indexes the 783 held-out single-fragment reactions.
+reaction_pkl: ???
+reaction_index: 0
+
+num_generate: 20
+batch_size: 4
+
+# Reverse-process steps. 250 is upstream's evaluation setting
+# (evaluate_ts_w_rp.py:26-27); the demo notebook uses 150. This is NOT the
+# training schedule: a fresh polynomial_2 schedule is built at this many
+# steps for the duration of each call, exactly as evaluate/utils.py:14-32
+# does, and the trained 5000-step cosine schedule is put back afterwards.
+num_steps: 250
+noise_schedule: polynomial_2
+
+# RePaint knobs. Every `jump_length` denoising steps, the partially built
+# transition state is re-noised and re-harmonised with the fixed reactant
+# and product `resamplings` times. Upstream's evaluation settings are 5/5;
+# raising them costs time roughly linearly and is the main quality knob.
+resamplings: 5
+jump_length: 5
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_oareactdiff

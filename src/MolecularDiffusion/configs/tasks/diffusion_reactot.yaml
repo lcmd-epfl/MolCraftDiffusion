@@ -1,0 +1,157 @@
+# React-OT: a Schrodinger bridge / optimal-transport process that generates a
+# TRANSITION STATE given a reactant and a product, deterministically, in ten
+# network evaluations.
+# See docs/model_integrations/reactot/INTEGRATION_PLAN.md.
+#
+# Duan, Liu, Du, ..., Kulik, "Optimal transport for generating transition
+# states in chemical reactions", Nature Machine Intelligence (2025),
+# doi:10.1038/s42256-025-01010-0. Preprint, under a DIFFERENT title:
+# arXiv:2404.13430, "React-OT: Optimal Transport for Generating Transition
+# State in Chemical Reactions".
+#
+# NOT A DIFFUSION MODEL. The `diffusion_` prefix on the file name and on
+# `task_type` is a platform naming convention (it is what
+# runmodes/train/DataModule switches on, and this model bypasses that
+# DataModule entirely via cfg.data._target_). React-OT has no noise process:
+# with ot_ode true and sigma 0.0 no Gaussian is ever drawn, in training or in
+# sampling. Run it twice, get the same structure.
+#
+# Every value below is the RELEASED `reactot-pretrained.ckpt`'s own
+# hyper_parameters block, read out of the checkpoint rather than copied from
+# reactot/trainer/train_rpsb_ts1x.py -- the two disagree in four places (lr,
+# ema, swapping_react_prod and the sampling nfe; all recorded in the plan's
+# Hyperparameter Provenance table, and the checkpoint wins in each).
+# Do not change the architecture block if you intend to load those weights:
+# all 246 of the checkpoint's tensors map onto this configuration exactly,
+# and cli/generate.py loads with strict=False, so a mismatch loads partially
+# and silently.
+_target_: MolecularDiffusion.modules.tasks.diffusion_reactot.ModelTaskFactory
+
+task_type: diffusion_reactot
+
+# --- LEFTNet, the equivariant backbone -------------------------------- #
+# The SAME object-aware LEFTNet the oareactdiff package already ships,
+# imported rather than re-vendored: verified by diff -u to have an identical
+# constructor (14 kwargs, same order, same defaults) and a forward that
+# differs only by two periodic-boundary kwargs whose pbc=false path is the
+# code already in the tree. Weights are interchangeable.
+# `act_fn` and `in_node_nf` are defaulted by BaseDynamics but are stated
+# here because the checkpoint records them.
+model_config:
+  pos_require_grad: false
+  cutoff: 10.0            # applied inside LEFTNet, not at edge-build time
+  num_layers: 6
+  hidden_channels: 196
+  num_radial: 96
+  in_hidden_channels: 8
+  in_node_nf: 8
+  reflect_equiv: true
+  legacy: true            # selects the distance_embedding MLP
+  update: true
+  pos_grad: false
+  single_layer_output: true
+  object_aware: true      # the parent paper's contribution -- do not flip
+  act_fn: swish
+
+# --- the three objects ------------------------------------------------- #
+# Order is load-bearing: it binds each object to its own encoder/decoder
+# pair in the state dict. R = reactant, TS = transition state, P = product.
+fragment_names: [R, TS, P]
+# 3 pos + 5 atom one-hot + 1 atomic number = 9 per object.
+node_nfs: [9, 9, 9]
+pos_dim: 3
+edge_nf: 0                # no edge features anywhere in this model
+# Present in the weights but INERT: it was fed constant zeros throughout
+# training (transition1x.py:154-158). Not a property-conditioning channel.
+condition_nf: 1
+condition_time: true
+# null => edges are fully connected within a reaction (across all three
+# objects); `cutoff` above then gates them inside LEFTNet.
+edge_cutoff: null
+# false raises NotImplementedError.
+update_pocket_coords: true
+
+# --- the bridge -------------------------------------------------------- #
+# (1,1,1)/(0,0,0) means NO normalisation; the class is still on the path
+# because it is on upstream's.
+norm_values: [1.0, 1.0, 1.0]
+norm_biases: [0.0, 0.0, 0.0]
+
+# DO NOT CHANGE EITHER OF THESE TWO. Unlike OA-ReactDiff's gamma buffer,
+# nothing about this schedule is in the state dict (SBSchedule is a plain
+# Python class), so a wrong value loads SILENTLY and samples wrong. They are
+# also what makes the beta schedule constant: beta_max/timesteps = 0.3/3000
+# = 1e-4 is exactly make_beta_schedule's hardcoded linear_start, so the
+# linspace is degenerate. The `ode` solver ASSERTS that constancy and the
+# `ddpm` solver quietly changes meaning without it.
+timesteps: 3000
+beta_max: 0.3
+power: 0.5
+inv_power: 1
+
+# Recorded by the checkpoint and marked "# not used" in upstream's own train
+# script. Carried for fidelity; nothing in EnSB reads them.
+noise_schedule: cosine
+precision: 1.0e-05
+
+# Asserted in {vlb, l2}, then unread: the objective is a plain F.mse_loss on
+# (x_t - x_0)/std_fwd. There is no ELBO, no KL prior and no loss_0 term.
+loss_type: l2
+# Coordinates only: the network never predicts atom identities, they are
+# supplied by the input reaction.
+pos_only: true
+# INERT in EnSB -- the per-object loss weighting reaches only upstream's dead
+# DDPMModule path. Recorded for checkpoint fidelity.
+scales: [1.0, 2.0, 1.0]
+# INERT -- stored at en_sb.py:61 and never read. Freezing reactant and
+# product is structural (only object 1's position columns are ever
+# overwritten), not enforced by a mask. Recorded for checkpoint fidelity.
+fixed_idx: [0, 2]
+
+# Only R+P->TS with the RP initialiser is implemented; the other three
+# mappings and five other initialisers have no released weights and no data
+# path, and raise. The initial structure is literally (r_pos + p_pos) / 2.
+mapping: "R+P->TS"
+mapping_initial: RP
+idx: 1                    # which object is generated: the transition state
+sigma: 0.0                # no endpoint jitter
+# THIS is what makes the model deterministic: with ot_ode true, both the
+# training interpolation and the ddpm posterior skip their Gaussian terms.
+ot_ode: true
+# Unreachable on the released checkpoint, whose hyper_parameters record
+# ts_guess = None. No xtb / NEB-CI guess is needed at inference; the
+# `ts_guess_NEBCI-xtb-ema` string in upstream's evaluation.py:28 is a run
+# directory name from a different experiment. A truthy value raises.
+ts_guess: null
+
+# --- sampling defaults ------------------------------------------------- #
+# nfe IS the number of network evaluations, not a fraction of the 3000-step
+# grid. The interference config's `num_steps` overrides it, and always
+# should: without an override cli/generate.py would fall back to self.T,
+# i.e. 3000 evaluations, 300x the intended cost.
+# Upstream is three-way inconsistent here: the checkpoint says 25, the
+# README's published command says 10, evaluation.py says 100. The README
+# wins because it is the documented user-facing command and the speed claim.
+nfe: 10
+# The README's published `--solver ode --nfe 10`. `ddpm` is also fully
+# implemented and selectable -- it is upstream's train-script default and
+# what their shipped FastAPI service runs.
+solver: ode
+# The ODE step is a VENDORED single fixed-grid midpoint (RK2) update,
+# numerically identical to torchdiffeq's Midpoint._step_func; torchdiffeq
+# itself is NOT a dependency of this platform and is not imported anywhere.
+# Any other method raises with the upgrade path named.
+method: midpoint
+# Dead parameters: torchdiffeq ignores tolerances for fixed-grid solvers.
+# Threaded through for fidelity with upstream's call and for the upgrade
+# path.
+atol: 1.0e-02
+rtol: 1.0e-02
+# Clamp each predicted structure into +/-10 A.
+clip_denoise: true
+
+# runmodes/train/eval.py's generative analysis assumes the GenerativeFactory
+# contract (node_dist_model.sample(batch_size)), which this model does not
+# implement -- the TS size comes from the input reaction, so there is no size
+# prior. cli/train.py defaults this to false anyway; stated to be explicit.
+generative_analysis: false

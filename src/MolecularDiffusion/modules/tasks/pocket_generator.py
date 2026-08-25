@@ -27,6 +27,12 @@ hook                         what it decides
 numpy, the other five always have. Seeding it everywhere would change what
 those two generate; that is a behaviour change, not a fix.
 
+The loop is not pocket-only. A second family rides it through
+:class:`~MolecularDiffusion.modules.tasks.ts_generator.TSGenerator`, which
+fills these hooks once for transition-state models -- the fixed structural
+context there is a reaction rather than a protein pocket. Add a new TS model
+by subclassing *that*, not this.
+
 Two ways to reach a generator:
 
 * ``interference/gen_<model>_pocket.yaml`` names the concrete subclass, and

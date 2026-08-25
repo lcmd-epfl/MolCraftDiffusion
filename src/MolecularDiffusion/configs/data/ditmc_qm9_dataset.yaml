@@ -13,7 +13,7 @@ _target_: MolecularDiffusion.runmodes.train.DataModule
 
 root: data/
 filename: null
-ase_db_path: data/geom_qm9_multiconf.db
+ase_db_path: ${asset:data/geom/graph3d-multiconf-qm9/geom_qm9_multiconf.db}
 # Cache is keyed on this name (`processed_data_<name>_graph3d.pt`);
 # it changed with the db so the old single-conformer cache is not
 # silently reused (and stays valid for anything still using that db).

@@ -1,0 +1,80 @@
+# OA-ReactDiff: object-aware SE(3) diffusion that generates a TRANSITION
+# STATE given a reactant and a product.
+# See docs/model_integrations/oareactdiff/INTEGRATION_PLAN.md.
+#
+# Every value below is the RELEASED `pretrained-ts1x-diff.ckpt`'s own
+# hyper_parameters block, read out of the checkpoint rather than copied from
+# the repo's trainer/train_ts1x.py -- the two disagree in two places (`lr`
+# and `ema`, both training-side, both recorded in the plan's Hyperparameter
+# Provenance table). Do not change the architecture block if you intend to
+# load those weights: 247 of the checkpoint's 248 tensors map onto this
+# configuration exactly, and cli/generate.py loads with strict=False, so a
+# mismatch loads partially and silently.
+_target_: MolecularDiffusion.modules.tasks.diffusion_oareactdiff.ModelTaskFactory
+
+task_type: diffusion_oareactdiff
+
+# --- LEFTNet, the equivariant backbone -------------------------------- #
+# Passed through to LEFTNet(**model_config). `act_fn` and `in_node_nf` are
+# defaulted by BaseDynamics (_base.py:47-50) but are stated here because the
+# checkpoint records them.
+model_config:
+  pos_require_grad: false
+  cutoff: 10.0            # applied inside LEFTNet, not at edge-build time
+  num_layers: 6
+  hidden_channels: 196
+  num_radial: 96
+  in_hidden_channels: 8
+  in_node_nf: 8
+  reflect_equiv: true
+  legacy: true            # selects the distance_embedding MLP
+  update: true
+  pos_grad: false
+  single_layer_output: true
+  object_aware: true      # THE paper's contribution -- do not flip
+  act_fn: swish
+
+# --- the three objects ------------------------------------------------- #
+# Order is load-bearing: it binds each object to its own encoder/decoder
+# pair in the state dict. R = reactant, TS = transition state, P = product.
+fragment_names: [R, TS, P]
+# 3 pos + 5 atom one-hot + 1 atomic number = 9 per object.
+node_nfs: [9, 9, 9]
+pos_dim: 3
+edge_nf: 0                # no edge features anywhere in this model
+# Present in the weights but INERT: it was fed constant zeros throughout
+# training (transition1x.py:141-147). Not a property-conditioning channel.
+condition_nf: 1
+condition_time: true
+# null => edges are fully connected within a reaction (across all three
+# objects); `cutoff` above then gates them inside LEFTNet.
+edge_cutoff: null
+# false raises NotImplementedError (egnn_dynamics.py:125).
+update_pocket_coords: true
+
+# --- diffusion --------------------------------------------------------- #
+# (1,1,1)/(0,0,0) means NO normalisation; the class is still in the path
+# because the loss divides by these.
+norm_values: [1.0, 1.0, 1.0]
+norm_biases: [0.0, 0.0, 0.0]
+noise_schedule: cosine
+# DO NOT CHANGE. The gamma buffer is a non-learned nn.Parameter of shape
+# (timesteps + 1,) that lives in the state dict, so any other value
+# shape-mismatches when loading the released weights. The SAMPLING schedule
+# is separate and is built fresh at 250 steps -- see the interference config.
+timesteps: 5000
+precision: 1.0e-05
+loss_type: l2
+# Coordinates only: the network never predicts atom identities, they are
+# supplied by the input reaction. The released checkpoint is trained this
+# way and cannot be used any other way.
+pos_only: true
+# Per-object loss weights [R, TS, P]: the transition state term counts double.
+scales: [1.0, 2.0, 1.0]
+fixed_idx: null
+
+# runmodes/train/eval.py's generative analysis assumes the GenerativeFactory
+# contract (node_dist_model.sample(batch_size)), which this model does not
+# implement -- the TS size comes from the input reaction, so there is no size
+# prior. cli/train.py defaults this to false anyway; stated to be explicit.
+generative_analysis: false

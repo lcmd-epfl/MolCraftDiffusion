@@ -1,0 +1,57 @@
+# Transition-state generation, any model.
+#
+# Every TS generator runs the same loop: load one reaction, tile it, sample
+# transition states into it, write .xyz. The loop itself is
+# modules/tasks/pocket_generator.PocketGenerator (a reaction is just another
+# fixed structural context); the reaction handling on top of it is
+# modules/tasks/ts_generator.TSGenerator. This config drives that with only
+# the eight keys every TS model shares.
+#
+# WHICH MODEL? Not set here. The concrete generator is picked from whichever
+# `tasks:` your run config selected -- the loaded task object tells
+# TSGenerator which corpus to read, how to tile one reaction, and what extra
+# kwargs task.sample() wants.
+#
+# THE PER-MODEL CONFIGS ARE NOT DEPRECATED. Use gen_<model>_ts.yaml whenever
+# you need that model's own knobs, which this config cannot express:
+#   gen_oareactdiff_ts.yaml   resamplings, jump_length, noise_schedule
+#                             (RePaint), and num_steps: 250
+#   gen_reactot_ts.yaml       solver, method, atol, rtol (the vendored ODE
+#                             step), num_steps: 10, and num_generate: 1 --
+#                             its sampler is deterministic, so asking for
+#                             more returns identical copies.
+# Those keys DO work here too: `_target_` below dispatches to the concrete
+# per-model generator, so a key that model declares is consumed and honoured.
+# The per-model configs are kept because they document and default those
+# knobs, not because this one rejects them.
+#
+# What IS rejected is a key NO generator in the chain declares -- a typo'd
+# `resamplinsg` raises naming the key, rather than quietly doing nothing.
+# There is no `mol_size`: a transition state has exactly the atoms of its
+# reaction, so that key is refused rather than ignored.
+_target_: MolecularDiffusion.modules.tasks.ts_generator.TSGenerator
+
+# The reaction corpus, in whatever form that model reads (OA-ReactDiff: a
+# Transition1x pickle). A model whose own config calls this something more
+# honest declares that name as `source_key` and accepts BOTH -- e.g.
+# `reaction_pkl` on gen_oareactdiff_ts.yaml is this same key.
+reaction_source: ???
+reaction_index: 0
+
+num_generate: 20
+batch_size: 4
+
+# Reverse-process steps. null => the model's full schedule, which is NOT
+# what you want for either model in the dispatch map -- set it, or use that
+# model's own config, whose default already is the published setting:
+#   OA-ReactDiff  null => the trained 5000; set 250 (its evaluation
+#                 setting, and gen_oareactdiff_ts.yaml's default).
+#   React-OT      null => a 3000-step bridge grid; set 10 (upstream's
+#                 published `--nfe 10`, and gen_reactot_ts.yaml's default).
+#                 Its accuracy is flat from 10 up, so the full grid buys
+#                 nothing and costs ~300x the time.
+num_steps: null
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_ts

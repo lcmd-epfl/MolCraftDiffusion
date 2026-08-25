@@ -1,0 +1,89 @@
+# @package _global_
+# Transition-state generation from OA-ReactDiff's CONVERTED PRETRAINED
+# weights (upstream `pretrained-ts1x-diff.ckpt`, epoch 2075, the paper's
+# Transition1x model).
+#
+#   MolCraftDiff generate configs/oareactdiff_generate.yaml
+#
+# PREREQUISITES -- run once each, if not already done:
+#
+#   python docs/model_integrations/oareactdiff/scripts/convert_checkpoint.py
+#   python docs/model_integrations/oareactdiff/scripts/build_from_source.py \
+#       --h5 <path to Transition1x.h5>
+#
+# Both the weights and the data ship inside the OA-ReactDiff repo, so nothing
+# is downloaded. The checkpoint still cannot be loaded directly: it pickles a
+# reference to the class `oa_reactdiff.model.leftnet.LEFTNet`, so torch.load
+# raises ModuleNotFoundError without the upstream package importable. The
+# converter shims that (nothing is installed), re-prefixes the tensors, and
+# -- crucially -- PROVES the mapping: cli/generate.py loads with
+# strict=False, so a bad remap would load NOTHING and still emit
+# plausible-looking geometries with the right formula, because pos_only=True
+# means atom identities are copied from the input reaction either way. It
+# asserts every key and shape (247 of 248 map one-for-one), proves the one
+# dropped tensor is exactly recomputable, and re-loads through the real
+# load_model path to confirm every live tensor is byte-identical to the
+# source. Do not hand-copy the file.
+#
+# AND YOU ALSO NEED A REACTION -- there is no unconditional mode. The model
+# is pos_only: it predicts coordinates and cannot invent atom identities, so
+# it always starts from a reactant and a product.
+#
+# WHAT THE MODEL CONDITIONS ON. One elementary reaction: the reactant and
+# product geometries, held fixed at their true coordinates as two separate
+# objects, each with its own centre of mass and its own SE(3) frame. The
+# transition state is generated between them by RePaint inpainting. The
+# reaction comes from one row of a Transition1x pickle, read with the
+# released filters (single_frag_only, use_by_ind) but WITHOUT
+# swapping_react_prod -- a generator should not silently hand back the
+# reverse reaction. With t1x_source_valid.pkl below, `reaction_index` therefore
+# indexes the 783 HELD-OUT single-fragment reactions: index 0 is a reaction
+# this checkpoint never saw.
+#
+# WHAT YOU GET. `molecule_NNN.xyz` transition states, plus `reactant.xyz`,
+# `product.xyz` and `reference_ts.xyz` written once so the output folder is
+# self-describing and a sample can be scored against the DFT transition state
+# without going back to the pickle.
+#
+# SAMPLE COUNT IS THE QUALITY KNOB. Upstream's protocol generates 5 per
+# reaction and keeps the best; their confidence model, which is what ranks
+# them, is a separately trained network with no released checkpoint and is
+# not ported. So `num_generate: 5` here gives you the same ensemble upstream
+# would rank -- you just have to rank it yourself (RMSD to reference_ts.xyz,
+# or a single-point energy).
+#
+# KNOWN LIMITATION: `num_steps` is a SAMPLING schedule, freshly built as
+# polynomial_2 at that many steps for the duration of each call; it is
+# unrelated to the trained 5000-step cosine schedule, which is restored
+# afterwards. 250 is upstream's evaluation setting; 150 is their demo's.
+# Lowering it trades accuracy for speed roughly linearly, as does lowering
+# `resamplings`.
+
+defaults:
+  - tasks: diffusion_oareactdiff
+  - interference: gen_ts
+  - _self_
+
+name: "oareactdiff_generate"
+chkpt_directory: ${asset:oareactdiff/pretrained/oareactdiff_pretrained.ckpt}
+# Column order of ATOM_MAPPING. F is in the vocabulary but absent from
+# Transition1x.
+atom_vocab: [H, C, N, O, F]
+seed: 42
+
+interference:
+  reaction_source: ${asset:data/transition1x/reactions/t1x_source_valid.pkl}
+  reaction_index: 0
+
+  # Upstream's per-reaction ensemble size. Raise it for a wider search.
+  num_generate: 5
+  batch_size: 5     # the steps are sequential, the batch is parallel
+  num_steps: 250    # upstream's evaluation setting
+  noise_schedule: polynomial_2
+
+  # RePaint: every `jump_length` denoising steps, re-noise and re-harmonise
+  # the partial transition state with the fixed reactant and product,
+  # `resamplings` times. Upstream's evaluation settings.
+  resamplings: 5
+  jump_length: 5
+  output_path: "generated_oareactdiff"
