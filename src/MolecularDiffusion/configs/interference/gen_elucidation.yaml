@@ -1,0 +1,65 @@
+# Shared interference config for MEASUREMENT-CONDITIONED structure elucidation:
+# you hand the model a measured spectrum of an unknown compound and it returns a
+# ranked shortlist of candidate structures.
+#
+# `_target_` names the shared base. The concrete generator is picked off the
+# loaded task (elucidation_generator._TASK_TO_GENERATOR), so this one file works
+# for EVERY elucidation model. A model-shaped knob belongs in a generic key
+# here plus a per-model declaration on the subclass (`maskable_channels`,
+# `supports_guidance`) -- not in a gen_<model>_elucidation.yaml fork of this
+# file, which is nine copied keys waiting to drift.
+#
+# Unknown keys are REJECTED, not ignored: a typo'd key would otherwise make a
+# run look configured when it is not.
+_target_: MolecularDiffusion.modules.tasks.elucidation_generator.ElucidationGenerator
+
+# Where the measurements are read from. Models that call it something else
+# accept both this name and their own (see `source_key`).
+spectra_source: null
+# First record to elucidate, and how many. max_records: null => the whole corpus.
+spectra_index: 0
+max_records: null
+
+# Candidates drawn per measurement. Top-k over ~100 draws is the norm here.
+num_candidates: 100
+# How many of those are drawn at once. k is a BATCH dimension, never a loop.
+batch_size: 10
+
+# Reverse-process steps. null => the model's own default.
+num_steps: null
+
+# Classifier-free guidance strength -- the `w` in (1+w)*cond - w*uncond,
+# for a model trained with conditioning dropout. Higher w tracks the
+# measurement more closely and costs diversity; the published optimum
+# differs per corpus, so it is a run-time dial rather than a weight.
+#   null => the model's own default (NOT 0.0, which means unconditional).
+# Models with no guidance branch declare `supports_guidance = False` and
+# reject this key with an explanation rather than failing inside the
+# sampler.
+guidance_scale: null
+
+# Which fold of a labelled corpus to elucidate. null => the model's own
+# default. Corpora without folds ignore it.
+split: null
+
+# Measurement channels to blank out before the model is shown the record --
+# a multi-channel instrument run as if one channel had never been recorded.
+# Names are the model's own; each declares the ones it has in
+# `maskable_channels`, and an unrecognised name is REJECTED naming the valid
+# set. A model whose measurement is one indivisible payload declares none and
+# refuses any non-empty list, the same way `supports_guidance = False`
+# refuses `guidance_scale`.
+#   [] => the measurement exactly as recorded.
+# This is for ABLATING a channel that IS present. A channel the corpus never
+# held is already absent, and a model that reads "absent" off an empty channel
+# sees it that way without being told.
+drop_channels: []
+
+# Which top-k accuracies to report. Only used when the corpus is labelled --
+# on genuinely unknown spectra, scoring is skipped and no metrics.json is
+# written.
+top_k: [1, 10]
+
+seed: 42
+device: null
+output_path: generated_elucidation

@@ -1449,6 +1449,287 @@ assets:
         it. React-OT trains with single_frag_only: FALSE (unlike OA-ReactDiff), giving 9,000 train / 1,073
         held-out reactions. R/TS/P share atom count AND ordering on all 10,073 rows. Elements {H,C,N,O};
         F is in the model''s vocabulary but absent from the corpus.'
+  chefnmr/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: chefnmr_pretrained.ckpt
+      sha256: 493fc954d39b50329819300bd43bbc3f8fd0c5aa1c6e14e8edb533e11f7fdde6
+      size: 538403175
+    - path: NOTICE.txt
+      sha256: 30d11a01ba767a721a0c5c9378a8740e67d3c9f1c42a63cb3b7c8060f755a526
+      size: 4751
+    license: CDLA-Sharing-1.0
+    redistribute: true
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
+      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
+      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. CDLA-Sharing-1.0 is
+      share-alike, not non-commercial: Sec. 2.1 grants the right to Publish, Sec. 3.1/3.3 condition it on
+      publishing Enhanced Data under an unmodified copy of the same Agreement, carrying its text or a hyperlink
+      with the files, marking changed files as changed, and preserving attribution. THOSE TERMS ARE ACCEPTED
+      AND DISCHARGED BY NOTICE.txt, which ships inside this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/>
+      and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>, the Sec. 3.1(b) change notice, and the attribution.
+      CHANGED FROM THE ORIGINAL (Sec. 3.1(b)): derived from US-H10kC80-S128-epoch6299.ckpt (2,152,769,252
+      B) by merging the EMA shadow_params onto the live parameters and dropping optimizer, scheduler and
+      callback state -- 2.15 GB -> 538 MB, 193 tensors, weight VALUES unchanged. ATTRIBUTION: Xiong et al.,
+      ChefNMR (Zenodo 10.5281/zenodo.17766755). Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt is
+      the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
+      returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
+      and NOTHING in this asset. One argument the owner weighed before deciding: CDLA Sec. 3.5 imposes no
+      obligation on Results of Computational Use, and trained weights are plausibly Results of the USPTO
+      corpus rather than Data -- but the authors themselves published these .ckpt files under the record''s
+      CDLA grant, so CDLA is the licence we actually hold on these bytes and the one we pass on.'
+    upstream:
+      repo: https://github.com/ml-struct-bio/chefnmr
+      commit: 450fd887ebc19e946f5398f20c1d66d16db89a3a
+      download: https://zenodo.org/records/17766755/files/US-H10kC80-S128-epoch6299.ckpt?download=1
+      doi: 10.5281/zenodo.17766755
+      source: 'US-H10kC80-S128-epoch6299.ckpt (2,152,769,252 B) -- ChefNMR-S trained on USPTO with a 10,000-bin
+        1H + 80-bin 13C condition, upstream epoch 6299. NOT the SpectraBase checkpoints: those were trained
+        on a 4-type vocabulary at max_n_atoms=59, so both the one-hot width and pos_embed mismatch this
+        platform''s atom_vocab.'
+      script: docs/model_integrations/chefnmr/scripts/convert_checkpoint.py
+      note: 'Conversion is REQUIRED, not cosmetic: the released file stores EMA weights as ckpt[''ema''][''shadow_params''],
+        a POSITIONAL LIST of 192 over the requires_grad parameters in registration order -- not a state_dict
+        -- and torch.load of the raw file gives you the non-EMA state_dict instead. The converter zips the
+        list onto [(n, p) for n, p in named_parameters() if p.requires_grad], carries the one excluded parameter
+        (model.score_model.pos_embed) over from state_dict unchanged, and refuses to write unless len(shadow_params)
+        + 1 == n_params AND the single excluded name is exactly pos_embed. 193 of 193 tensors placed, 0
+        dropped, 0 missing, 0 unexpected, and every live tensor re-checked byte-identical after a real cli/generate.py
+        load_model. It also asserts cfg.dataset_args.atom_decoder equals the shipped atom_vocab IN ORDER
+        -- the one-hot column is position-in-vocab, so a permutation is otherwise undetectable. No sidecars
+        are synthesised and none are needed: molecule size comes from the input formula, not a prior.'
+  data/nmrshiftdb2/chefnmr:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: nmrshiftdb2_test.db
+      sha256: 77771e20cb7740c267885c5be7e4653e698c8d04f8a4f7cdb4a5f07264caecad
+      size: 35782656
+    - path: nmrshiftdb2_test_cond.npy
+      sha256: 2867b2fb6b437427e2610b85c04d628725479f20ec50150d2743235ef7529a86
+      size: 945786368
+    - path: nmrshiftdb2_test_conf.npy
+      sha256: 7216548664e2d30d2019f1594eeca1064b9163e626e9105377479aba28686f2a
+      size: 85289780
+    - path: nmrshiftdb2_test_nconf.npy
+      sha256: a716f475d1e6ed14df7361292d6ce4e96ead7bb5219571aeed0d4982a8ef273f
+      size: 93956
+    - path: nmrshiftdb2_test_meta.json
+      sha256: 69491f3bb871899465e699c69bc88867f62bc01747409f2cc1a3491a9e4491c0
+      size: 1115
+    - path: NOTICE.txt
+      sha256: 30d11a01ba767a721a0c5c9378a8740e67d3c9f1c42a63cb3b7c8060f755a526
+      size: 4751
+    license: CDLA-Sharing-1.0 AND nmrshiftdb2-Database-License
+    redistribute: true
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
+      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
+      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. CDLA-Sharing-1.0 is
+      share-alike, not non-commercial: Sec. 2.1 grants the right to Publish, Sec. 3.1/3.3 condition it on
+      publishing Enhanced Data under an unmodified copy of the same Agreement, carrying its text or a hyperlink
+      with the files, marking changed files as changed, and preserving attribution. THOSE TERMS ARE ACCEPTED
+      AND DISCHARGED BY NOTICE.txt, which ships inside this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/>
+      and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>, the Sec. 3.1(b) change notice, and the attribution.
+      SECOND LICENCE, independent of the first and hidden by the record-level field: the Zenodo record''s
+      own README.md credits the underlying database to nmrshiftdb2, under the nmrshiftdb2 Database License
+      <https://nmrshiftdb.nmr.uni-koeln.de/nmrshiftdbhtml/nmrshiftdb2datalicense.txt> (26,584 B, sha256
+      00322cc4...5516), which is ODbL-derived, NOT CDLA and NOT any SPDX id. Our .db plus sidecars are Extraction/Re-utilisation
+      of a Substantial part of the Contents into a new database, which Sec. 4.4(b) names verbatim as a Derivative
+      Database; Publicly Conveying one requires Sec. 4.2 (same or compatible licence, its text or URI shipped
+      both with the files and in the documentation, notices intact) and Sec. 4.4 share alike. DISCHARGED
+      BY NOTICE.txt, placed in this asset''s directory per Sec. 4.2(d) because .db and .npy files cannot
+      carry notices internally; it ships the licence URI and the Sec. 4.3 notice verbatim -- "Contains information
+      from nmrshiftdb2 (www.nmrshiftdb.org), which is made available here under the nmrshiftdb2 Database
+      License". Sec. 4.5 is NON-STANDARD and the owner should know it: any software that relies on the database
+      for its functionality must itself be under an OSI-approved licence -- MolCraftDiffusion is MIT, so
+      it is satisfied, but the obligation attaches to the PLATFORM, not just to the file. CHANGED FROM THE
+      ORIGINALS (CDLA Sec. 3.1(b), nmrshiftdb2 Sec. 4.2(c)): converted from real-nmrshiftdb2/molecules.h5
+      into an ASE sqlite db plus four numpy/JSON sidecars, padded to max_n_atoms=101. Container format only
+      -- no spectrum, coordinate or SMILES value was altered. ATTRIBUTION: Xiong et al. for ChefNMR and
+      the Zenodo record; Kuhn et al. for nmrshiftdb2. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt
+      is the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
+      returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
+      and NOTHING in this asset.'
+    upstream:
+      repo: https://github.com/ml-struct-bio/chefnmr
+      commit: 450fd887ebc19e946f5398f20c1d66d16db89a3a
+      download: https://zenodo.org/records/17766755/files/real-nmrshiftdb2.tar.gz?download=1
+      doi: 10.5281/zenodo.17766755
+      corpus: https://nmrshiftdb.nmr.uni-koeln.de
+      source: 'real-nmrshiftdb2.tar.gz (39,446,215 B) -> real-nmrshiftdb2/molecules.h5. REAL MEASURED 13C
+        spectra, not simulated: 23,457 molecules, the subset left after excluding SMILES present in the
+        USPTO training set. Cite Kuhn et al. for the database.'
+      script: python docs/model_integrations/chefnmr/scripts/convert_dataset.py <unpacked>/real-nmrshiftdb2
+        <out_prefix> --split test --split-suffix "" --max-n-atoms 101 --yes --keep-raw
+      note: 'FIVE FILES, ONE ASSET, and they only mean anything together: the .db carries geometry and SMILES,
+        _cond.npy the (R, 10080) binned 1H+13C condition, _conf.npy the padded conformer stack, _nconf.npy
+        the real conformer count per row, _meta.json the row count, atom_decoder, sigma_data and the db''s
+        sha256. Row i of every .npy is db row i is batch[''xyz''] == ''db_entry_i''; split them and the
+        model trains or samples against the WRONG spectrum without raising. MEASURED, not assumed: this
+        corpus ships NO 1H grid at all (h_present: 0), which is why upstream sets test_p_drop_h1nmr=1.0
+        and why ~940 MB of _cond.npy is the all-zero 1H half -- kept dense on purpose, because the embedder''s
+        learned h_mask_token is what turns those zeros into ''missing'' rather than into a flat spectrum.
+        13C bins are provably binary and 9.8% occupied. Padded to max_n_atoms=101 (not this corpus'' own
+        91) because that is what upstream''s configs/data/real-nmrshiftdb2.yaml does, and it is what lets
+        the USPTO-trained weights sample these spectra at all; its own sigma_data is 2.11, but the weights''
+        2.67 is the value that must be used at sampling time. The .db is an ASE sqlite carrying a per-row
+        ctime, so a rebuild will NOT reproduce its sha256 -- the four .npy/.json files will. Verified at
+        conversion against the source h5 on a deterministic 25-row sample, field by field, and SMILES round-tripped
+        25/25 from the corpus'' own ground-truth geometry.'
+  data/nmrshiftdb2/chefnmr-smoke:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: chefnmr_smoke.db
+      sha256: ff2c6db64bffc223bc924aace09f2acdd02055255e45c7c0320fe78ddf2ea85d
+      size: 622592
+    - path: chefnmr_smoke_cond.npy
+      sha256: dbb497f859cc257a68b0deef95d25462587cf029adb9b2d22a32e301d07ee4a5
+      size: 12096128
+    - path: chefnmr_smoke_conf.npy
+      sha256: e2cd448d34da9d3e69713839d9d10b94100f1865f439b1cdd82ff4657a92238c
+      size: 1090928
+    - path: chefnmr_smoke_nconf.npy
+      sha256: 0645ee40b957e6b2911ba091e459e919ce8eb9bd65d010cea6d27778ec4d69f2
+      size: 1328
+    - path: chefnmr_smoke_meta.json
+      sha256: 3842297181623cbf15ffb96f3a40d28abf90653881e530e9d471660af4ae2f17
+      size: 1153
+    - path: NOTICE.txt
+      sha256: 30d11a01ba767a721a0c5c9378a8740e67d3c9f1c42a63cb3b7c8060f755a526
+      size: 4751
+    license: CDLA-Sharing-1.0 AND nmrshiftdb2-Database-License
+    redistribute: true
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
+      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
+      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. A 300-row slice of
+      data/nmrshiftdb2/chefnmr, so it inherits that asset''s licences unchanged -- a subset of a Derivative
+      Database is still a Derivative Database (nmrshiftdb2 Sec. 4.4(b)), and size grants no exemption; it
+      therefore ships the same NOTICE.txt. CDLA-Sharing-1.0 is share-alike, not non-commercial: Sec. 2.1
+      grants the right to Publish, Sec. 3.1/3.3 condition it on publishing Enhanced Data under an unmodified
+      copy of the same Agreement, carrying its text or a hyperlink with the files, marking changed files
+      as changed, and preserving attribution. THOSE TERMS ARE ACCEPTED AND DISCHARGED BY NOTICE.txt, which
+      ships inside this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/> and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>,
+      the Sec. 3.1(b) change notice, and the attribution. SECOND LICENCE, independent of the first and hidden
+      by the record-level field: the Zenodo record''s own README.md credits the underlying database to nmrshiftdb2,
+      under the nmrshiftdb2 Database License <https://nmrshiftdb.nmr.uni-koeln.de/nmrshiftdbhtml/nmrshiftdb2datalicense.txt>
+      (26,584 B, sha256 00322cc4...5516), which is ODbL-derived, NOT CDLA and NOT any SPDX id. Our .db plus
+      sidecars are Extraction/Re-utilisation of a Substantial part of the Contents into a new database,
+      which Sec. 4.4(b) names verbatim as a Derivative Database; Publicly Conveying one requires Sec. 4.2
+      (same or compatible licence, its text or URI shipped both with the files and in the documentation,
+      notices intact) and Sec. 4.4 share alike. DISCHARGED BY NOTICE.txt, placed in this asset''s directory
+      per Sec. 4.2(d) because .db and .npy files cannot carry notices internally; it ships the licence URI
+      and the Sec. 4.3 notice verbatim -- "Contains information from nmrshiftdb2 (www.nmrshiftdb.org), which
+      is made available here under the nmrshiftdb2 Database License". Sec. 4.5 is NON-STANDARD and the owner
+      should know it: any software that relies on the database for its functionality must itself be under
+      an OSI-approved licence -- MolCraftDiffusion is MIT, so it is satisfied, but the obligation attaches
+      to the PLATFORM, not just to the file. CHANGED FROM THE ORIGINALS (CDLA Sec. 3.1(b), nmrshiftdb2 Sec.
+      4.2(c)): cut from the same real-nmrshiftdb2/molecules.h5 by the same one-pass converter into an ASE
+      sqlite db plus four numpy/JSON sidecars, padded to max_n_atoms=101, then limited to the first 300
+      rows. Container format only -- no spectrum, coordinate or SMILES value was altered. ATTRIBUTION: Xiong
+      et al. for ChefNMR and the Zenodo record; Kuhn et al. for nmrshiftdb2. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt
+      is the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
+      returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
+      and NOTHING in this asset.'
+    upstream:
+      repo: https://github.com/ml-struct-bio/chefnmr
+      commit: 450fd887ebc19e946f5398f20c1d66d16db89a3a
+      download: https://zenodo.org/records/17766755/files/real-nmrshiftdb2.tar.gz?download=1
+      doi: 10.5281/zenodo.17766755
+      corpus: https://nmrshiftdb.nmr.uni-koeln.de
+      source: 'real-nmrshiftdb2.tar.gz (39,446,215 B) -> real-nmrshiftdb2/molecules.h5. REAL MEASURED 13C
+        spectra, not simulated: 23,457 molecules, the subset left after excluding SMILES present in the
+        USPTO training set. Cite Kuhn et al. for the database.'
+      script: python docs/model_integrations/chefnmr/scripts/convert_dataset.py <unpacked>/real-nmrshiftdb2
+        <out_prefix> --split test --split-suffix "" --limit 300 --max-n-atoms 101 --yes --keep-raw
+      note: 'The cheap trial slice: 300 of the 23,457 records, 8.1 MB instead of 1.03 GB, cut from the same
+        molecules.h5 by the same one-pass converter, so the five-file contract and every measured property
+        of the full corpus hold here too -- see data/nmrshiftdb2/chefnmr. Point `interference.spectra_source`
+        at chefnmr_smoke.db to try the model without the full fetch. NOT a benchmark: top-k over 300 records
+        is not the paper''s number.'
+  data/uspto/chefnmr:
+    # NOT PUBLISHED, by the zoo owner's decision 2026-08-26: this is DERIVED
+    # data. `scripts/convert_dataset.py` rebuilds it byte-for-byte from a
+    # 6.1 GB Zenodo download in ~40 min, so hosting 29.9 GB (one file of
+    # which is 26.2 GB) buys nothing that cannot be regenerated. The
+    # licence audit in `reason:` stands and remains valid if this is ever
+    # flipped back. No `host:` field, so `stage` cannot upload it.
+    kind: dataset
+    rev: main
+    files:
+    - path: uspto_train.db
+      sha256: c112e9e8c61def6c50afb6f7ad3c1dd5f60580e37d1aa07949faeee039de3dc7
+      size: 1347997696
+    - path: uspto_train_cond.npy
+      sha256: a9a33056a80be3706a76e90e2c7da8324af3a9f33d816b9f526819a7b3cb0ead
+      size: 26220620288
+    - path: uspto_train_conf.npy
+      sha256: dbcb0a409c2bcb761a6c4474233efe8e5c716038498fbd27b1f97e34218f1c8d
+      size: 2364538196
+    - path: uspto_train_nconf.npy
+      sha256: 257dfdacccac0187c5d588a3d18c1fdcbf9dfa1165ecd8718ba7b24bc5ff8583
+      size: 2601380
+    - path: uspto_train_meta.json
+      sha256: 78214cfd66b464cb721e7d4b452f0fb832ed35f1a7a556521f84b11d7dbfa874
+      size: 1132
+    - path: NOTICE.txt
+      sha256: 30d11a01ba767a721a0c5c9378a8740e67d3c9f1c42a63cb3b7c8060f755a526
+      size: 4751
+    license: CDLA-Sharing-1.0
+    redistribute: false
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
+      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
+      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. The ORIGINAL corpus
+      is Zenodo record 11611178, ''Unraveling Molecular Structure: A Multimodal Spectroscopic Dataset for
+      Chemistry'' (Alberts et al.), whose API record ALSO returns metadata.license {''id'': ''cdla-sharing-1.0''}
+      -- checked independently, not assumed from record 17766755''s README.md that credits it. Both layers
+      audited, both agree. CDLA-Sharing-1.0 is share-alike, not non-commercial: Sec. 2.1 grants the right
+      to Publish, Sec. 3.1/3.3 condition it on publishing Enhanced Data under an unmodified copy of the
+      same Agreement, carrying its text or a hyperlink with the files, marking changed files as changed,
+      and preserving attribution. THOSE TERMS ARE ACCEPTED AND DISCHARGED BY NOTICE.txt, which ships inside
+      this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/> and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>,
+      the Sec. 3.1(b) change notice, and the attribution. CHANGED FROM THE ORIGINALS (Sec. 3.1(b)): converted
+      from uspto/molecules.h5 into an ASE sqlite db plus four numpy/JSON sidecars, padded to max_n_atoms=101,
+      restricted to the 650,313 rows of the published split_indices_dedup/train fold. Container format only
+      -- no spectrum, coordinate or SMILES value was altered. ATTRIBUTION: Alberts et al. for the source
+      corpus; Xiong et al. for the ChefNMR record. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt
+      is the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
+      returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
+      and NOTHING in this asset. SIZE WARNING, recorded and OVERRULED by the owner (''yeah ALL'', 2026-08-26):
+      29.9 GB across five files, of which uspto_train_cond.npy alone is 26.2 GB. It is published because
+      the shipped train config reads it, but a fetch of this asset is a 29.9 GB download and most users
+      want data/nmrshiftdb2/chefnmr-smoke instead.'
+    upstream:
+      repo: https://github.com/ml-struct-bio/chefnmr
+      commit: 450fd887ebc19e946f5398f20c1d66d16db89a3a
+      download: https://zenodo.org/records/17766755/files/uspto.tar.gz?download=1
+      doi: 10.5281/zenodo.17766755
+      corpus: https://zenodo.org/records/11611178
+      source: uspto.tar.gz (6,109,361,010 B) -> uspto/molecules.h5 (66 GB unpacked). SIMULATED spectra over
+        molecules from US patents; 650,313 rows of the published split_indices_dedup/train fold (the fold
+        is 650,313 train / 34,095 val / 75,567 test). Cite Alberts et al. for the source corpus.
+      script: python docs/model_integrations/chefnmr/scripts/convert_dataset.py <unpacked>/uspto <out_prefix>
+        --split train --split-suffix _dedup --max-n-atoms 101 --yes
+      note: '29.9 GB: _cond.npy 26.2 GB + _conf.npy 2.36 GB + .db 1.35 GB + _nconf.npy 2.6 MB + _meta.json.
+        The condition is DENSE and stays dense on measured evidence, not by default: 1H occupancy over all
+        650,313 molecules is a mean 43.4% of the 10,000 bins non-zero (max 8,473), so the sparse (idx, val)
+        encoding that was considered would save nothing. Budget ~11 GB MORE on top for PointCloudDataset''s
+        chunk cache at chunk_size: 50000 -- 650k rows will not fit in RAM unchunked. Same five-file, one-pass
+        contract as data/nmrshiftdb2/chefnmr, same row-index join, same caveat that the ASE sqlite''s per-row
+        ctime makes the .db sha256 build-specific while the .npy files are reproducible. Conformer counts
+        are VARIABLE and _nconf.npy is what makes that safe: 649,338 molecules with 3 conformers, 743 with
+        2, 232 with 1 -- readers must sample only conf[i, :n_conf[i]] or they train against a zero-padded
+        ''conformer''. sigma_data 2.67, max_n_atoms 101, both read from the corpus and not hardcoded. The
+        66 GB unpacked h5 and the 5.7 GB tarball were deleted after row-by-row verification passed; --keep-raw
+        suppresses that.'
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -1982,3 +2263,47 @@ models:
       10 is the documented default and accuracy is flat from there to 100. Requires data/transition1x/reactions_rpsb
       specifically -- see that asset''s note for why the sibling data/transition1x/reactions is NOT a valid
       substitute for this model.'
+  chefnmr:
+    family: structure-elucidation
+    task_type: diffusion_chefnmr
+    tags:
+    - nmr
+    - structure-elucidation
+    - spectrum-conditioned
+    - formula-conditioned
+    - classifier-free-guidance
+    variants:
+      default:
+        checkpoint: chefnmr/pretrained
+        data: data/nmrshiftdb2/chefnmr
+        configs:
+        - chefnmr_generate.yaml
+      smoke:
+        checkpoint: chefnmr/pretrained
+        data: data/nmrshiftdb2/chefnmr-smoke
+      train-uspto:
+        data: data/uspto/chefnmr
+    summary: 'ChefNMR (Xiong, Zhang, Alauddin, Cheng, An, Seyedsayamdost, Zhong, NeurIPS 2025, arXiv:2512.03127)
+      runs structure elucidation backwards from the spectrum: you hand it a measured 1H/13C NMR pair plus
+      the molecular formula and it returns a ranked shortlist of complete 3D structures for the unknown. It
+      is the only model in this zoo conditioned on an experimental MEASUREMENT rather than on a target, a
+      pocket or a scaffold, and it rides the shared ElucidationGenerator seam rather than a bespoke sampling
+      loop. THE FORMULA IS AN INPUT, never an output (upstream known_atoms: true), so it has no unconditional
+      mode and deliberately no sample() -- element composition is fixed by the record and is therefore not
+      evidence that the weights loaded; geometry, connectivity and exact identification are. Bonds are perceived
+      from the generated geometry by RDKit afterwards, so RDKit perception, not the model, is the ceiling
+      on every top-k number. Candidates are drawn as a BATCH, not a loop, and upstream''s published top-k
+      is over the first k drawn -- generation order is the ranking, there is no scorer. The shipped default
+      (ChefNMR-S, USPTO-trained, epoch 6299) is measured here at top-1 8/20 exact, max Tanimoto@10 0.671,
+      87.9% bond perception and 92.8% connected over 20 NMRShiftDB2 records x 100 candidates at 50 Heun steps
+      and guidance_scale 1.0. That figure is 13C-ONLY and is not the model''s ceiling: NMRShiftDB2 ships no
+      1H grid at all, so half the condition vector is zeros the embedder reads through its learned mask token
+      -- which is exactly why upstream''s own sampling script sets test_p_drop_h1nmr=1.0. EVERY ASSET IS PUBLISHED
+      UNDER SHARE-ALIKE TERMS, NOT UNDER THIS PROJECT''S MIT LICENCE -- the zoo owner''s explicit decision
+      of 2026-08-26. The code is MIT but the data and weights are CDLA-Sharing-1.0, with the NMRShiftDB2 corpus
+      carrying the separate ODbL-derived nmrshiftdb2 Database License on top; both permit redistribution,
+      and both oblige you to the same terms if you pass the files on. Every asset ships a NOTICE.txt carrying
+      the licence URIs, the change notice and the attribution (Xiong et al. for ChefNMR; Kuhn et al. for nmrshiftdb2;
+      Alberts et al. for the USPTO corpus) -- read it before redistributing, and see each asset''s `reason`,
+      or `MolCraftDiff zoo recipe <asset>`, for the full audit. data/uspto/chefnmr is the 29.9 GB training
+      corpus, of which one file is 26.2 GB: fetch it only if you are actually training.'

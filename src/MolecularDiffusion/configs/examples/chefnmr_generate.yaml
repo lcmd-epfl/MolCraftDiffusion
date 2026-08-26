@@ -1,0 +1,147 @@
+# @package _global_
+# ChefNMR BENCHMARK elucidation: the CONVERTED PRETRAINED weights
+# (ChefNMR-S, USPTO, 10k-bin 1H + 80-bin 13C, upstream epoch 6299) run over
+# real measured 13C spectra from NMRShiftDB2, scored against known answers.
+#
+#   MolCraftDiff zoo config chefnmr_generate.yaml     # copy it out to edit
+#   MolCraftDiff generate chefnmr_generate.yaml
+#
+# ################## TWO WAYS TO POINT AT INPUT #########################
+#
+#   (1) A CONVERTED BENCHMARK CORPUS  <- this config, and the two zoo
+#       assets below. `spectra_source` is the prefix of a .db plus four
+#       sidecars, carrying every molecule's coordinates and SMILES, so top-k
+#       accuracy and Tanimoto are reported. Use it to REPRODUCE PUBLISHED
+#       NUMBERS. It can only describe molecules whose answer you have.
+#
+#   (2) A BARE UNKNOWN-SPECTRA FILE -- the REAL USE CASE: here is a
+#       spectrum of an unknown, what is it? Needs NO corpus and NO dataset
+#       asset at all, only the checkpoint. Write one small JSON:
+#
+#         [{"name": "unknown_A", "formula": "C10H11NO2",
+#           "13C": {"peaks": [32.5, 116.4, 124.1, 136.9,
+#                             141.2, 145.3, 148.0, 165.4]}}]
+#
+#       then change ONE line below and drop the dataset asset:
+#
+#         spectra_source: my_unknowns.json
+#
+#       Optional per record: "smiles" (a suspected structure -- present
+#       means top-k is scored, absent means no metrics.json is written),
+#       "atoms" instead of "formula" (explicit per-atom list), and a "1H"
+#       channel. A channel takes exactly one of "peaks" (ppm shifts, or
+#       [ppm, intensity] pairs, binned onto the model's grid here,
+#       optionally with "linewidth" in ppm) or "binned" (already on the
+#       model's grid). Grids: 1H = 10,000 bins over [-2, 10] ppm, 13C = 80
+#       bins over [3.42, 231.3] ppm. The 80-bin 13C channel is a BINARY
+#       occupancy indicator, so intensities on it are ignored. An omitted
+#       channel is read as missing via the model's learned mask token, so
+#       13C-only is a normal input. A shift off the end of a grid, an
+#       element outside atom_vocab, or a formula over max_n_atoms is
+#       REFUSED, never silently dropped or truncated. Full reference:
+#       MolecularDiffusion.modules.models.chefnmr.unknown.
+#
+# Nothing selects between the two but the path itself: if <prefix>.db does
+# not exist, the path is read as an unknown-spectra file. No mode flag.
+# #######################################################################
+#
+# Either way you hand it a measured spectrum plus a molecular formula, and it
+# returns a ranked shortlist of complete 3D structures. The formula is an
+# input on purpose -- upstream trains with `known_atoms: True`, and in real
+# elucidation the composition comes from high-resolution mass spec.
+#
+# This is the machine-independent twin of the repo's
+# configs/chefnmr_generate.yaml: identical settings, but the two paths below
+# are zoo asset references, so it runs from any directory. The repo also
+# ships configs/chefnmr_elucidate_unknown.yaml, which is route (2) ready to
+# run against configs/chefnmr_unknown_example.json.
+#
+# ============================== ASSETS =================================
+#   MolCraftDiff zoo fetch --config chefnmr_generate.yaml
+#
+#     chefnmr/pretrained            513 MB   the converted ChefNMR-S weights
+#     data/nmrshiftdb2/chefnmr     1.03 GB   23,457 measured 13C spectra
+#
+# BOTH ARE PUBLISHED UNDER SHARE-ALIKE TERMS, NOT UNDER THIS PROJECT'S MIT
+# LICENCE. The Zenodo record they derive from (10.5281/zenodo.17766755) is
+# CDLA-Sharing-1.0, and the NMRShiftDB2 corpus additionally carries the
+# nmrshiftdb2 Database License. Redistributing either asset further, or
+# publishing data derived from it, obliges you to the same terms:
+# attribution, the licence text or URI travelling with the files, and a
+# notice on anything you change. Each asset ships a NOTICE.txt stating the
+# licences, the URIs, what was changed from the upstream originals, and the
+# attribution -- read it before you pass these files on. Only the CODE is
+# MIT (github.com/ml-struct-bio/chefnmr, LICENSE.txt); it covers the port
+# under modules/models/chefnmr/ and none of the fetched bytes.
+#
+#   MolCraftDiff zoo recipe chefnmr/pretrained    # provenance + rebuild path
+#
+# For a 300-record trial slice instead of the full corpus, point
+# `spectra_source` at data/nmrshiftdb2/chefnmr-smoke (8.1 MB) -- same
+# licences, same NOTICE.txt.
+# =======================================================================
+#
+# WHAT IT CONDITIONS ON: the binned spectra AND the molecular formula. The
+# formula is an input, so the atom composition of every candidate is fixed by
+# the record, never predicted.
+#
+# KNOWN LIMITATION BAKED INTO THESE DEFAULTS: **NMRShiftDB2 ships no usable
+# 1H data** -- the corpus has no `h_10k` grid at all, which is why upstream's
+# own sampling script sets `test_p_drop_h1nmr=1.0`. Every record here is
+# therefore 13C-ONLY, and the model reads the all-zero 1H half through its
+# learned "missing" mask token. Expect materially lower top-k than any
+# 1H+13C number in the paper. `drop_channels` below is left empty precisely
+# because there is nothing to drop.
+#
+# Second limitation: the ceiling on every top-k number is RDKit bond
+# perception, not the model. Reconstructing SMILES from the corpus' own
+# ground-truth geometry is only ~100% on easy molecules; the converter prints
+# that rate for the corpus you built.
+
+defaults:
+  - tasks: diffusion_chefnmr
+  - interference: gen_elucidation
+  - _self_
+
+name: "chefnmr_generate"
+
+# cli/generate.py accepts a file or a directory here.
+chkpt_directory: ${asset:chefnmr/pretrained/chefnmr_pretrained.ckpt}
+
+# EXACT ORDER of upstream's atom_decoder -- the one-hot column is
+# position-in-vocab, so a sorted list is a silently wrong model. The task
+# refuses a mismatch rather than running.
+atom_vocab: [C, H, O, N, S, P, F, Cl, Br, I]
+seed: 42
+diffusion_steps: 0        # 0 => leave the model's own sigma schedule alone
+
+# The architecture is also carried inside the converted checkpoint's
+# hyper_parameters.model_config, so these are what it rebuilds from and this
+# block is here only to be read.
+tasks:
+  sigma_data: 2.67        # the value these weights were trained with
+  max_n_atoms: 101
+
+interference:
+  # Route (1). For route (2) replace this line with a path to your own
+  # unknown-spectra JSON -- `spectra_source: my_unknowns.json` -- and the
+  # data/nmrshiftdb2/chefnmr asset is no longer needed at all.
+  spectra_source: ${asset:data/nmrshiftdb2/chefnmr/nmrshiftdb2_test.db}
+  spectra_index: 0
+  # null => all 23,457 records. At 100 candidates x 50 Heun steps (2 network
+  # calls each) that is a multi-day run; set a number for a sample.
+  max_records: 20
+  num_candidates: 100     # upstream test_args.diffusion_samples for top-10
+  batch_size: 10          # k is a BATCH dimension, never a Python loop
+  num_steps: 50           # test_args.num_sampling_steps
+  # 1.0 is what upstream pairs with THESE weights on THIS corpus
+  # (script/01-sampling/12-real-nmrshiftdb2/US-DB2-C80-S128-cfg1-seed42.slurm,
+  # +guidance=cfg1) and what the checkpoint itself records. 1.5 is the USPTO
+  # /SpectraNP value, 2.0 SpectraBase.
+  guidance_scale: 1.0
+  top_k: [1, 10]
+  # nothing to drop: this corpus has no 1H grid to begin with, and the
+  # model reads an empty channel as missing without being told. Valid names
+  # for this model are ["1H", "13C"].
+  drop_channels: []
+  output_path: "chefnmr_generate"

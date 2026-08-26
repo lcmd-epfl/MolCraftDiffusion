@@ -1,0 +1,52 @@
+# Point-cloud data for ChefNMR. Coordinates + atom types only; the model has
+# no bond channel and builds no neighbour graph (its DiT is dense masked
+# attention over all atom pairs).
+#
+# Build the db and its sidecars first -- ONE pass writes all five files:
+#   python docs/model_integrations/chefnmr/scripts/convert_dataset.py \
+#     data/chefnmr/unpacked/<corpus> data/chefnmr/<corpus>_train \
+#     --split train --split-suffix _dedup
+#
+# then point tasks.cond_path / conf_path / meta_path at the sidecars. They
+# are joined INSIDE the task off batch['xyz'] (row i <-> "db_entry_i"), which
+# is why nothing here mentions them.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/chefnmr/
+filename: null
+xyz_dir: null
+coord_file: null
+natoms_file: null
+ase_db_path: data/chefnmr/chefnmr_train.db
+dataset_name: chefnmr
+
+# EXACT ORDER of upstream's atom_decoder. compute_ohe uses position-in-vocab
+# as the one-hot column; sorting this silently permutes the checkpoint's
+# x_embedder input. The task's build() refuses a mismatch.
+atom_vocab: [C, H, O, N, S, P, F, Cl, Br, I]
+
+with_hydrogen: True      # upstream remove_h: False; DetermineBonds needs H
+use_ohe_feature: True
+allow_unknown: False     # True adds an 11th column, breaking the 10-wide input
+node_feature_choice: null        # a list would demand mol_block and skip rows
+use_row_data_features: false
+max_atom: 101            # must be >= the corpus max, else rows are dropped
+forbidden_atom: []       # any entry silently drops rows
+target_fields: null
+
+data_type: pointcloud
+
+# MUST stay false. `true` selects pointcloud_collate(VRAM), which DROPS AND
+# DUPLICATES batch elements via torch.randint above a VRAM estimate -- that
+# breaks the row-index join to the sidecar arrays.
+data_efficient_collator: false
+
+# The published fold is materialised at conversion time (one db per split),
+# so this ratio only ever splits an already-selected fold.
+train_ratio: 0.9
+
+batch_size: 8
+num_workers: 0
+load_pkl: null
+save_pkl: null
+chunk_size: null

@@ -1,0 +1,141 @@
+# ChefNMR: 3D structure elucidation from a binned 1H/13C NMR pair.
+# Xiong et al., NeurIPS 2025 (arXiv:2512.03127). Upstream MIT.
+# See docs/model_integrations/chefnmr/INTEGRATION_PLAN.md.
+#
+# Coordinates only -- no bonds anywhere in the forward path. The chemical
+# FORMULA IS AN INPUT (upstream `known_atoms: True`), so this task has no
+# `sample()` and no size prior: it cannot generate unconditionally, and the
+# generative entry point is `elucidate()` via
+# configs/interference/gen_elucidation.yaml.
+#
+# The data config MUST set, exactly:
+#   atom_vocab: [C, H, O, N, S, P, F, Cl, Br, I]   # ORDER IS LOAD-BEARING
+#   allow_unknown: false        # true adds an 11th one-hot column
+#   with_hydrogen: true         # DetermineBonds needs explicit H
+#   node_feature_choice: null
+#   use_row_data_features: false
+#   data_efficient_collator: false   # the VRAM collate drops/duplicates rows
+#   forbidden_atom: []          # any entry silently drops rows
+# See configs/data/chefnmr_pointcloud_dataset.yaml.
+_target_: MolecularDiffusion.modules.tasks.diffusion_chefnmr.ChefNMRTaskFactory
+
+task_type: diffusion_chefnmr
+
+# Upstream's atom_decoder (configs/data/uspto.yaml:5). The one-hot column is
+# position-in-vocab, so SORTING THIS LIST yields a model that trains, samples
+# and is silently wrong. build() refuses a data.atom_vocab that differs.
+atom_decoder: [C, H, O, N, S, P, F, Cl, Br, I]
+
+# Padding width baked into the (dead, frozen, all-zero) pos_embed tensor, and
+# therefore into the checkpoint's shape. 101 = upstream's USPTO value.
+max_n_atoms: 101
+
+# Std of all atom coordinates over the training split. It enters the EDM
+# preconditioning (c_in / c_sigma / d_sigma), so it is BAKED INTO THE WEIGHTS:
+# a checkpoint must be sampled with the value it was trained with.
+# 2.67 = upstream USPTO (configs/data/uspto.yaml:11), and upstream reuses it
+# for the real-spectra evaluation sets too (configs/data/real-nmrshiftdb2.yaml).
+sigma_data: 2.67
+
+# --- conditioning ---------------------------------------------------------
+condition_type: H1C13NMRSpectrum      # H1NMRSpectrum | C13NMRSpectrum | both
+in_condition_size: [10000, 80]        # 1H bins, 13C bins; sum = sidecar width
+
+# Row-aligned sidecars written by
+# docs/model_integrations/chefnmr/scripts/convert_dataset.py. Required for
+# TRAINING (the condition and the ground-truth conformers live here, not in
+# the batch). Leave null when generating: the elucidation generator reads its
+# own corpus from `interference.spectra_source`.
+cond_path: null
+conf_path: null
+meta_path: null
+
+# Random conformer per epoch, upstream's `+aug_conf=conf3`.
+max_n_conformers: 3
+
+# --- modality dropout (this is what trains the CFG unconditional branch) ---
+multitask_args:
+  p_drop_h1nmr: 0.1
+  p_drop_c13nmr: 0.1
+  p_drop_both: 0.1
+  drop_transform: zero
+
+# --- denoiser: ChefNMR-S (dit-s) ------------------------------------------
+# in_atom_feature_size / condition / in_condition_size / max_n_atoms /
+# drop_transform are filled in from the keys above; do not set them here.
+score_model_args:
+  n_blocks: 12
+  n_heads: 8
+  hidden_size: 768
+  mlp_ratio: 4.0
+  embedder_args:
+    hidden_dim: 256
+    dropout: 0.1
+    pooling: attn
+    tokenizer_args:
+      h_tokenizer: conv
+      # `embed` requires a BINARY 13C grid: x.long() * arange(1, L+1) into an
+      # Embedding(L+1, D, padding_idx=0). The converter asserts {0.0, 1.0}.
+      c_tokenizer: embed
+      h_pool_sizes: [8, 12]
+      h_kernel_sizes: [5, 9]
+      h_out_channels: [64, 128]
+      c_pool_sizes: [8, 12]
+      c_kernel_sizes: [5, 9]
+      c_out_channels: [64, 128]
+      h_patch_size: 192
+      h_patch_stride: 96
+      c_patch_size: 192
+      c_patch_stride: 96
+      # An all-zero channel is detected as MISSING and replaced by a learned
+      # mask token (embedders.py). This is how a 13C-only corpus works.
+      h_mask_token: true
+      c_mask_token: true
+    transformer_args:
+      pos_enc: learnable
+      type_enc: true
+      depth: 4
+      heads: 8
+      dim_head: null            # null => hidden_dim // heads
+      mlp_ratio: 4
+
+# --- EDM / AlphaFold3 diffusion ------------------------------------------
+diffusion_process_args:
+  train_sigma_distribution_type: af3     # exp(N(P_mean, P_std)) * sigma_data
+  train_sigma_args:
+    edm_P_mean: -1.2
+    edm_P_std: 1.3
+  sample_sigma_schedule_type: edm
+  sample_gamma_schedule_type: edm
+  sigma_min: 0.001
+  sigma_max: 80.0
+  gamma_min: 1.0
+  noise_scale: 1.0
+  step_scale: 1.0
+  synchronize_sigmas: false
+  coordinate_transformation_when_training: centering_rotation_translation
+  edm_args:
+    rho: 7
+    use_heun_solver: true       # 2 network calls per step
+    gamma_0: 0.8                # stochastic churn
+    # sigma_data is set from the top-level key above; do not duplicate it.
+
+diffusion_loss_args:
+  add_smooth_lddt_loss: true
+  lddt_loss_threshold: [0.5, 1.0, 2.0, 4.0]   # angstrom
+
+# Duplicate samples per molecule per training batch (upstream: 1).
+diffusion_multiplicity: 1
+
+# --- sampling defaults ----------------------------------------------------
+# Both are overridable per run from interference/gen_elucidation.yaml, where
+# `null` means "use the value here".
+num_sampling_steps: 50
+# Classifier-free guidance strength. SAMPLING-ONLY -- training hard-codes 0.0.
+# Upstream ships one value per corpus: 2.0 SpectraBase, 1.5 USPTO / SpectraNP,
+# 1.0 the real experimental sets. 1.5 here is the repo's USPTO training recipe
+# (+guidance=cfg15); the RELEASED US-H10kC80 checkpoint records 1.0 in its own
+# cfg, and configs/chefnmr_generate.yaml sets 1.0 explicitly for that pairing.
+# Always set it per corpus on the interference config rather than relying on
+# this default. NOTE 0.0 is a real, different value: it means unconditional.
+guidance_scale: 1.5
