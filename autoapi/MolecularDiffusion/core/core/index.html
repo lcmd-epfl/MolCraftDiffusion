@@ -524,17 +524,17 @@ This is convenient for building models from configuration files.</p>
 <ol class="arabic simple">
 <li><p>Create a model according to a string.</p></li>
 </ol>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">gcn</span> <span class="o">=</span> <span class="n">R</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="s2">&quot;GCN&quot;</span><span class="p">)(</span><span class="mi">128</span><span class="p">,</span> <span class="p">[</span><span class="mi">128</span><span class="p">])</span>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">gcn</span> <span class="o">=</span> <span class="n">R</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="s2">"GCN"</span><span class="p">)(</span><span class="mi">128</span><span class="p">,</span> <span class="p">[</span><span class="mi">128</span><span class="p">])</span>
 </pre></div>
 </div>
 <ol class="arabic simple" start="2">
 <li><p>Register a customize hook to the package.</p></li>
 </ol>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="nd">@R</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="s2">&quot;features.atom.my_feature&quot;</span><span class="p">)</span>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="nd">@R</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="s2">"features.atom.my_feature"</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="k">def</span><span class="w"> </span><span class="nf">my_featurizer</span><span class="p">(</span><span class="n">atom</span><span class="p">):</span>
 <span class="gp">&gt;&gt;&gt; </span>    <span class="o">...</span>
 <span class="gp">&gt;&gt;&gt;</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">data</span><span class="o">.</span><span class="n">Molecule</span><span class="o">.</span><span class="n">from_smiles</span><span class="p">(</span><span class="s2">&quot;C1=CC=CC=C1&quot;</span><span class="p">,</span> <span class="n">atom_feature</span><span class="o">=</span><span class="s2">&quot;my_feature&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">data</span><span class="o">.</span><span class="n">Molecule</span><span class="o">.</span><span class="n">from_smiles</span><span class="p">(</span><span class="s2">"C1=CC=CC=C1"</span><span class="p">,</span> <span class="n">atom_feature</span><span class="o">=</span><span class="s2">"my_feature"</span><span class="p">)</span>
 </pre></div>
 </div>
 <dl class="py method">
