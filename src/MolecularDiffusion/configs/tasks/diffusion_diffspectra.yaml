@@ -1,0 +1,74 @@
+# DiffSpectra: 3D structure elucidation from IR/Raman/UV-Vis spectra (Liang
+# Wang et al., arXiv:2507.06853). QM9S, spectrum-conditioned.
+#
+# DMT is JODO's own Graph-DiT-style backbone (Huang et al., NeurIPS 2023,
+# arXiv:2305.12347, already integrated as diffusion_jodo) with a SpecFormer
+# spectral encoder added into the timestep embedding in place of JODO's
+# scalar-property branch. Bonds are CONTINUOUS (exist + order, thresholded at
+# decode), exactly like JODO's QM9 config, hence edge_ch: 2.
+#
+# Requires data_type: graph3d with bond_collate: dense AND kekulize: true
+# (see configs/data/graph3d_qm9s_dataset.yaml): with edge_ch: 2 there is no
+# aromatic channel, so an aromatic bond would silently decode to "no bond".
+#
+# No sample() -- DiffSpectra has no classifier-free-guidance branch (the
+# spectrum is never dropped during training), so unconditional generation
+# would be a lie. The generative entry point is elucidate(), reached through
+# configs/interference/gen_elucidation.yaml.
+_target_: MolecularDiffusion.modules.tasks.diffusion_diffspectra.DiffSpectraTaskFactory
+task_type: diffusion_diffspectra
+
+include_fc_charge: true   # one CONTINUOUS charge channel (no charge classes)
+
+# --- backbone (DMT) --------------------------------------------------------
+nf: 256                   # node hidden; edge hidden is nf // 4 = 64
+n_layers: 8
+n_heads: 16
+n_extra_heads: 2          # adjacency-driven attention heads
+dropout: 0.1
+mlp_ratio: 2
+spatial_cut_off: 2.0      # SQUARED-distance threshold
+edge_ch: 2                # 2 = exist + order; DMT has no aromatic channel
+cond_time: true
+dist_gbf: true
+gbf_name: CondGaussianLayer
+trans_name: TransMixLayer
+softmax_inf: true
+edge_quan_th: 0.0
+com: true                 # re-centre positions after every block
+pred_data: true            # predicts x0, not the noise
+self_cond: true            # feedback pass, dropped 50% of the time in training
+noise_align: true          # Kabsch-align the clean positions onto the noisy ones
+
+# --- diffusion ---------------------------------------------------------
+centered: true            # categorical features mapped to [-1, 1]
+normalize_factors: [1, 4, 4, 1]   # pos, atom type, formal charge, edge
+loss_weights: [1.0, 0.25, 0.1]    # pos, atom, edge
+reduce_mean: false        # losses summed over nodes, not averaged
+noise_schedule: cosine    # T = 0.9946 for cosine (numerically unstable at 1.0)
+beta_0: 0.1
+beta_1: 20.0
+sampling_steps: 1000      # ancestral steps; upstream's own default
+
+# --- spectral conditioning (SpecFormer) ------------------------------------
+# 'ir' | 'raman' | 'uv' | 'allspectra'. Same code path for all four --
+# upstream trains one checkpoint per value.
+spectra_version: allspectra
+patch_len: [20, 50, 50]   # uv, ir, raman order
+stride: [10, 25, 25]
+# SpecFormer's own defaults (d_model=128, n_layers=3, n_heads=16, d_ff=256)
+# are NOT overridden in either of upstream's shipped configs -- leave {}
+# unless a fetched checkpoint's saved config says otherwise.
+specformer_kwargs: {}
+
+# SMILES-keyed spectra sidecar written by
+# docs/model_integrations/diffspectra/scripts/convert_dataset.py. Required
+# for TRAINING (the condition lives here, joined off batch["smiles"], not in
+# the graph3d db). Leave null when generating: the elucidation generator
+# reads its own corpus from interference.spectra_source.
+spectra_sidecar_path: null
+
+# --- evaluator: generative analysis at eval time -------------------------
+# DiffSpectra has no sample(), so generative_analysis (GenerativeEvalCallback)
+# is not applicable here -- unlike diffusion_jodo.yaml, this task does not
+# set it. Use interference/gen_elucidation.yaml for generation instead.

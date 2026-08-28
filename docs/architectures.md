@@ -134,17 +134,19 @@ want to know what it is. Give these a measured spectrum and they propose the
 structure. Any measurement that pins a structure down fits here; NMR is the
 first one shipped.
 
-You must also supply the **molecular formula**. It is a required input, not
-something the model works out for you — in practice it comes from
-high-resolution mass spec, so run that first. That is also why nothing here
-generates freely: every candidate has exactly the atoms you declared. What
-comes back is a ranked shortlist per measurement, not a single answer. On
-carbon spectra alone the shipped weights name roughly four compounds in ten
-outright; with proton spectra as well, substantially better.
+Most of these also need the **molecular formula** as an input, not something
+the model works out for you — in practice it comes from high-resolution mass
+spec, so run that first — and every candidate then has exactly the atoms you
+declared. DiffSpectra is the exception: it generates the atom types and the
+bonds itself, so it needs only the spectrum. What comes back is a ranked
+shortlist per measurement, not a single answer. On carbon spectra alone the
+shipped ChefNMR weights name roughly four compounds in ten outright; with
+proton spectra as well, substantially better.
 
 | Task config | `task_type` | Measurement | Notes |
 | :--- | :--- | :--- | :--- |
 | `diffusion_chefnmr.yaml` | `diffusion_chefnmr` | **1D NMR** — 1H and 13C, or 13C alone | ChefNMR — names an unknown from its NMR. Your own unknown goes in as a short file listing the peaks and the formula; the prepared spectrum collections are only needed to reproduce published benchmark numbers. Structures come back with hydrogens placed but no bonds drawn — the chemistry is read off the geometry afterwards, and a candidate that cannot be read as a molecule is dropped before you see it. |
+| `diffusion_diffspectra.yaml` | `diffusion_diffspectra` | **IR, Raman, or UV-Vis** — alone or combined | DiffSpectra — proposes a complete structure, bonds included, from the spectrum alone; no molecular formula needed, unlike ChefNMR above. QM9-scale only (≤9 heavy atoms), nothing drug-sized. |
 
 ## 6. Transition state generation
 
@@ -317,6 +319,11 @@ Backbones and objectives integrated here are based on the following work.
 - **ChefNMR** — Xiong, Zhang, Alauddin, Cheng, An, Seyedsayamdost & Zhong.
   *Atomic Diffusion Models for Small Molecule Structure Elucidation from NMR
   Spectra.* NeurIPS 2025. [arXiv:2512.03127](https://arxiv.org/abs/2512.03127)
+- **DiffSpectra** — Wang, Rong, Xu, Zhong, Liu, Wang, Zhao, Liu, Wu, Wang &
+  Zhang. *DiffSpectra: Molecular Structure Elucidation from Spectra using
+  Diffusion Models.* 2025. [arXiv:2507.06853](https://arxiv.org/abs/2507.06853)
+  — the DMT backbone is **JODO**'s (above) with a SpecFormer spectral
+  encoder replacing JODO's property-conditioning branch.
 - **LigandDiff** — Jin & Merz. *LigandDiff: de Novo Ligand Design for 3D
   Transition Metal Complexes with Diffusion Models.* Journal of Chemical Theory
   and Computation 20(10), 4377–4384, 2024.

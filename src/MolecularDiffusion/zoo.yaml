@@ -764,7 +764,8 @@ assets:
       size: 14241792
     license: gated (upstream terms)
     redistribute: false
-    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution not granted
+    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution
+      not granted
     upstream:
       download: https://huggingface.co/datasets/AIDD-LiLab/Apo2Mol_Dataset
   data/apo2mol/pairs-train:
@@ -776,7 +777,8 @@ assets:
       size: 588201984
     license: gated (upstream terms)
     redistribute: false
-    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution not granted
+    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution
+      not granted
     upstream:
       download: https://huggingface.co/datasets/AIDD-LiLab/Apo2Mol_Dataset
   data/apo2mol/pairs-val:
@@ -788,7 +790,8 @@ assets:
       size: 30232576
     license: gated (upstream terms)
     redistribute: false
-    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution not granted
+    reason: HuggingFace AIDD-LiLab/Apo2Mol_Dataset is access-gated (401); redistribution
+      not granted
     upstream:
       download: https://huggingface.co/datasets/AIDD-LiLab/Apo2Mol_Dataset
   data/geom/graph3d-flowmol3:
@@ -1098,7 +1101,8 @@ assets:
     license: CC0-1.0
     redistribute: true
     upstream:
-      source: QM9 (gdb9.sdf + gdb9.sdf.csv), imported with MolCraftDiff data import-graph3d qm9 --targets
+      source: QM9 (gdb9.sdf + gdb9.sdf.csv), imported with MolCraftDiff data import-graph3d
+        qm9 --targets
   etflow/drugs_o3:
     kind: checkpoint
     host: models
@@ -1140,8 +1144,8 @@ assets:
     upstream:
       repo: https://github.com/andreirekesh/SynCoGen
       download: https://huggingface.co/DreiSSB/SynCoGen-SynSpace-Conditional
-      source: 'weights MIT per the HF model card (cardData.license: mit, ungated); the GitHub code repo
-        itself carries NO licence -- see syncogen/vocabulary'
+      source: 'weights MIT per the HF model card (cardData.license: mit, ungated);
+        the GitHub code repo itself carries NO licence -- see syncogen/vocabulary'
       script: docs/model_integrations/syncogen/scripts/convert_checkpoint.py
   inputs/syncogen/reference:
     kind: dataset
@@ -1155,9 +1159,9 @@ assets:
     redistribute: true
     upstream:
       download: https://huggingface.co/datasets/DreiSSB/SynSpace
-      source: one molecule assembled from a row of synspace_original_graphs.pt (SynSpace, MIT, ungated);
-        coordinates embedded locally with RDKit ETKDG+MMFF. Reference ligand for pharmacophore-conditioned
-        generation.
+      source: one molecule assembled from a row of synspace_original_graphs.pt (SynSpace,
+        MIT, ungated); coordinates embedded locally with RDKit ETKDG+MMFF. Reference
+        ligand for pharmacophore-conditioned generation.
       script: docs/model_integrations/syncogen/scripts/convert_dataset.py
   syncogen/pretrained:
     kind: checkpoint
@@ -1172,8 +1176,8 @@ assets:
     upstream:
       repo: https://github.com/andreirekesh/SynCoGen
       download: https://huggingface.co/DreiSSB/SynCoGen-SynSpace-Unconditional
-      source: 'weights MIT per the HF model card (cardData.license: mit, ungated); the GitHub code repo
-        itself carries NO licence -- see syncogen/vocabulary'
+      source: 'weights MIT per the HF model card (cardData.license: mit, ungated);
+        the GitHub code repo itself carries NO licence -- see syncogen/vocabulary'
       script: docs/model_integrations/syncogen/scripts/convert_checkpoint.py
   syncogen/vocabulary:
     kind: dataset
@@ -1196,16 +1200,18 @@ assets:
       size: 3420
     license: none (all rights reserved)
     redistribute: false
-    reason: the vocabulary ships ONLY in the upstream GitHub repo, which carries no licence at all (no
-      LICENSE file at commit 6b38eec, none on the current default branch, GitHub Licensing API returns
-      404). The MIT terms on the HuggingFace weight and dataset repos do not extend to it.
+    reason: the vocabulary ships ONLY in the upstream GitHub repo, which carries no
+      licence at all (no LICENSE file at commit 6b38eec, none on the current default
+      branch, GitHub Licensing API returns 404). The MIT terms on the HuggingFace
+      weight and dataset repos do not extend to it.
     upstream:
       repo: https://github.com/andreirekesh/SynCoGen
       commit: 6b38eec26ccc687b32808c37aefdf75a4a30f1da
       source: vocabulary/original/ (five files, copied verbatim)
-      note: REQUIRED to instantiate either checkpoint. load_vocabulary(vocab_dir) populates N_BUILDING_BLOCKS
-        / N_REACTIONS / COMPATIBILITY / FRAGMENT_ATOMFEATS as process-global state before any model class
-        is built, so weights without it cannot be loaded at all.
+      note: REQUIRED to instantiate either checkpoint. load_vocabulary(vocab_dir)
+        populates N_BUILDING_BLOCKS / N_REACTIONS / COMPATIBILITY / FRAGMENT_ATOMFEATS
+        as process-global state before any model class is built, so weights without
+        it cannot be loaded at all.
   data/synspace/2k:
     kind: dataset
     host: datasets
@@ -1225,16 +1231,17 @@ assets:
       size: 9588736
     license: MIT
     redistribute: true
-    reason: 'Real published SynSpace rows (graphs + GFN-xTB conformers + pharmacophores), sampled with
-      scripts/subset_synspace.py --n 2000 --seed 42. The upstream dataset is MIT and ungated (huggingface.co/api/datasets/DreiSSB/SynSpace,
-      cardData.license: mit, gated: false).'
+    reason: 'Real published SynSpace rows (graphs + GFN-xTB conformers + pharmacophores),
+      sampled with scripts/subset_synspace.py --n 2000 --seed 42. The upstream dataset
+      is MIT and ungated (huggingface.co/api/datasets/DreiSSB/SynSpace, cardData.license:
+      mit, gated: false).'
     upstream:
       repo: https://huggingface.co/datasets/DreiSSB/SynSpace
       download: https://huggingface.co/datasets/DreiSSB/SynSpace/resolve/main/
       script: docs/model_integrations/syncogen/scripts/subset_synspace.py
-      note: Full corpus is 622,766 molecules / 33 GB unpacked and is NOT hosted here - fetch the three
-        archives from the repo above and run scripts/prepare_synspace.py. This asset is the 2,000-molecule
-        slice.
+      note: Full corpus is 622,766 molecules / 33 GB unpacked and is NOT hosted here
+        - fetch the three archives from the repo above and run scripts/prepare_synspace.py.
+        This asset is the 2,000-molecule slice.
   data/geom/graph3d-multiconf-qm9:
     kind: dataset
     host: datasets
@@ -1247,10 +1254,11 @@ assets:
     redistribute: true
     upstream:
       download: https://dataverse.harvard.edu/api/access/datafile/4327252
-      source: 'GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per the Dataverse API.
-        rdkit_folder/qm9 converted with scripts/build_geom_multiconf.py --max-conformers 30: 988,850 rows
-        over ~133k molecules, top-30 conformers per molecule by Boltzmann weight, deterministic 80/10/10
-        split (NOT torsional diffusion''s published split.npy -- recorded in the db metadata).'
+      source: 'GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0
+        per the Dataverse API. rdkit_folder/qm9 converted with scripts/build_geom_multiconf.py
+        --max-conformers 30: 988,850 rows over ~133k molecules, top-30 conformers
+        per molecule by Boltzmann weight, deterministic 80/10/10 split (NOT torsional
+        diffusion''s published split.npy -- recorded in the db metadata).'
   data/geom/graph3d-multiconf-drugs:
     kind: dataset
     host: datasets
@@ -1263,10 +1271,11 @@ assets:
     redistribute: true
     upstream:
       download: https://dataverse.harvard.edu/api/access/datafile/4327252
-      source: 'GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0 per the Dataverse API.
-        rdkit_folder/drugs converted with scripts/build_geom_multiconf.py --max-conformers 30: 7,173,739
-        rows over ~304k molecules (mean 21.7 conformers each, 52.6 atoms), top-30 by Boltzmann weight,
-        deterministic 80/10/10 split. 28.75 GB -- confirm hosting before staging. Needs atom_vocab [H,B,C,N,O,F,Al,Si,P,S,Cl,As,
+      source: 'GEOM (Axelrod & Gomez-Bombarelli), doi:10.7910/DVN/JNGTDF, CC0 1.0
+        per the Dataverse API. rdkit_folder/drugs converted with scripts/build_geom_multiconf.py
+        --max-conformers 30: 7,173,739 rows over ~304k molecules (mean 21.7 conformers
+        each, 52.6 atoms), top-30 by Boltzmann weight, deterministic 80/10/10 split.
+        28.75 GB -- confirm hosting before staging. Needs atom_vocab [H,B,C,N,O,F,Al,Si,P,S,Cl,As,
         Br,I,Hg,Bi] and max_atom well above 29.'
   oareactdiff/pretrained:
     kind: checkpoint
@@ -1278,21 +1287,24 @@ assets:
       size: 42687545
     license: MIT
     redistribute: true
-    reason: 'Upstream OA-ReactDiff is MIT. Vendored LICENSE file is the MIT text, "Copyright (c) 2023
-      Chenru Duan" (1069 B, sha256 459ebc04...eee3), and api.github.com/repos/chenruduan/OAReactDiff returns
-      license.spdx_id: MIT (the /license endpoint resolves it to path LICENSE, size 1069 -- same file).
-      The weights are the authors'' own property under that licence.'
+    reason: 'Upstream OA-ReactDiff is MIT. Vendored LICENSE file is the MIT text,
+      "Copyright (c) 2023 Chenru Duan" (1069 B, sha256 459ebc04...eee3), and api.github.com/repos/chenruduan/OAReactDiff
+      returns license.spdx_id: MIT (the /license endpoint resolves it to path LICENSE,
+      size 1069 -- same file). The weights are the authors'' own property under that
+      licence.'
     upstream:
       repo: https://github.com/chenruduan/OAReactDiff
       commit: 543aaa8ec4c0193089f6cdbd3ad3b1534cc280a9
       source: pretrained-ts1x-diff.ckpt (in-tree, 213,078,375 B)
       script: docs/model_integrations/oareactdiff/scripts/convert_checkpoint.py
-      note: 'Conversion is REQUIRED, not cosmetic: the upstream Lightning checkpoint pickles a class reference
-        to oa_reactdiff.model.leftnet.LEFTNet, so torch.load raises ModuleNotFoundError without that package
-        importable. The converter shims it (installs nothing) and re-prefixes to task.ddpm.*. 247 of 248
-        tensors map one-for-one by name and shape with zero renaming; the 248th (sampling_schedule.gamma_module.gamma,
-        (151,)) is a non-learned lookup table proved torch.equal to a freshly built PredefinedNoiseSchedule(''polynomial_2'',
-        150, 1e-5). Smaller than the source because optimizer state, loops and callbacks are dropped.'
+      note: 'Conversion is REQUIRED, not cosmetic: the upstream Lightning checkpoint
+        pickles a class reference to oa_reactdiff.model.leftnet.LEFTNet, so torch.load
+        raises ModuleNotFoundError without that package importable. The converter
+        shims it (installs nothing) and re-prefixes to task.ddpm.*. 247 of 248 tensors
+        map one-for-one by name and shape with zero renaming; the 248th (sampling_schedule.gamma_module.gamma,
+        (151,)) is a non-learned lookup table proved torch.equal to a freshly built
+        PredefinedNoiseSchedule(''polynomial_2'', 150, 1e-5). Smaller than the source
+        because optimizer state, loops and callbacks are dropped.'
   data/transition1x/reactions:
     kind: dataset
     host: datasets
@@ -1306,47 +1318,56 @@ assets:
       size: 34183746
     license: MIT
     redistribute: true
-    reason: 'MIT at BOTH layers, audited separately. (1) The corpus: Transition1x is published on Figshare
-      as article 19614657, doi 10.6084/m9.figshare.19614657.v4 (Mathias Schreiner), whose API record declares
-      license {"value": 3, "name": "MIT"}; that deposit holds file id 36035789, Transition1x.h5, which
-      is the exact file the project''s own download_t1x.py fetches. (2) The preprocessing into these pickles
-      is OA-ReactDiff''s, MIT. NOTE for future auditors: the Transition1x GitLab CODE repo (gitlab.com/matschreiner/Transition1x)
-      carries no licence at all -- API license: null, and LICENSE/LICENSE.md/LICENSE.txt/COPYING all 404
-      on main -- but it ships only a downloader and a loader, no data, so nothing redistributed here derives
-      from it.'
+    reason: 'MIT at BOTH layers, audited separately. (1) The corpus: Transition1x
+      is published on Figshare as article 19614657, doi 10.6084/m9.figshare.19614657.v4
+      (Mathias Schreiner), whose API record declares license {"value": 3, "name":
+      "MIT"}; that deposit holds file id 36035789, Transition1x.h5, which is the exact
+      file the project''s own download_t1x.py fetches. (2) The preprocessing into
+      these pickles is OA-ReactDiff''s, MIT. NOTE for future auditors: the Transition1x
+      GitLab CODE repo (gitlab.com/matschreiner/Transition1x) carries no licence at
+      all -- API license: null, and LICENSE/LICENSE.md/LICENSE.txt/COPYING all 404
+      on main -- but it ships only a downloader and a loader, no data, so nothing
+      redistributed here derives from it.'
     upstream:
       repo: https://github.com/chenruduan/OAReactDiff
       commit: 543aaa8ec4c0193089f6cdbd3ad3b1534cc280a9
-      source: REBUILT FROM THE PRIMARY DEPOSIT, not copied from the OA-ReactDiff repo. Figshare article
-        19614657 / file id 36035789, Transition1x.h5, 6,623,929,000 B, doi 10.6084/m9.figshare.19614657.v4.
-        The 6.6 GB raw file is deleted after conversion; re-fetch with the download URL below.
+      source: REBUILT FROM THE PRIMARY DEPOSIT, not copied from the OA-ReactDiff repo.
+        Figshare article 19614657 / file id 36035789, Transition1x.h5, 6,623,929,000
+        B, doi 10.6084/m9.figshare.19614657.v4. The 6.6 GB raw file is deleted after
+        conversion; re-fetch with the download URL below.
       corpus: https://gitlab.com/matschreiner/Transition1x
       download: https://figshare.com/ndownloader/files/36035789
-      script: 'docs/model_integrations/oareactdiff/scripts/build_from_source.py (reads the HDF5 `data` group
-        -- 10,073 reactions with reactant/transition_state/product EXPLICITLY labelled, so no
-        highest-energy-image heuristic is needed -- and emits upstream''s exact pickle schema, so the data
-        module reads the result with no code change). From source: positions, charges (Z), num_atoms,
-        formula, rxn, energies, forces, and ediff (recomputed as E(object) - E(TS), which reproduces
-        upstream''s stored values to 0.0). Carried over from upstream''s pickles because they are
-        cheminformatics products absent from the deposit: smi, fragments, single_fragment, uff_positions,
-        and use_ind. VERIFIED against the pickles OA-ReactDiff ships: on all 7,516 single-fragment reactions
-        the two agree to 2.7e-07 A with energies identical to the last bit; the 2,557 multi-fragment
-        reactions disagree by up to 23.05 A because upstream RE-POSED their separated fragments while
-        keeping the original DFT energies. single_frag_only: true excludes those, so every reaction the
-        model trains on is provably faithful to the deposit. The older scripts/convert_dataset.py stages
-        upstream''s pickles instead and needs no download; it is kept as a fallback.'
-      note: 'ONE corpus, two index-carrying views -- not two corpora. Both pickles hold the SAME 10,073
-        reactions (identical rxn fingerprints); they differ only in the use_ind list each carries (9,000
-        vs 1,073), so the published split lives INSIDE the files and use_by_ind: true is what applies
-        it. Registered as one asset for exactly that reason: fetching ''the validation set'' alone would
-        misrepresent what the file is. Intersected with single_fragment: 6,733 train / 783 valid reactions,
-        doubled by swapping_react_prod. Reactant/TS/product share atom count AND atom ordering on all
-        10,073 rows. Elements {H,C,N,O}; F is in the model''s vocabulary but absent from the corpus. Upstream
-        ships no test.pkl. These two files are the 10,073-reaction ENDPOINT slice (reactant / transition
-        state / product only). The full Transition1x.h5 is 6.6 GB because it also carries every NEB path
-        image -- ~9.6 M DFT calculations -- which this model never reads; it is deliberately NOT hosted
-        here, fetch it from the Figshare URL above if you need the paths, energies along the path, or
-        forces on intermediate images.'
+      script: 'docs/model_integrations/oareactdiff/scripts/build_from_source.py (reads
+        the HDF5 `data` group -- 10,073 reactions with reactant/transition_state/product
+        EXPLICITLY labelled, so no highest-energy-image heuristic is needed -- and
+        emits upstream''s exact pickle schema, so the data module reads the result
+        with no code change). From source: positions, charges (Z), num_atoms, formula,
+        rxn, energies, forces, and ediff (recomputed as E(object) - E(TS), which reproduces
+        upstream''s stored values to 0.0). Carried over from upstream''s pickles because
+        they are cheminformatics products absent from the deposit: smi, fragments,
+        single_fragment, uff_positions, and use_ind. VERIFIED against the pickles
+        OA-ReactDiff ships: on all 7,516 single-fragment reactions the two agree to
+        2.7e-07 A with energies identical to the last bit; the 2,557 multi-fragment
+        reactions disagree by up to 23.05 A because upstream RE-POSED their separated
+        fragments while keeping the original DFT energies. single_frag_only: true
+        excludes those, so every reaction the model trains on is provably faithful
+        to the deposit. The older scripts/convert_dataset.py stages upstream''s pickles
+        instead and needs no download; it is kept as a fallback.'
+      note: 'ONE corpus, two index-carrying views -- not two corpora. Both pickles
+        hold the SAME 10,073 reactions (identical rxn fingerprints); they differ only
+        in the use_ind list each carries (9,000 vs 1,073), so the published split
+        lives INSIDE the files and use_by_ind: true is what applies it. Registered
+        as one asset for exactly that reason: fetching ''the validation set'' alone
+        would misrepresent what the file is. Intersected with single_fragment: 6,733
+        train / 783 valid reactions, doubled by swapping_react_prod. Reactant/TS/product
+        share atom count AND atom ordering on all 10,073 rows. Elements {H,C,N,O};
+        F is in the model''s vocabulary but absent from the corpus. Upstream ships
+        no test.pkl. These two files are the 10,073-reaction ENDPOINT slice (reactant
+        / transition state / product only). The full Transition1x.h5 is 6.6 GB because
+        it also carries every NEB path image -- ~9.6 M DFT calculations -- which this
+        model never reads; it is deliberately NOT hosted here, fetch it from the Figshare
+        URL above if you need the paths, energies along the path, or forces on intermediate
+        images.'
   reactot/pretrained:
     kind: checkpoint
     host: models
@@ -1357,42 +1378,51 @@ assets:
       size: 42665092
     license: MIT
     redistribute: true
-    reason: 'MIT is the USER''S EXPLICIT DECISION, recorded after all three sources below were shown to
-      them; it is not an inference from any single one. THREE conflicting values exist and all three were
-      verified by the Registrar: (1) the target repo''s LICENSE file is Creative Commons Attribution-NonCommercial-ShareAlike
-      4.0 International (20,850 B, sha256 7399d96e...9aaa94); (2) the same repo''s pyproject.toml:14 says
-      license = { text = "MIT" } with the MIT OSI classifier, and that file is demonstrably stale -- it
-      still carries name = "oa_reactdiff", the predecessor project; (3) api.github.com/repos/deepprinciple/react-ot
-      returns license.spdx_id: NOASSERTION, key "other" -- the API could not classify the CC text, which
-      is NOT a finding of "unlicensed". (4) Zenodo record 13131875, which hosts the byte-identical weights
-      as sb-pretrained.ckpt (42,699,153 B), declares metadata.license.id: cc-by-4.0, open access -- this
-      is the licence attached to the actual artifact redistributed here and it permits redistribution with
-      attribution. PUBLISH STEP: surface this three-way licence conflict (repo LICENSE CC BY-NC-SA 4.0 /
-      pyproject.toml MIT / Zenodo cc-by-4.0) to the user for confirmation before uploading these weights.'
+    reason: 'MIT is the USER''S EXPLICIT DECISION, recorded after all three sources
+      below were shown to them; it is not an inference from any single one. THREE
+      conflicting values exist and all three were verified by the Registrar: (1) the
+      target repo''s LICENSE file is Creative Commons Attribution-NonCommercial-ShareAlike
+      4.0 International (20,850 B, sha256 7399d96e...9aaa94); (2) the same repo''s
+      pyproject.toml:14 says license = { text = "MIT" } with the MIT OSI classifier,
+      and that file is demonstrably stale -- it still carries name = "oa_reactdiff",
+      the predecessor project; (3) api.github.com/repos/deepprinciple/react-ot returns
+      license.spdx_id: NOASSERTION, key "other" -- the API could not classify the
+      CC text, which is NOT a finding of "unlicensed". (4) Zenodo record 13131875,
+      which hosts the byte-identical weights as sb-pretrained.ckpt (42,699,153 B),
+      declares metadata.license.id: cc-by-4.0, open access -- this is the licence
+      attached to the actual artifact redistributed here and it permits redistribution
+      with attribution. PUBLISH STEP: surface this three-way licence conflict (repo
+      LICENSE CC BY-NC-SA 4.0 / pyproject.toml MIT / Zenodo cc-by-4.0) to the user
+      for confirmation before uploading these weights.'
     upstream:
       repo: https://github.com/deepprinciple/react-ot
       commit: 6dfccd0112cf6b504da80ad2516ff8e5ab8bade1
-      source: reactot-pretrained.ckpt (in-tree at the repo root, 42,699,153 B); the same file is published
-        on Zenodo record 13131875 as sb-pretrained.ckpt at that exact size.
+      source: reactot-pretrained.ckpt (in-tree at the repo root, 42,699,153 B); the
+        same file is published on Zenodo record 13131875 as sb-pretrained.ckpt at
+        that exact size.
       download: https://zenodo.org/records/13131875
       doi: 10.5281/zenodo.13131875
       script: docs/model_integrations/reactot/scripts/convert_checkpoint.py
-      note: 'Conversion is REQUIRED, not cosmetic: the upstream Lightning checkpoint pickles a class reference
-        to reactot.model.leftnet.LEFTNet, so torch.load raises ModuleNotFoundError without that package
-        importable. The converter shims it (installs nothing) and rewraps into the platform''s {state_dict:
-        {task.*}, task_type, hyper_parameters} layout. The remap is the IDENTITY -- ReactOTTask.ddpm is
-        an EnSB whose .dynamics is the same EGNNDynamics, so the source prefix ddpm.dynamics. is already
-        the destination prefix. All 246 of 246 tensors (10,645,911 parameters) are placed, 0 dropped, 0
-        unexpected, 0 missing, every shape matched, and the Tester independently confirmed 246/246 torch.equal
-        to upstream''s file both on disk and in the LIVE task after cli/generate.py''s real load_model.
-        That proof matters because generate loads with strict=False and the model is pos_only: a bad remap
-        would load nothing and still emit plausible geometry, since atom identities are copied from the
-        input reaction and the R/P midpoint the bridge starts from already sits ~0.4 A from the true TS.
-        Smaller than the source because optimizer state, loops and callbacks are dropped. NOT the GFN2-xTB-pretrained
-        variant the NMI paper credits with a further ~25% improvement -- no second checkpoint ships. Measured
-        here over the full 1,073-reaction published held-out split at ode/nfe=10: mean 0.1827 A / median
-        0.0920 A Kabsch RMSD to the DFT transition state, beating the do-nothing R/P-midpoint floor (0.4340
-        / 0.4041) on 91.3% of reactions, flat from nfe=10 to nfe=100.'
+      note: 'Conversion is REQUIRED, not cosmetic: the upstream Lightning checkpoint
+        pickles a class reference to reactot.model.leftnet.LEFTNet, so torch.load
+        raises ModuleNotFoundError without that package importable. The converter
+        shims it (installs nothing) and rewraps into the platform''s {state_dict:
+        {task.*}, task_type, hyper_parameters} layout. The remap is the IDENTITY --
+        ReactOTTask.ddpm is an EnSB whose .dynamics is the same EGNNDynamics, so the
+        source prefix ddpm.dynamics. is already the destination prefix. All 246 of
+        246 tensors (10,645,911 parameters) are placed, 0 dropped, 0 unexpected, 0
+        missing, every shape matched, and the Tester independently confirmed 246/246
+        torch.equal to upstream''s file both on disk and in the LIVE task after cli/generate.py''s
+        real load_model. That proof matters because generate loads with strict=False
+        and the model is pos_only: a bad remap would load nothing and still emit plausible
+        geometry, since atom identities are copied from the input reaction and the
+        R/P midpoint the bridge starts from already sits ~0.4 A from the true TS.
+        Smaller than the source because optimizer state, loops and callbacks are dropped.
+        NOT the GFN2-xTB-pretrained variant the NMI paper credits with a further ~25%
+        improvement -- no second checkpoint ships. Measured here over the full 1,073-reaction
+        published held-out split at ode/nfe=10: mean 0.1827 A / median 0.0920 A Kabsch
+        RMSD to the DFT transition state, beating the do-nothing R/P-midpoint floor
+        (0.4340 / 0.4041) on 91.3% of reactions, flat from nfe=10 to nfe=100.'
   data/transition1x/reactions_rpsb:
     kind: dataset
     host: datasets
@@ -1406,48 +1436,58 @@ assets:
       size: 55877397
     license: MIT
     redistribute: true
-    reason: 'Redistributable at BOTH layers, audited separately, and the user''s MIT decision for React-OT
-      covers the preprocessing layer. (1) THE CORPUS: Transition1x is published on Figshare as article 19614657,
-      doi 10.6084/m9.figshare.19614657.v4 (Mathias Schreiner), whose API record declares license {"value":
-      3, "name": "MIT"} -- the same audit as data/transition1x/reactions. (2) THE PREPROCESSING: these pickles
-      are React-OT''s own mutual R/P/TS alignment, published by the authors on Zenodo record 13131875 as
-      train_rpsb_all.pkl / valid_rpsb_all.pkl, whose metadata.license.id reads cc-by-4.0 (open access, verified
-      against the Zenodo API) -- permissive, redistribution allowed with attribution. React-OT''s own repo
-      licence is the three-way conflict described on reactot/pretrained, settled by the user as MIT. PUBLISH
-      STEP: surface this three-way licence conflict (repo LICENSE CC BY-NC-SA 4.0 / pyproject.toml MIT /
-      Zenodo cc-by-4.0) to the user for confirmation before uploading these weights.'
+    reason: 'Redistributable at BOTH layers, audited separately, and the user''s MIT
+      decision for React-OT covers the preprocessing layer. (1) THE CORPUS: Transition1x
+      is published on Figshare as article 19614657, doi 10.6084/m9.figshare.19614657.v4
+      (Mathias Schreiner), whose API record declares license {"value": 3, "name":
+      "MIT"} -- the same audit as data/transition1x/reactions. (2) THE PREPROCESSING:
+      these pickles are React-OT''s own mutual R/P/TS alignment, published by the
+      authors on Zenodo record 13131875 as train_rpsb_all.pkl / valid_rpsb_all.pkl,
+      whose metadata.license.id reads cc-by-4.0 (open access, verified against the
+      Zenodo API) -- permissive, redistribution allowed with attribution. React-OT''s
+      own repo licence is the three-way conflict described on reactot/pretrained,
+      settled by the user as MIT. PUBLISH STEP: surface this three-way licence conflict
+      (repo LICENSE CC BY-NC-SA 4.0 / pyproject.toml MIT / Zenodo cc-by-4.0) to the
+      user for confirmation before uploading these weights.'
     upstream:
       repo: https://github.com/deepprinciple/react-ot
       commit: 6dfccd0112cf6b504da80ad2516ff8e5ab8bade1
       corpus: https://gitlab.com/matschreiner/Transition1x
       download: https://zenodo.org/records/13131875
       doi: 10.5281/zenodo.13131875
-      source: 'FETCHED from Zenodo record 13131875: train_rpsb_all.pkl (55,458,032 B, md5 701a4576...) and
-        valid_rpsb_all.pkl (55,263,120 B, md5 b9ca5d76...), 110,721,152 B total. These are React-OT''s own
-        authoritative pickles, the exact filenames pl_trainer.py:881,891 names.'
+      source: 'FETCHED from Zenodo record 13131875: train_rpsb_all.pkl (55,458,032
+        B, md5 701a4576...) and valid_rpsb_all.pkl (55,263,120 B, md5 b9ca5d76...),
+        110,721,152 B total. These are React-OT''s own authoritative pickles, the
+        exact filenames pl_trainer.py:881,891 names.'
       script: docs/model_integrations/reactot/scripts/convert_dataset.py
-      note: 'A SECOND VIEW OF THE SAME CORPUS AS data/transition1x/reactions, NOT A DUPLICATE, and the two
-        are NOT interchangeable for React-OT -- registered separately for that measured reason. Same 10,073
-        reactions, same molecules to machine precision (per-object Kabsch RMSD max 2.1e-14 A across all
-        rows, so neither file has different chemistry), but the rpsb files pose reactant, TS and product
-        in a MUTUALLY ALIGNED frame (''rpsb'' = reactant/product prepared for the Schrodinger bridge): no
-        single rotation aligns all three in the t1x_source files, and the joint R|TS|P Kabsch RMSD between
-        the families is 0.088-0.107 A mean, up to 1.8 A. For OA-ReactDiff that is pure gauge and invisible
-        -- RePaint keeps a separate SE(3) frame per object. For React-OT it is DATA, because the bridge
-        starts from x1 = (r_pos + p_pos)/2, which mixes the two frames: substituting perturbs the starting
-        structure by 0.031-0.039 A mean and up to 1.4 A, against a midpoint only ~0.4 A from the true TS
-        and a model reporting 0.09 A median RMSD -- the perturbation is the size of the quantity being measured.
-        CONVERSION IS REQUIRED, not a copy: the Zenodo pickles carry no `smi` and no `ediff`, both of which
-        data/component/oareactdiff_data.py:225-228 reads for every item, so a raw *_rpsb_all.pkl raises
-        KeyError: ''smi'' on row 0. The converter derives ediff from the fetched files'' OWN DFT energies
-        (E(object) - E(transition_state)) and cross-checks against the in-tree values at max |delta| = 0.0,
-        and copies smi BY ROW INDEX from data/transition1x/reactions -- sound only because row alignment
-        is PROVED first: rxn ids, use_ind, single_fragment, num_atoms and all atomic numbers are identical
-        on all 10,073 rows of both splits. Nothing else is touched and no coordinate is modified. ONE corpus,
-        two index-carrying views: both files hold all 10,073 reactions and differ only in the use_ind list
-        each carries, so the published split lives INSIDE the files and use_by_ind: true is what applies
-        it. React-OT trains with single_frag_only: FALSE (unlike OA-ReactDiff), giving 9,000 train / 1,073
-        held-out reactions. R/TS/P share atom count AND ordering on all 10,073 rows. Elements {H,C,N,O};
+      note: 'A SECOND VIEW OF THE SAME CORPUS AS data/transition1x/reactions, NOT
+        A DUPLICATE, and the two are NOT interchangeable for React-OT -- registered
+        separately for that measured reason. Same 10,073 reactions, same molecules
+        to machine precision (per-object Kabsch RMSD max 2.1e-14 A across all rows,
+        so neither file has different chemistry), but the rpsb files pose reactant,
+        TS and product in a MUTUALLY ALIGNED frame (''rpsb'' = reactant/product prepared
+        for the Schrodinger bridge): no single rotation aligns all three in the t1x_source
+        files, and the joint R|TS|P Kabsch RMSD between the families is 0.088-0.107
+        A mean, up to 1.8 A. For OA-ReactDiff that is pure gauge and invisible --
+        RePaint keeps a separate SE(3) frame per object. For React-OT it is DATA,
+        because the bridge starts from x1 = (r_pos + p_pos)/2, which mixes the two
+        frames: substituting perturbs the starting structure by 0.031-0.039 A mean
+        and up to 1.4 A, against a midpoint only ~0.4 A from the true TS and a model
+        reporting 0.09 A median RMSD -- the perturbation is the size of the quantity
+        being measured. CONVERSION IS REQUIRED, not a copy: the Zenodo pickles carry
+        no `smi` and no `ediff`, both of which data/component/oareactdiff_data.py:225-228
+        reads for every item, so a raw *_rpsb_all.pkl raises KeyError: ''smi'' on
+        row 0. The converter derives ediff from the fetched files'' OWN DFT energies
+        (E(object) - E(transition_state)) and cross-checks against the in-tree values
+        at max |delta| = 0.0, and copies smi BY ROW INDEX from data/transition1x/reactions
+        -- sound only because row alignment is PROVED first: rxn ids, use_ind, single_fragment,
+        num_atoms and all atomic numbers are identical on all 10,073 rows of both
+        splits. Nothing else is touched and no coordinate is modified. ONE corpus,
+        two index-carrying views: both files hold all 10,073 reactions and differ
+        only in the use_ind list each carries, so the published split lives INSIDE
+        the files and use_by_ind: true is what applies it. React-OT trains with single_frag_only:
+        FALSE (unlike OA-ReactDiff), giving 9,000 train / 1,073 held-out reactions.
+        R/TS/P share atom count AND ordering on all 10,073 rows. Elements {H,C,N,O};
         F is in the model''s vocabulary but absent from the corpus.'
   chefnmr/pretrained:
     kind: checkpoint
@@ -1462,45 +1502,54 @@ assets:
       size: 4751
     license: CDLA-Sharing-1.0
     redistribute: true
-    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
-      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
-      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
-      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. CDLA-Sharing-1.0 is
-      share-alike, not non-commercial: Sec. 2.1 grants the right to Publish, Sec. 3.1/3.3 condition it on
-      publishing Enhanced Data under an unmodified copy of the same Agreement, carrying its text or a hyperlink
-      with the files, marking changed files as changed, and preserving attribution. THOSE TERMS ARE ACCEPTED
-      AND DISCHARGED BY NOTICE.txt, which ships inside this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/>
-      and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>, the Sec. 3.1(b) change notice, and the attribution.
-      CHANGED FROM THE ORIGINAL (Sec. 3.1(b)): derived from US-H10kC80-S128-epoch6299.ckpt (2,152,769,252
-      B) by merging the EMA shadow_params onto the live parameters and dropping optimizer, scheduler and
-      callback state -- 2.15 GB -> 538 MB, 193 tensors, weight VALUES unchanged. ATTRIBUTION: Xiong et al.,
-      ChefNMR (Zenodo 10.5281/zenodo.17766755). Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt is
-      the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION,
+      recorded 2026-08-26 after the share-alike terms were surfaced and accepted;
+      it is not an inference. The artifact is CDLA-Sharing-1.0: Zenodo record 17766755
+      (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page.
+      CDLA-Sharing-1.0 is share-alike, not non-commercial: Sec. 2.1 grants the right
+      to Publish, Sec. 3.1/3.3 condition it on publishing Enhanced Data under an unmodified
+      copy of the same Agreement, carrying its text or a hyperlink with the files,
+      marking changed files as changed, and preserving attribution. THOSE TERMS ARE
+      ACCEPTED AND DISCHARGED BY NOTICE.txt, which ships inside this asset and carries
+      the licence URIs <https://cdla.dev/sharing-1-0/> and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>,
+      the Sec. 3.1(b) change notice, and the attribution. CHANGED FROM THE ORIGINAL
+      (Sec. 3.1(b)): derived from US-H10kC80-S128-epoch6299.ckpt (2,152,769,252 B)
+      by merging the EMA shadow_params onto the live parameters and dropping optimizer,
+      scheduler and callback state -- 2.15 GB -> 538 MB, 193 tensors, weight VALUES
+      unchanged. ATTRIBUTION: Xiong et al., ChefNMR (Zenodo 10.5281/zenodo.17766755).
+      Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt is the MIT text, "Copyright
+      (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
       returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
-      and NOTHING in this asset. One argument the owner weighed before deciding: CDLA Sec. 3.5 imposes no
-      obligation on Results of Computational Use, and trained weights are plausibly Results of the USPTO
-      corpus rather than Data -- but the authors themselves published these .ckpt files under the record''s
-      CDLA grant, so CDLA is the licence we actually hold on these bytes and the one we pass on.'
+      and NOTHING in this asset. One argument the owner weighed before deciding: CDLA
+      Sec. 3.5 imposes no obligation on Results of Computational Use, and trained
+      weights are plausibly Results of the USPTO corpus rather than Data -- but the
+      authors themselves published these .ckpt files under the record''s CDLA grant,
+      so CDLA is the licence we actually hold on these bytes and the one we pass on.'
     upstream:
       repo: https://github.com/ml-struct-bio/chefnmr
       commit: 450fd887ebc19e946f5398f20c1d66d16db89a3a
       download: https://zenodo.org/records/17766755/files/US-H10kC80-S128-epoch6299.ckpt?download=1
       doi: 10.5281/zenodo.17766755
-      source: 'US-H10kC80-S128-epoch6299.ckpt (2,152,769,252 B) -- ChefNMR-S trained on USPTO with a 10,000-bin
-        1H + 80-bin 13C condition, upstream epoch 6299. NOT the SpectraBase checkpoints: those were trained
-        on a 4-type vocabulary at max_n_atoms=59, so both the one-hot width and pos_embed mismatch this
-        platform''s atom_vocab.'
+      source: 'US-H10kC80-S128-epoch6299.ckpt (2,152,769,252 B) -- ChefNMR-S trained
+        on USPTO with a 10,000-bin 1H + 80-bin 13C condition, upstream epoch 6299.
+        NOT the SpectraBase checkpoints: those were trained on a 4-type vocabulary
+        at max_n_atoms=59, so both the one-hot width and pos_embed mismatch this platform''s
+        atom_vocab.'
       script: docs/model_integrations/chefnmr/scripts/convert_checkpoint.py
-      note: 'Conversion is REQUIRED, not cosmetic: the released file stores EMA weights as ckpt[''ema''][''shadow_params''],
-        a POSITIONAL LIST of 192 over the requires_grad parameters in registration order -- not a state_dict
-        -- and torch.load of the raw file gives you the non-EMA state_dict instead. The converter zips the
-        list onto [(n, p) for n, p in named_parameters() if p.requires_grad], carries the one excluded parameter
-        (model.score_model.pos_embed) over from state_dict unchanged, and refuses to write unless len(shadow_params)
-        + 1 == n_params AND the single excluded name is exactly pos_embed. 193 of 193 tensors placed, 0
-        dropped, 0 missing, 0 unexpected, and every live tensor re-checked byte-identical after a real cli/generate.py
-        load_model. It also asserts cfg.dataset_args.atom_decoder equals the shipped atom_vocab IN ORDER
-        -- the one-hot column is position-in-vocab, so a permutation is otherwise undetectable. No sidecars
-        are synthesised and none are needed: molecule size comes from the input formula, not a prior.'
+      note: 'Conversion is REQUIRED, not cosmetic: the released file stores EMA weights
+        as ckpt[''ema''][''shadow_params''], a POSITIONAL LIST of 192 over the requires_grad
+        parameters in registration order -- not a state_dict -- and torch.load of
+        the raw file gives you the non-EMA state_dict instead. The converter zips
+        the list onto [(n, p) for n, p in named_parameters() if p.requires_grad],
+        carries the one excluded parameter (model.score_model.pos_embed) over from
+        state_dict unchanged, and refuses to write unless len(shadow_params) + 1 ==
+        n_params AND the single excluded name is exactly pos_embed. 193 of 193 tensors
+        placed, 0 dropped, 0 missing, 0 unexpected, and every live tensor re-checked
+        byte-identical after a real cli/generate.py load_model. It also asserts cfg.dataset_args.atom_decoder
+        equals the shipped atom_vocab IN ORDER -- the one-hot column is position-in-vocab,
+        so a permutation is otherwise undetectable. No sidecars are synthesised and
+        none are needed: molecule size comes from the input formula, not a prior.'
   data/nmrshiftdb2/chefnmr:
     kind: dataset
     host: datasets
@@ -1526,33 +1575,41 @@ assets:
       size: 4751
     license: CDLA-Sharing-1.0 AND nmrshiftdb2-Database-License
     redistribute: true
-    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
-      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
-      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
-      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. CDLA-Sharing-1.0 is
-      share-alike, not non-commercial: Sec. 2.1 grants the right to Publish, Sec. 3.1/3.3 condition it on
-      publishing Enhanced Data under an unmodified copy of the same Agreement, carrying its text or a hyperlink
-      with the files, marking changed files as changed, and preserving attribution. THOSE TERMS ARE ACCEPTED
-      AND DISCHARGED BY NOTICE.txt, which ships inside this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/>
-      and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>, the Sec. 3.1(b) change notice, and the attribution.
-      SECOND LICENCE, independent of the first and hidden by the record-level field: the Zenodo record''s
-      own README.md credits the underlying database to nmrshiftdb2, under the nmrshiftdb2 Database License
-      <https://nmrshiftdb.nmr.uni-koeln.de/nmrshiftdbhtml/nmrshiftdb2datalicense.txt> (26,584 B, sha256
-      00322cc4...5516), which is ODbL-derived, NOT CDLA and NOT any SPDX id. Our .db plus sidecars are Extraction/Re-utilisation
-      of a Substantial part of the Contents into a new database, which Sec. 4.4(b) names verbatim as a Derivative
-      Database; Publicly Conveying one requires Sec. 4.2 (same or compatible licence, its text or URI shipped
-      both with the files and in the documentation, notices intact) and Sec. 4.4 share alike. DISCHARGED
-      BY NOTICE.txt, placed in this asset''s directory per Sec. 4.2(d) because .db and .npy files cannot
-      carry notices internally; it ships the licence URI and the Sec. 4.3 notice verbatim -- "Contains information
-      from nmrshiftdb2 (www.nmrshiftdb.org), which is made available here under the nmrshiftdb2 Database
-      License". Sec. 4.5 is NON-STANDARD and the owner should know it: any software that relies on the database
-      for its functionality must itself be under an OSI-approved licence -- MolCraftDiffusion is MIT, so
-      it is satisfied, but the obligation attaches to the PLATFORM, not just to the file. CHANGED FROM THE
-      ORIGINALS (CDLA Sec. 3.1(b), nmrshiftdb2 Sec. 4.2(c)): converted from real-nmrshiftdb2/molecules.h5
-      into an ASE sqlite db plus four numpy/JSON sidecars, padded to max_n_atoms=101. Container format only
-      -- no spectrum, coordinate or SMILES value was altered. ATTRIBUTION: Xiong et al. for ChefNMR and
-      the Zenodo record; Kuhn et al. for nmrshiftdb2. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt
-      is the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION,
+      recorded 2026-08-26 after the share-alike terms were surfaced and accepted;
+      it is not an inference. The artifact is CDLA-Sharing-1.0: Zenodo record 17766755
+      (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page.
+      CDLA-Sharing-1.0 is share-alike, not non-commercial: Sec. 2.1 grants the right
+      to Publish, Sec. 3.1/3.3 condition it on publishing Enhanced Data under an unmodified
+      copy of the same Agreement, carrying its text or a hyperlink with the files,
+      marking changed files as changed, and preserving attribution. THOSE TERMS ARE
+      ACCEPTED AND DISCHARGED BY NOTICE.txt, which ships inside this asset and carries
+      the licence URIs <https://cdla.dev/sharing-1-0/> and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>,
+      the Sec. 3.1(b) change notice, and the attribution. SECOND LICENCE, independent
+      of the first and hidden by the record-level field: the Zenodo record''s own
+      README.md credits the underlying database to nmrshiftdb2, under the nmrshiftdb2
+      Database License <https://nmrshiftdb.nmr.uni-koeln.de/nmrshiftdbhtml/nmrshiftdb2datalicense.txt>
+      (26,584 B, sha256 00322cc4...5516), which is ODbL-derived, NOT CDLA and NOT
+      any SPDX id. Our .db plus sidecars are Extraction/Re-utilisation of a Substantial
+      part of the Contents into a new database, which Sec. 4.4(b) names verbatim as
+      a Derivative Database; Publicly Conveying one requires Sec. 4.2 (same or compatible
+      licence, its text or URI shipped both with the files and in the documentation,
+      notices intact) and Sec. 4.4 share alike. DISCHARGED BY NOTICE.txt, placed in
+      this asset''s directory per Sec. 4.2(d) because .db and .npy files cannot carry
+      notices internally; it ships the licence URI and the Sec. 4.3 notice verbatim
+      -- "Contains information from nmrshiftdb2 (www.nmrshiftdb.org), which is made
+      available here under the nmrshiftdb2 Database License". Sec. 4.5 is NON-STANDARD
+      and the owner should know it: any software that relies on the database for its
+      functionality must itself be under an OSI-approved licence -- MolCraftDiffusion
+      is MIT, so it is satisfied, but the obligation attaches to the PLATFORM, not
+      just to the file. CHANGED FROM THE ORIGINALS (CDLA Sec. 3.1(b), nmrshiftdb2
+      Sec. 4.2(c)): converted from real-nmrshiftdb2/molecules.h5 into an ASE sqlite
+      db plus four numpy/JSON sidecars, padded to max_n_atoms=101. Container format
+      only -- no spectrum, coordinate or SMILES value was altered. ATTRIBUTION: Xiong
+      et al. for ChefNMR and the Zenodo record; Kuhn et al. for nmrshiftdb2. Only
+      the CODE is MIT: others/nice/chefnmr/LICENSE.txt is the MIT text, "Copyright
+      (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
       returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
       and NOTHING in this asset.'
     upstream:
@@ -1561,26 +1618,31 @@ assets:
       download: https://zenodo.org/records/17766755/files/real-nmrshiftdb2.tar.gz?download=1
       doi: 10.5281/zenodo.17766755
       corpus: https://nmrshiftdb.nmr.uni-koeln.de
-      source: 'real-nmrshiftdb2.tar.gz (39,446,215 B) -> real-nmrshiftdb2/molecules.h5. REAL MEASURED 13C
-        spectra, not simulated: 23,457 molecules, the subset left after excluding SMILES present in the
-        USPTO training set. Cite Kuhn et al. for the database.'
+      source: 'real-nmrshiftdb2.tar.gz (39,446,215 B) -> real-nmrshiftdb2/molecules.h5.
+        REAL MEASURED 13C spectra, not simulated: 23,457 molecules, the subset left
+        after excluding SMILES present in the USPTO training set. Cite Kuhn et al.
+        for the database.'
       script: python docs/model_integrations/chefnmr/scripts/convert_dataset.py <unpacked>/real-nmrshiftdb2
         <out_prefix> --split test --split-suffix "" --max-n-atoms 101 --yes --keep-raw
-      note: 'FIVE FILES, ONE ASSET, and they only mean anything together: the .db carries geometry and SMILES,
-        _cond.npy the (R, 10080) binned 1H+13C condition, _conf.npy the padded conformer stack, _nconf.npy
-        the real conformer count per row, _meta.json the row count, atom_decoder, sigma_data and the db''s
-        sha256. Row i of every .npy is db row i is batch[''xyz''] == ''db_entry_i''; split them and the
-        model trains or samples against the WRONG spectrum without raising. MEASURED, not assumed: this
-        corpus ships NO 1H grid at all (h_present: 0), which is why upstream sets test_p_drop_h1nmr=1.0
-        and why ~940 MB of _cond.npy is the all-zero 1H half -- kept dense on purpose, because the embedder''s
-        learned h_mask_token is what turns those zeros into ''missing'' rather than into a flat spectrum.
-        13C bins are provably binary and 9.8% occupied. Padded to max_n_atoms=101 (not this corpus'' own
-        91) because that is what upstream''s configs/data/real-nmrshiftdb2.yaml does, and it is what lets
-        the USPTO-trained weights sample these spectra at all; its own sigma_data is 2.11, but the weights''
-        2.67 is the value that must be used at sampling time. The .db is an ASE sqlite carrying a per-row
-        ctime, so a rebuild will NOT reproduce its sha256 -- the four .npy/.json files will. Verified at
-        conversion against the source h5 on a deterministic 25-row sample, field by field, and SMILES round-tripped
-        25/25 from the corpus'' own ground-truth geometry.'
+      note: 'FIVE FILES, ONE ASSET, and they only mean anything together: the .db
+        carries geometry and SMILES, _cond.npy the (R, 10080) binned 1H+13C condition,
+        _conf.npy the padded conformer stack, _nconf.npy the real conformer count
+        per row, _meta.json the row count, atom_decoder, sigma_data and the db''s
+        sha256. Row i of every .npy is db row i is batch[''xyz''] == ''db_entry_i'';
+        split them and the model trains or samples against the WRONG spectrum without
+        raising. MEASURED, not assumed: this corpus ships NO 1H grid at all (h_present:
+        0), which is why upstream sets test_p_drop_h1nmr=1.0 and why ~940 MB of _cond.npy
+        is the all-zero 1H half -- kept dense on purpose, because the embedder''s
+        learned h_mask_token is what turns those zeros into ''missing'' rather than
+        into a flat spectrum. 13C bins are provably binary and 9.8% occupied. Padded
+        to max_n_atoms=101 (not this corpus'' own 91) because that is what upstream''s
+        configs/data/real-nmrshiftdb2.yaml does, and it is what lets the USPTO-trained
+        weights sample these spectra at all; its own sigma_data is 2.11, but the weights''
+        2.67 is the value that must be used at sampling time. The .db is an ASE sqlite
+        carrying a per-row ctime, so a rebuild will NOT reproduce its sha256 -- the
+        four .npy/.json files will. Verified at conversion against the source h5 on
+        a deterministic 25-row sample, field by field, and SMILES round-tripped 25/25
+        from the corpus'' own ground-truth geometry.'
   data/nmrshiftdb2/chefnmr-smoke:
     kind: dataset
     host: datasets
@@ -1606,61 +1668,67 @@ assets:
       size: 4751
     license: CDLA-Sharing-1.0 AND nmrshiftdb2-Database-License
     redistribute: true
-    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
-      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
-      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
-      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. A 300-row slice of
-      data/nmrshiftdb2/chefnmr, so it inherits that asset''s licences unchanged -- a subset of a Derivative
-      Database is still a Derivative Database (nmrshiftdb2 Sec. 4.4(b)), and size grants no exemption; it
-      therefore ships the same NOTICE.txt. CDLA-Sharing-1.0 is share-alike, not non-commercial: Sec. 2.1
-      grants the right to Publish, Sec. 3.1/3.3 condition it on publishing Enhanced Data under an unmodified
-      copy of the same Agreement, carrying its text or a hyperlink with the files, marking changed files
-      as changed, and preserving attribution. THOSE TERMS ARE ACCEPTED AND DISCHARGED BY NOTICE.txt, which
-      ships inside this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/> and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>,
-      the Sec. 3.1(b) change notice, and the attribution. SECOND LICENCE, independent of the first and hidden
-      by the record-level field: the Zenodo record''s own README.md credits the underlying database to nmrshiftdb2,
-      under the nmrshiftdb2 Database License <https://nmrshiftdb.nmr.uni-koeln.de/nmrshiftdbhtml/nmrshiftdb2datalicense.txt>
-      (26,584 B, sha256 00322cc4...5516), which is ODbL-derived, NOT CDLA and NOT any SPDX id. Our .db plus
-      sidecars are Extraction/Re-utilisation of a Substantial part of the Contents into a new database,
-      which Sec. 4.4(b) names verbatim as a Derivative Database; Publicly Conveying one requires Sec. 4.2
-      (same or compatible licence, its text or URI shipped both with the files and in the documentation,
-      notices intact) and Sec. 4.4 share alike. DISCHARGED BY NOTICE.txt, placed in this asset''s directory
-      per Sec. 4.2(d) because .db and .npy files cannot carry notices internally; it ships the licence URI
-      and the Sec. 4.3 notice verbatim -- "Contains information from nmrshiftdb2 (www.nmrshiftdb.org), which
-      is made available here under the nmrshiftdb2 Database License". Sec. 4.5 is NON-STANDARD and the owner
-      should know it: any software that relies on the database for its functionality must itself be under
-      an OSI-approved licence -- MolCraftDiffusion is MIT, so it is satisfied, but the obligation attaches
-      to the PLATFORM, not just to the file. CHANGED FROM THE ORIGINALS (CDLA Sec. 3.1(b), nmrshiftdb2 Sec.
-      4.2(c)): cut from the same real-nmrshiftdb2/molecules.h5 by the same one-pass converter into an ASE
-      sqlite db plus four numpy/JSON sidecars, padded to max_n_atoms=101, then limited to the first 300
-      rows. Container format only -- no spectrum, coordinate or SMILES value was altered. ATTRIBUTION: Xiong
-      et al. for ChefNMR and the Zenodo record; Kuhn et al. for nmrshiftdb2. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt
-      is the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
-      returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
-      and NOTHING in this asset.'
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION,
+      recorded 2026-08-26 after the share-alike terms were surfaced and accepted;
+      it is not an inference. The artifact is CDLA-Sharing-1.0: Zenodo record 17766755
+      (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page.
+      A 300-row slice of data/nmrshiftdb2/chefnmr, so it inherits that asset''s licences
+      unchanged -- a subset of a Derivative Database is still a Derivative Database
+      (nmrshiftdb2 Sec. 4.4(b)), and size grants no exemption; it therefore ships
+      the same NOTICE.txt. CDLA-Sharing-1.0 is share-alike, not non-commercial: Sec.
+      2.1 grants the right to Publish, Sec. 3.1/3.3 condition it on publishing Enhanced
+      Data under an unmodified copy of the same Agreement, carrying its text or a
+      hyperlink with the files, marking changed files as changed, and preserving attribution.
+      THOSE TERMS ARE ACCEPTED AND DISCHARGED BY NOTICE.txt, which ships inside this
+      asset and carries the licence URIs <https://cdla.dev/sharing-1-0/> and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>,
+      the Sec. 3.1(b) change notice, and the attribution. SECOND LICENCE, independent
+      of the first and hidden by the record-level field: the Zenodo record''s own
+      README.md credits the underlying database to nmrshiftdb2, under the nmrshiftdb2
+      Database License <https://nmrshiftdb.nmr.uni-koeln.de/nmrshiftdbhtml/nmrshiftdb2datalicense.txt>
+      (26,584 B, sha256 00322cc4...5516), which is ODbL-derived, NOT CDLA and NOT
+      any SPDX id. Our .db plus sidecars are Extraction/Re-utilisation of a Substantial
+      part of the Contents into a new database, which Sec. 4.4(b) names verbatim as
+      a Derivative Database; Publicly Conveying one requires Sec. 4.2 (same or compatible
+      licence, its text or URI shipped both with the files and in the documentation,
+      notices intact) and Sec. 4.4 share alike. DISCHARGED BY NOTICE.txt, placed in
+      this asset''s directory per Sec. 4.2(d) because .db and .npy files cannot carry
+      notices internally; it ships the licence URI and the Sec. 4.3 notice verbatim
+      -- "Contains information from nmrshiftdb2 (www.nmrshiftdb.org), which is made
+      available here under the nmrshiftdb2 Database License". Sec. 4.5 is NON-STANDARD
+      and the owner should know it: any software that relies on the database for its
+      functionality must itself be under an OSI-approved licence -- MolCraftDiffusion
+      is MIT, so it is satisfied, but the obligation attaches to the PLATFORM, not
+      just to the file. CHANGED FROM THE ORIGINALS (CDLA Sec. 3.1(b), nmrshiftdb2
+      Sec. 4.2(c)): cut from the same real-nmrshiftdb2/molecules.h5 by the same one-pass
+      converter into an ASE sqlite db plus four numpy/JSON sidecars, padded to max_n_atoms=101,
+      then limited to the first 300 rows. Container format only -- no spectrum, coordinate
+      or SMILES value was altered. ATTRIBUTION: Xiong et al. for ChefNMR and the Zenodo
+      record; Kuhn et al. for nmrshiftdb2. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt
+      is the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438),
+      and api.github.com/repos/ml-struct-bio/chefnmr returns license.spdx_id: MIT.
+      That licence covers the ported source under modules/models/chefnmr/ and NOTHING
+      in this asset.'
     upstream:
       repo: https://github.com/ml-struct-bio/chefnmr
       commit: 450fd887ebc19e946f5398f20c1d66d16db89a3a
       download: https://zenodo.org/records/17766755/files/real-nmrshiftdb2.tar.gz?download=1
       doi: 10.5281/zenodo.17766755
       corpus: https://nmrshiftdb.nmr.uni-koeln.de
-      source: 'real-nmrshiftdb2.tar.gz (39,446,215 B) -> real-nmrshiftdb2/molecules.h5. REAL MEASURED 13C
-        spectra, not simulated: 23,457 molecules, the subset left after excluding SMILES present in the
-        USPTO training set. Cite Kuhn et al. for the database.'
+      source: 'real-nmrshiftdb2.tar.gz (39,446,215 B) -> real-nmrshiftdb2/molecules.h5.
+        REAL MEASURED 13C spectra, not simulated: 23,457 molecules, the subset left
+        after excluding SMILES present in the USPTO training set. Cite Kuhn et al.
+        for the database.'
       script: python docs/model_integrations/chefnmr/scripts/convert_dataset.py <unpacked>/real-nmrshiftdb2
-        <out_prefix> --split test --split-suffix "" --limit 300 --max-n-atoms 101 --yes --keep-raw
-      note: 'The cheap trial slice: 300 of the 23,457 records, 8.1 MB instead of 1.03 GB, cut from the same
-        molecules.h5 by the same one-pass converter, so the five-file contract and every measured property
-        of the full corpus hold here too -- see data/nmrshiftdb2/chefnmr. Point `interference.spectra_source`
-        at chefnmr_smoke.db to try the model without the full fetch. NOT a benchmark: top-k over 300 records
-        is not the paper''s number.'
+        <out_prefix> --split test --split-suffix "" --limit 300 --max-n-atoms 101
+        --yes --keep-raw
+      note: 'The cheap trial slice: 300 of the 23,457 records, 8.1 MB instead of 1.03
+        GB, cut from the same molecules.h5 by the same one-pass converter, so the
+        five-file contract and every measured property of the full corpus hold here
+        too -- see data/nmrshiftdb2/chefnmr. Point `interference.spectra_source` at
+        chefnmr_smoke.db to try the model without the full fetch. NOT a benchmark:
+        top-k over 300 records is not the paper''s number.'
   data/uspto/chefnmr:
-    # NOT PUBLISHED, by the zoo owner's decision 2026-08-26: this is DERIVED
-    # data. `scripts/convert_dataset.py` rebuilds it byte-for-byte from a
-    # 6.1 GB Zenodo download in ~40 min, so hosting 29.9 GB (one file of
-    # which is 26.2 GB) buys nothing that cannot be regenerated. The
-    # licence audit in `reason:` stands and remains valid if this is ever
-    # flipped back. No `host:` field, so `stage` cannot upload it.
     kind: dataset
     rev: main
     files:
@@ -1684,52 +1752,113 @@ assets:
       size: 4751
     license: CDLA-Sharing-1.0
     redistribute: false
-    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION, recorded 2026-08-26
-      after the share-alike terms were surfaced and accepted; it is not an inference. The artifact is CDLA-Sharing-1.0:
-      Zenodo record 17766755 (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
-      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page. The ORIGINAL corpus
-      is Zenodo record 11611178, ''Unraveling Molecular Structure: A Multimodal Spectroscopic Dataset for
-      Chemistry'' (Alberts et al.), whose API record ALSO returns metadata.license {''id'': ''cdla-sharing-1.0''}
-      -- checked independently, not assumed from record 17766755''s README.md that credits it. Both layers
-      audited, both agree. CDLA-Sharing-1.0 is share-alike, not non-commercial: Sec. 2.1 grants the right
-      to Publish, Sec. 3.1/3.3 condition it on publishing Enhanced Data under an unmodified copy of the
-      same Agreement, carrying its text or a hyperlink with the files, marking changed files as changed,
-      and preserving attribution. THOSE TERMS ARE ACCEPTED AND DISCHARGED BY NOTICE.txt, which ships inside
-      this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/> and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>,
-      the Sec. 3.1(b) change notice, and the attribution. CHANGED FROM THE ORIGINALS (Sec. 3.1(b)): converted
-      from uspto/molecules.h5 into an ASE sqlite db plus four numpy/JSON sidecars, padded to max_n_atoms=101,
-      restricted to the 650,313 rows of the published split_indices_dedup/train fold. Container format only
-      -- no spectrum, coordinate or SMILES value was altered. ATTRIBUTION: Alberts et al. for the source
-      corpus; Xiong et al. for the ChefNMR record. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt
-      is the MIT text, "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
+    reason: 'PUBLISHED under CDLA-Sharing-1.0 by the zoo owner''s EXPLICIT DECISION,
+      recorded 2026-08-26 after the share-alike terms were surfaced and accepted;
+      it is not an inference. The artifact is CDLA-Sharing-1.0: Zenodo record 17766755
+      (doi 10.5281/zenodo.17766755, open access) returns metadata.license {''id'':
+      ''cdla-sharing-1.0''} from the API -- read from the API, not the landing page.
+      The ORIGINAL corpus is Zenodo record 11611178, ''Unraveling Molecular Structure:
+      A Multimodal Spectroscopic Dataset for Chemistry'' (Alberts et al.), whose API
+      record ALSO returns metadata.license {''id'': ''cdla-sharing-1.0''} -- checked
+      independently, not assumed from record 17766755''s README.md that credits it.
+      Both layers audited, both agree. CDLA-Sharing-1.0 is share-alike, not non-commercial:
+      Sec. 2.1 grants the right to Publish, Sec. 3.1/3.3 condition it on publishing
+      Enhanced Data under an unmodified copy of the same Agreement, carrying its text
+      or a hyperlink with the files, marking changed files as changed, and preserving
+      attribution. THOSE TERMS ARE ACCEPTED AND DISCHARGED BY NOTICE.txt, which ships
+      inside this asset and carries the licence URIs <https://cdla.dev/sharing-1-0/>
+      and <https://spdx.org/licenses/CDLA-Sharing-1.0.html>, the Sec. 3.1(b) change
+      notice, and the attribution. CHANGED FROM THE ORIGINALS (Sec. 3.1(b)): converted
+      from uspto/molecules.h5 into an ASE sqlite db plus four numpy/JSON sidecars,
+      padded to max_n_atoms=101, restricted to the 650,313 rows of the published split_indices_dedup/train
+      fold. Container format only -- no spectrum, coordinate or SMILES value was altered.
+      ATTRIBUTION: Alberts et al. for the source corpus; Xiong et al. for the ChefNMR
+      record. Only the CODE is MIT: others/nice/chefnmr/LICENSE.txt is the MIT text,
+      "Copyright (c) 2025 Ziyu Xiong" (1,067 B, sha256 8fb7bbe4...a438), and api.github.com/repos/ml-struct-bio/chefnmr
       returns license.spdx_id: MIT. That licence covers the ported source under modules/models/chefnmr/
-      and NOTHING in this asset. SIZE WARNING, recorded and OVERRULED by the owner (''yeah ALL'', 2026-08-26):
-      29.9 GB across five files, of which uspto_train_cond.npy alone is 26.2 GB. It is published because
-      the shipped train config reads it, but a fetch of this asset is a 29.9 GB download and most users
-      want data/nmrshiftdb2/chefnmr-smoke instead.'
+      and NOTHING in this asset. SIZE WARNING, recorded and OVERRULED by the owner
+      (''yeah ALL'', 2026-08-26): 29.9 GB across five files, of which uspto_train_cond.npy
+      alone is 26.2 GB. It is published because the shipped train config reads it,
+      but a fetch of this asset is a 29.9 GB download and most users want data/nmrshiftdb2/chefnmr-smoke
+      instead.'
     upstream:
       repo: https://github.com/ml-struct-bio/chefnmr
       commit: 450fd887ebc19e946f5398f20c1d66d16db89a3a
       download: https://zenodo.org/records/17766755/files/uspto.tar.gz?download=1
       doi: 10.5281/zenodo.17766755
       corpus: https://zenodo.org/records/11611178
-      source: uspto.tar.gz (6,109,361,010 B) -> uspto/molecules.h5 (66 GB unpacked). SIMULATED spectra over
-        molecules from US patents; 650,313 rows of the published split_indices_dedup/train fold (the fold
-        is 650,313 train / 34,095 val / 75,567 test). Cite Alberts et al. for the source corpus.
-      script: python docs/model_integrations/chefnmr/scripts/convert_dataset.py <unpacked>/uspto <out_prefix>
-        --split train --split-suffix _dedup --max-n-atoms 101 --yes
-      note: '29.9 GB: _cond.npy 26.2 GB + _conf.npy 2.36 GB + .db 1.35 GB + _nconf.npy 2.6 MB + _meta.json.
-        The condition is DENSE and stays dense on measured evidence, not by default: 1H occupancy over all
-        650,313 molecules is a mean 43.4% of the 10,000 bins non-zero (max 8,473), so the sparse (idx, val)
-        encoding that was considered would save nothing. Budget ~11 GB MORE on top for PointCloudDataset''s
-        chunk cache at chunk_size: 50000 -- 650k rows will not fit in RAM unchunked. Same five-file, one-pass
-        contract as data/nmrshiftdb2/chefnmr, same row-index join, same caveat that the ASE sqlite''s per-row
-        ctime makes the .db sha256 build-specific while the .npy files are reproducible. Conformer counts
-        are VARIABLE and _nconf.npy is what makes that safe: 649,338 molecules with 3 conformers, 743 with
-        2, 232 with 1 -- readers must sample only conf[i, :n_conf[i]] or they train against a zero-padded
-        ''conformer''. sigma_data 2.67, max_n_atoms 101, both read from the corpus and not hardcoded. The
-        66 GB unpacked h5 and the 5.7 GB tarball were deleted after row-by-row verification passed; --keep-raw
+      source: uspto.tar.gz (6,109,361,010 B) -> uspto/molecules.h5 (66 GB unpacked).
+        SIMULATED spectra over molecules from US patents; 650,313 rows of the published
+        split_indices_dedup/train fold (the fold is 650,313 train / 34,095 val / 75,567
+        test). Cite Alberts et al. for the source corpus.
+      script: python docs/model_integrations/chefnmr/scripts/convert_dataset.py <unpacked>/uspto
+        <out_prefix> --split train --split-suffix _dedup --max-n-atoms 101 --yes
+      note: '29.9 GB: _cond.npy 26.2 GB + _conf.npy 2.36 GB + .db 1.35 GB + _nconf.npy
+        2.6 MB + _meta.json. The condition is DENSE and stays dense on measured evidence,
+        not by default: 1H occupancy over all 650,313 molecules is a mean 43.4% of
+        the 10,000 bins non-zero (max 8,473), so the sparse (idx, val) encoding that
+        was considered would save nothing. Budget ~11 GB MORE on top for PointCloudDataset''s
+        chunk cache at chunk_size: 50000 -- 650k rows will not fit in RAM unchunked.
+        Same five-file, one-pass contract as data/nmrshiftdb2/chefnmr, same row-index
+        join, same caveat that the ASE sqlite''s per-row ctime makes the .db sha256
+        build-specific while the .npy files are reproducible. Conformer counts are
+        VARIABLE and _nconf.npy is what makes that safe: 649,338 molecules with 3
+        conformers, 743 with 2, 232 with 1 -- readers must sample only conf[i, :n_conf[i]]
+        or they train against a zero-padded ''conformer''. sigma_data 2.67, max_n_atoms
+        101, both read from the corpus and not hardcoded. The 66 GB unpacked h5 and
+        the 5.7 GB tarball were deleted after row-by-row verification passed; --keep-raw
         suppresses that.'
+  diffspectra/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: diffspectra_pretrained.ckpt
+      sha256: d6d88ccbf665b8d96ea9d40d7a0e3f796ef849e47d51bb59ece2e5fc795048d7
+      size: 158675525
+    license: Apache-2.0
+    redistribute: true
+    reason: 'Weights repo https://huggingface.co/AzureLeon1/DiffSpectra: API cardData.license
+      apache-2.0, tags include license:apache-2.0, model card badge agrees (no separate
+      prose statement, but this is the repo owner''s own first-party frontmatter, not
+      an auto-detected guess; no LICENSE file ships alongside the .pth files, the
+      frontmatter tag is the only artifact). Matches the code repo''s own Apache-2.0
+      (others/DiffSpectra/LICENSE, api.github.com/repos/AzureLeon1/DiffSpectra ->
+      license.spdx_id Apache-2.0). No gating, no non-commercial language, no NOASSERTION.'
+    upstream:
+      repo: https://github.com/AzureLeon1/DiffSpectra
+      download: https://huggingface.co/AzureLeon1/DiffSpectra/resolve/main/allspectra/checkpoints/checkpoint_40.pth
+      script: docs/model_integrations/diffspectra/scripts/convert_checkpoint.py
+  diffspectra/data:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: diffspectra_smoke_spectra.npz
+      sha256: 7b06d56a9825c64387b171499f18992f6d546d918c561612a272ceac3e7282c7
+      size: 1543157
+    - path: diffspectra_smoke_spectra.json
+      sha256: 112e03d69f38e6a9c7444fa592e5bea9963545627413a21163034249fda806b4
+      size: 783
+    - path: diffspectra_smoke_spectra_qm9.db
+      sha256: 55bf6078c5a7a0df769267889802c429a2f6770ac42ba1344b97710ba6c1f3d2
+      size: 110592
+    license: Apache-2.0 AND CC0-1.0
+    redistribute: true
+    reason: 'MIXED-PROVENANCE BUNDLE, checked separately per file, not blanket-assumed.
+      diffspectra_smoke_spectra.npz/.json (the IR/Raman/UV-Vis intensities): Apache-2.0,
+      from https://huggingface.co/datasets/AzureLeon1/DiffSpectra (API cardData.license
+      apache-2.0, tag license:apache-2.0, same author account as the weights repo).
+      diffspectra_smoke_spectra_qm9.db (coordinates/atoms/bonds): CC0-1.0, because
+      it is a SMILES-filtered subset of this manifest''s own data/qm9/graph3d (already
+      CC0-1.0) -- no new licence question, just a smaller slice of an already-cleared
+      corpus. No gating, no non-commercial language on either source.'
+    upstream:
+      repo: https://github.com/AzureLeon1/DiffSpectra
+      download: https://huggingface.co/datasets/AzureLeon1/DiffSpectra
+      source: 50-molecule SMILES-matched slice, joined against data/qm9_graph3d.db
+        by canonical SMILES (98.0% join rate)
+      script: docs/model_integrations/diffspectra/scripts/convert_dataset.py
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -1744,9 +1873,10 @@ models:
         extra:
           pminet: apo2mol/pminet
         data: inputs/apo2mol/8tv6
-    summary: "Apo2Mol (AAAI 2026, arXiv 2511.14559) \u2014 de-novo 3D ligand design conditioned on an\
-      \ **apo** (ligand-free) pocket, jointly generating the ligand *and* a holo-like pocket conformation.\
-      \ It is the only pocket model in this repo that emits a co-generated pocket."
+    summary: "Apo2Mol (AAAI 2026, arXiv 2511.14559) \u2014 de-novo 3D ligand design\
+      \ conditioned on an **apo** (ligand-free) pocket, jointly generating the ligand\
+      \ *and* a holo-like pocket conformation. It is the only pocket model in this\
+      \ repo that emits a co-generated pocket."
   diffdec:
     family: scaffold-decoration
     task_type: diffusion_diffdec
@@ -1758,9 +1888,9 @@ models:
       default:
         checkpoint: diffdec/pretrained
         data: data/crossdocked/diffdec
-    summary: 'DiffDec performs scaffold decoration: given a scaffold, an anchor atom and a protein pocket,
-      it grows the R-group. Architecturally a fork of DiffLinker, so it shares that model package with
-      the scaffold/R-group naming swapped in.'
+    summary: 'DiffDec performs scaffold decoration: given a scaffold, an anchor atom
+      and a protein pocket, it grows the R-group. Architecturally a fork of DiffLinker,
+      so it shares that model package with the scaffold/R-group naming swapped in.'
   diffint:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffint
@@ -1771,9 +1901,10 @@ models:
       default:
         checkpoint: diffint/pretrained
         data: data/crossdocked/diffint
-    summary: DiffInt is DiffSBDD's pocket-conditioned DDPM with explicit hydrogen-bond interaction pseudo-atoms
-      added to the pocket representation. Its entire contribution is a data-layer trick, not an architecture
-      change -- the backbone is reused verbatim.
+    summary: DiffInt is DiffSBDD's pocket-conditioned DDPM with explicit hydrogen-bond
+      interaction pseudo-atoms added to the pocket representation. Its entire contribution
+      is a data-layer trick, not an architecture change -- the backbone is reused
+      verbatim.
   difflinker:
     family: fragment-linking
     task_type: diffusion_difflinker
@@ -1783,8 +1914,9 @@ models:
     variants:
       default:
         data: data/zinc/difflinker
-    summary: DiffLinker generates the 3D linker that joins a set of given molecular fragments, keeping
-      the fragment atoms fixed and growing only the connecting atoms.
+    summary: DiffLinker generates the 3D linker that joins a set of given molecular
+      fragments, keeping the fragment atoms fixed and growing only the connecting
+      atoms.
   diffpharma:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffpharma
@@ -1795,10 +1927,11 @@ models:
       default:
         checkpoint: diffpharma/pretrained
         data: data/crossdocked/diffpharma
-    summary: "DiffPharma is a pocket-conditioned E(3)-equivariant diffusion model whose denoiser runs\
-      \ over **four** node sets \u2014 ligand (noised), full-atom pocket, H-bond pseudo-particles (`interh`),\
-      \ hydrophobic pseudo-particles (`interhp`) \u2014 with only the ligand noised. Integrated as a whole\
-      \ new architecture + task (docs/adding_new_models.md \xA72), with **no core file modified**."
+    summary: "DiffPharma is a pocket-conditioned E(3)-equivariant diffusion model\
+      \ whose denoiser runs over **four** node sets \u2014 ligand (noised), full-atom\
+      \ pocket, H-bond pseudo-particles (`interh`), hydrophobic pseudo-particles (`interhp`)\
+      \ \u2014 with only the ligand noised. Integrated as a whole new architecture\
+      \ + task (docs/adding_new_models.md \xA72), with **no core file modified**."
   diffsbdd:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffsbdd
@@ -1816,11 +1949,12 @@ models:
       fullatom_joint_moad:
         data: data/crossdocked/pockets10a
         checkpoint: diffsbdd/fullatom_joint_moad
-    summary: 'DiffSBDD is a pocket-conditioned E(3)-equivariant DDPM over 3D point clouds (coordinates
-      + 10-class element one-hot, heavy atoms only, no bonds). Both of its generative modes are ported:
-      `pocket_conditioning` (`ConditionalDDPM`, the pocket is clean context) and `joint` (`EnVariationalDiffusion`,
-      ligand and pocket diffused together), plus RePaint-style `inpaint()` in both modes for scaffold
-      hopping / linker design.'
+    summary: 'DiffSBDD is a pocket-conditioned E(3)-equivariant DDPM over 3D point
+      clouds (coordinates + 10-class element one-hot, heavy atoms only, no bonds).
+      Both of its generative modes are ported: `pocket_conditioning` (`ConditionalDDPM`,
+      the pocket is clean context) and `joint` (`EnVariationalDiffusion`, ligand and
+      pocket diffused together), plus RePaint-style `inpaint()` in both modes for
+      scaffold hopping / linker design.'
   diffsmol:
     family: shape-conditioned-diffusion
     task_type: diffusion_diffsmol
@@ -1833,10 +1967,11 @@ models:
         checkpoint: diffsmol/pretrained
         extra:
           reference_shape: inputs/diffsmol/shapes
-    summary: 'DiffSMol is a shape-conditioned hybrid DDPM: continuous Gaussian diffusion on positions
-      plus discrete D3PM categorical diffusion on atom types, conditioned on a 128x3 vector-neuron shape
-      latent via classifier-free guidance. Bonds and aromaticity were dropped by the approved gate resolution
-      (FlowMol precedent); shape conditioning was kept and is the user''s primary requirement.'
+    summary: 'DiffSMol is a shape-conditioned hybrid DDPM: continuous Gaussian diffusion
+      on positions plus discrete D3PM categorical diffusion on atom types, conditioned
+      on a 128x3 vector-neuron shape latent via classifier-free guidance. Bonds and
+      aromaticity were dropped by the approved gate resolution (FlowMol precedent);
+      shape conditioning was kept and is the user''s primary requirement.'
   ditmc:
     family: conformer-generation
     task_type: diffusion_ditmc
@@ -1854,10 +1989,11 @@ models:
       so3:
         data: data/geom/graph3d-multiconf-qm9
         checkpoint: ditmc/so3
-    summary: "DiTMC is a **conformer generator**, not a de novo generator. You hand it a molecule you\
-      \ already have \u2014 its atoms and bonds \u2014 and it returns 3D conformers of *that* molecule.\
-      \ All three published variants (`dit_ape`, `dit_rpe`, `dit_so3`) were reimplemented in PyTorch,\
-      \ including the `e3x` surface `dit_so3` depends on."
+    summary: "DiTMC is a **conformer generator**, not a de novo generator. You hand\
+      \ it a molecule you already have \u2014 its atoms and bonds \u2014 and it returns\
+      \ 3D conformers of *that* molecule. All three published variants (`dit_ape`,\
+      \ `dit_rpe`, `dit_so3`) were reimplemented in PyTorch, including the `e3x` surface\
+      \ `dit_so3` depends on."
   equifm:
     family: flow-matching
     task_type: diffusion_equifm
@@ -1868,9 +2004,9 @@ models:
     variants:
       default:
         checkpoint: equifm/pretrained
-    summary: 'EquiFM (MolFM) is equivariant flow matching with hybrid probability transport: an optimal-transport
-      path for coordinates and a variance-preserving path for atom features, integrated with a fixed-step
-      RK4 solver.'
+    summary: 'EquiFM (MolFM) is equivariant flow matching with hybrid probability
+      transport: an optimal-transport path for coordinates and a variance-preserving
+      path for atom features, integrated with a fixed-step RK4 solver.'
   flowmol_graph3d:
     family: bond-generating-flow
     task_type: diffusion_flowmol_graph3d
@@ -1882,9 +2018,9 @@ models:
     variants:
       default:
         checkpoint: flowmol_graph3d/pretrained
-    summary: FlowMol3 is a bond-generating flow-matching model over GEOM-Drugs, using CTMC masking interpolants
-      with self-conditioning and fake atoms. It emits an explicit bond table alongside coordinates, so
-      samples need no bond perception.
+    summary: FlowMol3 is a bond-generating flow-matching model over GEOM-Drugs, using
+      CTMC masking interpolants with self-conditioning and fake atoms. It emits an
+      explicit bond table alongside coordinates, so samples need no bond perception.
   gcdm:
     family: equivariant-diffusion
     task_type: diffusion
@@ -1899,9 +2035,10 @@ models:
         checkpoint: gcdm/qm9_alpha
       qm9_uncond:
         checkpoint: gcdm/qm9_uncond
-    summary: GCDM is geometry-complete diffusion built on a GCPNet backbone. Because it plugs into the
-      platform's own diffusion task, it inherits property conditioning, CFG, gradient guidance and inpainting
-      -- more generation modes than the source repo itself offers, plus a property-optimization run mode.
+    summary: GCDM is geometry-complete diffusion built on a GCPNet backbone. Because
+      it plugs into the platform's own diffusion task, it inherits property conditioning,
+      CFG, gradient guidance and inpainting -- more generation modes than the source
+      repo itself offers, plus a property-optimization run mode.
   ipdiff:
     family: pocket-conditioned-diffusion
     task_type: diffusion_ipdiff
@@ -1914,12 +2051,13 @@ models:
         extra:
           ipnet: ipdiff/ipnet
         data: data/crossdocked/pockets10a
-    summary: 'IPDiff is TargetDiff''s pocket-conditioned DDPM plus a *frozen pretrained interaction prior*
-      (IPNet/BAPNet): the prior''s 128-d node features are concatenated into the denoiser''s token embeddings
-      ("prior conditioning") and drive a learned shift term `k_t * shift_t_mlp_pos([h_bap_lig, t])` inside
-      the forward noising process and the reverse posterior ("prior shifting"). At sampling time the prior
-      is re-run on the current predicted x0 every reverse step, so each step costs roughly two forward
-      passes.'
+    summary: 'IPDiff is TargetDiff''s pocket-conditioned DDPM plus a *frozen pretrained
+      interaction prior* (IPNet/BAPNet): the prior''s 128-d node features are concatenated
+      into the denoiser''s token embeddings ("prior conditioning") and drive a learned
+      shift term `k_t * shift_t_mlp_pos([h_bap_lig, t])` inside the forward noising
+      process and the reverse posterior ("prior shifting"). At sampling time the prior
+      is re-run on the current predicted x0 every reverse step, so each step costs
+      roughly two forward passes.'
   kgdiff:
     family: pocket-conditioned-diffusion
     task_type: diffusion_kgdiff
@@ -1930,9 +2068,9 @@ models:
       default:
         checkpoint: kgdiff/pretrained
         data: data/crossdocked/pockets10a
-    summary: KGDiff = TargetDiff + a per-atom affinity ("value") head that acts as its own classifier
-      guide during sampling. Pocket-conditioned ligand generation, one checkpoint for both denoising and
-      guidance.
+    summary: KGDiff = TargetDiff + a per-atom affinity ("value") head that acts as
+      its own classifier guide during sampling. Pocket-conditioned ligand generation,
+      one checkpoint for both denoising and guidance.
   ligandiff:
     family: metal-complex-diffusion
     task_type: diffusion_ligandiff
@@ -1943,9 +2081,10 @@ models:
       default:
         checkpoint: ligandiff/pretrained
         data: data/tmc/ligandiff
-    summary: LigandDiff (JCTC 2024) regenerates one ligand of a 3D transition-metal complex while holding
-      the metal and the remaining ligands fixed. It is a fork of DiffLinker's EDM stack, so the already-integrated
-      `modules/tasks/diffusion_difflinker.py` served as the template.
+    summary: LigandDiff (JCTC 2024) regenerates one ligand of a 3D transition-metal
+      complex while holding the metal and the remaining ligands fixed. It is a fork
+      of DiffLinker's EDM stack, so the already-integrated `modules/tasks/diffusion_difflinker.py`
+      served as the template.
   ligandiff_multi:
     family: metal-complex-diffusion
     task_type: diffusion_ligandiff_multi
@@ -1957,9 +2096,9 @@ models:
       default:
         checkpoint: ligandiff_multi/pretrained
         data: data/tmc/ligandiff-multi
-    summary: multi-LigandDiff regenerates several ligands at once around a fixed transition-metal centre,
-      from replacing two ligands up to building a whole octahedral coordination sphere. It reuses the
-      LigandDiff model package unchanged.
+    summary: multi-LigandDiff regenerates several ligands at once around a fixed transition-metal
+      centre, from replacing two ligands up to building a whole octahedral coordination
+      sphere. It reuses the LigandDiff model package unchanged.
   loqi:
     family: conformer-generation
     task_type: diffusion_loqi
@@ -1974,9 +2113,9 @@ models:
       pretrained:
         data: data/chembl3d/stereo-200
         checkpoint: loqi/pretrained
-    summary: 'Two variants shipped from one task module, one per released checkpoint: `diffusion_loqi`
-      (VDM diffusion, 25 steps, self-conditioning) and `diffusion_loqi_flow` (continuous flow matching,
-      velocity prediction, rigid OT).'
+    summary: 'Two variants shipped from one task module, one per released checkpoint:
+      `diffusion_loqi` (VDM diffusion, 25 steps, self-conditioning) and `diffusion_loqi_flow`
+      (continuous flow matching, velocity prediction, rigid OT).'
   midi:
     family: bond-generating-diffusion
     task_type: diffusion_midi
@@ -1988,9 +2127,10 @@ models:
       default:
         checkpoint: midi/pretrained
         data: data/qm9/graph3d-4k
-    summary: "MiDi is the first model in this platform that **generates the molecular graph itself** \u2014\
-      \ bond orders and formal charges are diffused jointly with the 3D coordinates, so a sample arrives\
-      \ with an explicit bond table instead of needing post-hoc perception (xyz2mol / OpenBabel)."
+    summary: "MiDi is the first model in this platform that **generates the molecular\
+      \ graph itself** \u2014 bond orders and formal charges are diffused jointly\
+      \ with the 3D coordinates, so a sample arrives with an explicit bond table instead\
+      \ of needing post-hoc perception (xyz2mol / OpenBabel)."
   nextmol:
     family: llm-plus-diffusion
     task_type: diffusion_nextmol
@@ -2004,9 +2144,10 @@ models:
         extra:
           mollama: nextmol/mollama
         data: data/geom/graph3d-multiconf-qm9
-    summary: NExT-Mol pairs a 1D molecular language model (MoLlama, which proposes a molecule as a SELFIES
-      string) with DMT, a diffusion transformer that predicts that molecule's 3D conformer. Only the 3D
-      half was converted; MoLlama is used as published.
+    summary: NExT-Mol pairs a 1D molecular language model (MoLlama, which proposes
+      a molecule as a SELFIES string) with DMT, a diffusion transformer that predicts
+      that molecule's 3D conformer. Only the 3D half was converted; MoLlama is used
+      as published.
   pmdm:
     family: pocket-conditioned-diffusion
     task_type: diffusion_pmdm
@@ -2017,10 +2158,11 @@ models:
       default:
         checkpoint: pmdm/pretrained
         data: data/crossdocked/pmdm
-    summary: "PMDM is integrated **as intended \u2014 pocket-conditioned, structure-based 3D molecular\
-      \ generation**. The ligand point cloud is the diffused variable; the protein pocket point cloud\
-      \ is a fixed conditioning input carrying genuine CrossDocked pocket data (element, amino-acid type,\
-      \ backbone flag). No dummy pocket, no degenerate unconditional mode."
+    summary: "PMDM is integrated **as intended \u2014 pocket-conditioned, structure-based\
+      \ 3D molecular generation**. The ligand point cloud is the diffused variable;\
+      \ the protein pocket point cloud is a fixed conditioning input carrying genuine\
+      \ CrossDocked pocket data (element, amino-acid type, backbone flag). No dummy\
+      \ pocket, no degenerate unconditional mode."
   silvr:
     family: sampling-method
     task_type: (interference only)
@@ -2030,10 +2172,10 @@ models:
     variants:
       default:
         data: inputs/silvr/reference
-    summary: 'SILVR is **not a new model or backbone**. It is an inference-time guidance / generation
-      method layered on the existing EDM (`EnVariationalDiffusion` + `GeomMolecularGenerative`). It adds
-      no network, no loss, no dataset and no `tasks.task_type`; it adds one new `interference.task_type:
-      silvr`.'
+    summary: 'SILVR is **not a new model or backbone**. It is an inference-time guidance
+      / generation method layered on the existing EDM (`EnVariationalDiffusion` +
+      `GeomMolecularGenerative`). It adds no network, no loss, no dataset and no `tasks.task_type`;
+      it adds one new `interference.task_type: silvr`.'
   edm-qm9:
     family: equivariant-diffusion
     task_type: diffusion
@@ -2147,12 +2289,13 @@ models:
       geom_uncond:
         checkpoint: jodo/geom_uncond
         data: data/geom/graph3d-val
-    summary: JODO diffuses coordinates, atom types, formal charges AND bond orders jointly in one continuous
-      process, so a sample arrives with its bond table already drawn. It is the bond-generating model
-      that holds up when the sampling budget is cut (upstream reports 1000 steps down to ~50), and the
-      only one here that also generates to a requested QM9 property value. The GEOM variant is converted
-      and verified tensor-for-tensor, and generates drug-sized molecules (33-51 atoms, 4/4 valid on a
-      50-step check).
+    summary: JODO diffuses coordinates, atom types, formal charges AND bond orders
+      jointly in one continuous process, so a sample arrives with its bond table already
+      drawn. It is the bond-generating model that holds up when the sampling budget
+      is cut (upstream reports 1000 steps down to ~50), and the only one here that
+      also generates to a requested QM9 property value. The GEOM variant is converted
+      and verified tensor-for-tensor, and generates drug-sized molecules (33-51 atoms,
+      4/4 valid on a 50-step check).
   etflow:
     family: conformer-generation
     task_type: diffusion_etflow
@@ -2171,15 +2314,17 @@ models:
       qm9-o3:
         checkpoint: etflow/qm9_o3
         data: data/geom/graph3d-multiconf-qm9
-    summary: ET-Flow is a conformer generator, not a de novo generator -- you hand it a molecule's atoms
-      and bonds and it returns 3D conformers of that molecule. Equivariant flow matching from a harmonic
-      prior, ~8.3M params. Both published o3 variants are converted tensor-for-tensor (488/488 drugs-o3,
-      492/492 qm9-o3). drugs-o3 is the default, for drug-like molecules over the 16-element vocab; qm9-o3
-      covers small C/N/O/F molecules and scored 0.029 A median RMSD on held-out QM9. drugs-so3 is deliberately
-      not shipped -- upstream's yaml and its loader schema disagree about post-hoc parity switching. One
-      connected molecule at a time -- a salt or multi-fragment input makes the harmonic prior diverge,
-      usually without raising. Training on GEOM-Drugs needs a Drugs db you build yourself; the bundled
-      train config reads the QM9 corpus above.
+    summary: ET-Flow is a conformer generator, not a de novo generator -- you hand
+      it a molecule's atoms and bonds and it returns 3D conformers of that molecule.
+      Equivariant flow matching from a harmonic prior, ~8.3M params. Both published
+      o3 variants are converted tensor-for-tensor (488/488 drugs-o3, 492/492 qm9-o3).
+      drugs-o3 is the default, for drug-like molecules over the 16-element vocab;
+      qm9-o3 covers small C/N/O/F molecules and scored 0.029 A median RMSD on held-out
+      QM9. drugs-so3 is deliberately not shipped -- upstream's yaml and its loader
+      schema disagree about post-hoc parity switching. One connected molecule at a
+      time -- a salt or multi-fragment input makes the harmonic prior diverge, usually
+      without raising. Training on GEOM-Drugs needs a Drugs db you build yourself;
+      the bundled train config reads the QM9 corpus above.
   syncogen:
     family: synthesizable-generation
     task_type: diffusion_syncogen
@@ -2209,16 +2354,19 @@ models:
           vocabulary: syncogen/vocabulary
         configs:
         - syncogen_train.yaml
-    summary: 'SynCoGen (arXiv 2507.11818) is the only model here whose output comes with a recipe: every
-      molecule is assembled from catalogue building blocks joined by real reactions, so what you get is
-      something you can order and make. Nodes are building blocks and edges are reaction identities --
-      masked (absorbing) discrete diffusion over that graph, run jointly with flow matching over atom
-      coordinates, and chemical bonds are DERIVED by RDKit assembly at the end rather than generated.
-      Two released checkpoints, two task_types: `diffusion_syncogen` (unconditional) and `diffusion_syncogen_pharm`
-      (conditioned on one reference ligand''s pharmacophores; not CFG -- the points enter as extra virtual
-      nodes). Molecules top out at five building blocks and are limited to the 93-block, 19-reaction catalogue.
-      NOTE: `syncogen/vocabulary` is required to instantiate either checkpoint and is NOT redistributable
-      -- build it locally with `MolCraftDiff zoo recipe syncogen/vocabulary`.'
+    summary: 'SynCoGen (arXiv 2507.11818) is the only model here whose output comes
+      with a recipe: every molecule is assembled from catalogue building blocks joined
+      by real reactions, so what you get is something you can order and make. Nodes
+      are building blocks and edges are reaction identities -- masked (absorbing)
+      discrete diffusion over that graph, run jointly with flow matching over atom
+      coordinates, and chemical bonds are DERIVED by RDKit assembly at the end rather
+      than generated. Two released checkpoints, two task_types: `diffusion_syncogen`
+      (unconditional) and `diffusion_syncogen_pharm` (conditioned on one reference
+      ligand''s pharmacophores; not CFG -- the points enter as extra virtual nodes).
+      Molecules top out at five building blocks and are limited to the 93-block, 19-reaction
+      catalogue. NOTE: `syncogen/vocabulary` is required to instantiate either checkpoint
+      and is NOT redistributable -- build it locally with `MolCraftDiff zoo recipe
+      syncogen/vocabulary`.'
   oareactdiff:
     family: reaction-diffusion
     task_type: diffusion_oareactdiff
@@ -2249,20 +2397,24 @@ models:
         data: data/transition1x/reactions_rpsb
         configs:
         - reactot_generate.yaml
-    summary: 'React-OT (Duan, Liu, Du, ..., Kulik, Nature Machine Intelligence 2025, doi:10.1038/s42256-025-01010-0;
-      preprint arXiv:2404.13430 under a different title) generates the transition state of an elementary
-      reaction from its reactant and product geometries. It is the successor to oareactdiff and shares that
-      model''s object-aware LEFTNet backbone and Transition1x corpus, but it is NOT a diffusion model: it
-      integrates a Schrodinger bridge / optimal-transport process from the R/P midpoint (r_pos + p_pos)/2
-      to the TS, so the `diffusion_` task_type prefix is a platform naming convention, not a claim about
-      the objective. THE MODEL IS DETERMINISTIC (ot_ode: true, sigma: 0.0 -- no Gaussian is drawn anywhere),
-      so ONE SAMPLE IS THE ANSWER: num_generate: 20 returns twenty identical files, and there is no best-of-N
-      to rank and no confidence model to rank it with, which is the paper''s central claim. pos_only --
-      it predicts coordinates and copies atom identities from the input reaction, so there is no unconditional
-      mode and you must supply a reaction. `num_steps` IS upstream''s --nfe, the number of network evaluations;
-      10 is the documented default and accuracy is flat from there to 100. Requires data/transition1x/reactions_rpsb
-      specifically -- see that asset''s note for why the sibling data/transition1x/reactions is NOT a valid
-      substitute for this model.'
+    summary: 'React-OT (Duan, Liu, Du, ..., Kulik, Nature Machine Intelligence 2025,
+      doi:10.1038/s42256-025-01010-0; preprint arXiv:2404.13430 under a different
+      title) generates the transition state of an elementary reaction from its reactant
+      and product geometries. It is the successor to oareactdiff and shares that model''s
+      object-aware LEFTNet backbone and Transition1x corpus, but it is NOT a diffusion
+      model: it integrates a Schrodinger bridge / optimal-transport process from the
+      R/P midpoint (r_pos + p_pos)/2 to the TS, so the `diffusion_` task_type prefix
+      is a platform naming convention, not a claim about the objective. THE MODEL
+      IS DETERMINISTIC (ot_ode: true, sigma: 0.0 -- no Gaussian is drawn anywhere),
+      so ONE SAMPLE IS THE ANSWER: num_generate: 20 returns twenty identical files,
+      and there is no best-of-N to rank and no confidence model to rank it with, which
+      is the paper''s central claim. pos_only -- it predicts coordinates and copies
+      atom identities from the input reaction, so there is no unconditional mode and
+      you must supply a reaction. `num_steps` IS upstream''s --nfe, the number of
+      network evaluations; 10 is the documented default and accuracy is flat from
+      there to 100. Requires data/transition1x/reactions_rpsb specifically -- see
+      that asset''s note for why the sibling data/transition1x/reactions is NOT a
+      valid substitute for this model.'
   chefnmr:
     family: structure-elucidation
     task_type: diffusion_chefnmr
@@ -2283,27 +2435,49 @@ models:
         data: data/nmrshiftdb2/chefnmr-smoke
       train-uspto:
         data: data/uspto/chefnmr
-    summary: 'ChefNMR (Xiong, Zhang, Alauddin, Cheng, An, Seyedsayamdost, Zhong, NeurIPS 2025, arXiv:2512.03127)
-      runs structure elucidation backwards from the spectrum: you hand it a measured 1H/13C NMR pair plus
-      the molecular formula and it returns a ranked shortlist of complete 3D structures for the unknown. It
-      is the only model in this zoo conditioned on an experimental MEASUREMENT rather than on a target, a
-      pocket or a scaffold, and it rides the shared ElucidationGenerator seam rather than a bespoke sampling
-      loop. THE FORMULA IS AN INPUT, never an output (upstream known_atoms: true), so it has no unconditional
-      mode and deliberately no sample() -- element composition is fixed by the record and is therefore not
-      evidence that the weights loaded; geometry, connectivity and exact identification are. Bonds are perceived
-      from the generated geometry by RDKit afterwards, so RDKit perception, not the model, is the ceiling
-      on every top-k number. Candidates are drawn as a BATCH, not a loop, and upstream''s published top-k
-      is over the first k drawn -- generation order is the ranking, there is no scorer. The shipped default
-      (ChefNMR-S, USPTO-trained, epoch 6299) is measured here at top-1 8/20 exact, max Tanimoto@10 0.671,
-      87.9% bond perception and 92.8% connected over 20 NMRShiftDB2 records x 100 candidates at 50 Heun steps
-      and guidance_scale 1.0. That figure is 13C-ONLY and is not the model''s ceiling: NMRShiftDB2 ships no
-      1H grid at all, so half the condition vector is zeros the embedder reads through its learned mask token
-      -- which is exactly why upstream''s own sampling script sets test_p_drop_h1nmr=1.0. EVERY ASSET IS PUBLISHED
-      UNDER SHARE-ALIKE TERMS, NOT UNDER THIS PROJECT''S MIT LICENCE -- the zoo owner''s explicit decision
-      of 2026-08-26. The code is MIT but the data and weights are CDLA-Sharing-1.0, with the NMRShiftDB2 corpus
-      carrying the separate ODbL-derived nmrshiftdb2 Database License on top; both permit redistribution,
-      and both oblige you to the same terms if you pass the files on. Every asset ships a NOTICE.txt carrying
-      the licence URIs, the change notice and the attribution (Xiong et al. for ChefNMR; Kuhn et al. for nmrshiftdb2;
-      Alberts et al. for the USPTO corpus) -- read it before redistributing, and see each asset''s `reason`,
-      or `MolCraftDiff zoo recipe <asset>`, for the full audit. data/uspto/chefnmr is the 29.9 GB training
+    summary: 'ChefNMR (Xiong, Zhang, Alauddin, Cheng, An, Seyedsayamdost, Zhong, NeurIPS
+      2025, arXiv:2512.03127) runs structure elucidation backwards from the spectrum:
+      you hand it a measured 1H/13C NMR pair plus the molecular formula and it returns
+      a ranked shortlist of complete 3D structures for the unknown. It is the only
+      model in this zoo conditioned on an experimental MEASUREMENT rather than on
+      a target, a pocket or a scaffold, and it rides the shared ElucidationGenerator
+      seam rather than a bespoke sampling loop. THE FORMULA IS AN INPUT, never an
+      output (upstream known_atoms: true), so it has no unconditional mode and deliberately
+      no sample() -- element composition is fixed by the record and is therefore not
+      evidence that the weights loaded; geometry, connectivity and exact identification
+      are. Bonds are perceived from the generated geometry by RDKit afterwards, so
+      RDKit perception, not the model, is the ceiling on every top-k number. Candidates
+      are drawn as a BATCH, not a loop, and upstream''s published top-k is over the
+      first k drawn -- generation order is the ranking, there is no scorer. The shipped
+      default (ChefNMR-S, USPTO-trained, epoch 6299) is measured here at top-1 8/20
+      exact, max Tanimoto@10 0.671, 87.9% bond perception and 92.8% connected over
+      20 NMRShiftDB2 records x 100 candidates at 50 Heun steps and guidance_scale
+      1.0. That figure is 13C-ONLY and is not the model''s ceiling: NMRShiftDB2 ships
+      no 1H grid at all, so half the condition vector is zeros the embedder reads
+      through its learned mask token -- which is exactly why upstream''s own sampling
+      script sets test_p_drop_h1nmr=1.0. EVERY ASSET IS PUBLISHED UNDER SHARE-ALIKE
+      TERMS, NOT UNDER THIS PROJECT''S MIT LICENCE -- the zoo owner''s explicit decision
+      of 2026-08-26. The code is MIT but the data and weights are CDLA-Sharing-1.0,
+      with the NMRShiftDB2 corpus carrying the separate ODbL-derived nmrshiftdb2 Database
+      License on top; both permit redistribution, and both oblige you to the same
+      terms if you pass the files on. Every asset ships a NOTICE.txt carrying the
+      licence URIs, the change notice and the attribution (Xiong et al. for ChefNMR;
+      Kuhn et al. for nmrshiftdb2; Alberts et al. for the USPTO corpus) -- read it
+      before redistributing, and see each asset''s `reason`, or `MolCraftDiff zoo
+      recipe <asset>`, for the full audit. data/uspto/chefnmr is the 29.9 GB training
       corpus, of which one file is 26.2 GB: fetch it only if you are actually training.'
+  diffspectra:
+    family: structure-elucidation
+    task_type: diffusion_diffspectra
+    tags:
+    - structure-elucidation
+    - spectrum-conditioned
+    - bond-generating
+    - qm9
+    variants:
+      default:
+        checkpoint: diffspectra/pretrained
+        data: diffspectra/data
+        configs:
+        - diffspectra_train.yaml
+        - diffspectra_generate.yaml

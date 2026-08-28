@@ -1,0 +1,71 @@
+# QM9 as a 3D molecular graph with EXPLICIT BONDS, shaped for DiffSpectra.
+# Modelled directly on configs/data/jodo_qm9_dataset.yaml -- DiffSpectra's
+# DMT is JODO's own architecture family, and both want the same kekulized,
+# dense-bond QM9 distribution for the same reason.
+#
+# Coordinates/atoms/bonds: reuses the platform's EXISTING db, built off the
+# same raw gdb9.sdf + uncharacterized.txt QM9S itself is built from:
+#   MolCraftDiff data import-graph3d qm9 data/qm9_raw data/qm9_graph3d.db
+# What that db does NOT have is the IR/Raman/UV-Vis spectra -- those live in
+# QM9S (DiffSpectra's own HuggingFace dataset) and ride a SMILES-keyed
+# sidecar instead (tasks.spectra_sidecar_path), built + joined by
+# docs/model_integrations/diffspectra/scripts/convert_dataset.py. That
+# script ALSO writes a filtered db containing only the molecules its sidecar
+# covers (`<out>_qm9.db`) -- point ase_db_path at THAT db, not the full
+# data/qm9_graph3d.db, unless spectra_sidecar_path covers every molecule in
+# it (every miss raises, by design -- see diffusion_diffspectra.py).
+#
+# kekulize: true is LOAD-BEARING, not cosmetic. DiffSpectra's own QM9S loader
+# reads gdb9 with sanitize=False (datasets/qm9s_dataset.py:222), so its runs
+# set include_aromatic: false and the model has NO aromatic channel
+# (edge_ch: 2). An aromatic bond reaching an edge_ch: 2 model decodes to "no
+# bond" -- silently, with no error. Identical situation to JODO's QM9 config.
+#
+# Bond classes: 0=none 1=SINGLE 2=DOUBLE 3=TRIPLE 4=AROMATIC.
+_target_: MolecularDiffusion.runmodes.train.DataModule
+
+root: data/
+filename: null
+ase_db_path: data/qm9_graph3d.db   # override to a convert_dataset.py `_qm9.db` output
+dataset_name: qm9s_diffspectra_kekulized
+
+# DiffSpectra's QM9 atom order (datasets/qm9s_dataset.py:206) -- H first,
+# same as JODO/MiDi.
+atom_vocab: [H, C, N, O, F]
+with_hydrogen: True
+use_ohe_feature: True
+allow_unknown: False
+node_feature_choice: null
+use_row_data_features: false
+max_atom: 29                # config.data.max_node, diffspectra_qm9s.py:29
+forbidden_atom: []
+
+data_type: graph3d
+
+# --- graph3d-specific ------------------------------------------------------
+bond_collate: dense         # padded (B,N,N) int matrix; the task compresses it
+center_coords: True
+graph3d_stats: True         # supplies the molecule-size histogram (node_dist_model)
+kekulize: True               # see the note above -- load-bearing for edge_ch: 2
+use_stored_split: True
+
+# --- shared DataModule knobs ---------------------------------------------
+train_ratio: 0.8
+batch_size: 128              # upstream's per-GPU QM9S batch size (diffspectra_qm9s.py:95-96)
+num_workers: 0
+data_efficient_collator: False
+load_pkl: null
+save_pkl: null
+chunk_size: null
+
+# Present for schema parity with the point-cloud configs; unused here.
+xyz_dir: null
+coord_file: null
+natoms_file: null
+edge_type: fully_connected
+radius: 4.0
+n_neigh: 5
+compact_drop_edge_index: false
+compact_drop_tags: false
+compact_pack_ohe: false
+compact_int8_z: false

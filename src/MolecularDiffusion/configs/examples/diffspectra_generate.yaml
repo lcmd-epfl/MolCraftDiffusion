@@ -1,0 +1,99 @@
+# DiffSpectra BENCHMARK elucidation: the CONVERTED PRETRAINED weights
+# (allspectra variant, upstream checkpoint_40 / step 1,000,001) run over
+# QM9S spectra, scored against the known answer.
+#
+#   MolCraftDiff generate configs/diffspectra_generate.yaml
+#
+# ################## TWO WAYS TO POINT AT INPUT #########################
+#
+#   (1) A CONVERTED CORPUS  <- this config
+#       `spectra_source` is a `.npz` written by
+#       docs/model_integrations/diffspectra/scripts/convert_dataset.py --
+#       SMILES-keyed, so top-k accuracy and Tanimoto are reported. Use it to
+#       reproduce published numbers; it can only describe molecules whose
+#       structure you already have.
+#
+#   (2) A BARE UNKNOWN-SPECTRA JSON
+#       `spectra_source` is a JSON file: per record a name, IR/Raman/UV-Vis
+#       intensities on the QM9S grid (701/3501/3501 points), and optionally
+#       a known size (`n_atoms`, NOT a full formula -- DiffSpectra generates
+#       the atom types itself) or a reference `smiles`. This is the REAL
+#       USE CASE: here is a spectrum of an unknown, what is it?
+#
+# Nothing selects between the two but the path itself: a `.npz` (with that
+# shape) is read as a converted corpus, anything else as a JSON file of
+# unknowns. There is no mode flag.
+# #######################################################################
+#
+# WHAT IT CONDITIONS ON: one or three raw spectra (spectra_version below),
+# log10(x+1)-normalized inside the task. NOT a formula -- unlike ChefNMR,
+# DiffSpectra generates atom types AND bonds itself, jointly with the
+# geometry, from noise.
+#
+# ============================ PREREQUISITES ============================
+# The weights (793 MB download -> a 151 MB converted checkpoint):
+#   curl -L -o checkpoint_40_allspectra.pth \
+#     'https://huggingface.co/AzureLeon1/DiffSpectra/resolve/main/allspectra/checkpoints/checkpoint_40.pth'
+#   python docs/model_integrations/diffspectra/scripts/convert_checkpoint.py \
+#     checkpoint_40_allspectra.pth \
+#     docs/model_integrations/diffspectra/checkpoints/converted/diffspectra_pretrained.ckpt
+#
+# The example corpus below is the 50-molecule SMILES-matched slice
+# scripts/convert_dataset.py's default settings produce. Build the full
+# one (per configs/diffspectra_train.yaml's header) to reproduce the
+# paper's numbers over the whole QM9S test fold.
+#
+# Apache-2.0 (repo licence); the HuggingFace model card carries no separate
+# weights licence.
+# =======================================================================
+#
+# KNOWN LIMITATION BAKED INTO THESE DEFAULTS: QM9S-scale only
+# (max_atom: 29, <=9 heavy atoms). And the node-count prior
+# (`node_dist_model`, used only when a record's size is unknown) is
+# SYNTHESISED by the platform from data/qm9_graph3d.db -- upstream itself
+# has no such prior (its own eval script reads sizes off the paired ground
+# truth), see the integration plan's approved node-count-prior decision.
+#
+# VERIFIED RUN (2026-08-26, converted pretrained weights, this config's
+# example corpus, first 3 records, 10 candidates, 100 sampling steps --
+# add `interference.max_records=3 num_candidates=10 num_steps=100` to
+# reproduce): top-1 0.667, max Tanimoto@1 0.667, validity 1.0, bond-to-mol
+# reconstruction 30/30 (100%). Not a paper-comparable number (3 tiny
+# molecules, 100 of upstream's 1000 sampling steps) -- it proves the
+# converted weights generate chemically valid, largely correct molecules,
+# not that this reproduces the paper's 40.76% top-1 over the full QM9S test
+# fold (which needs the full corpus and num_steps=1000, upstream's default).
+
+defaults:
+  - tasks: diffusion_diffspectra
+  - interference: gen_elucidation
+  - _self_
+
+name: "diffspectra_generate"
+
+# cli/generate.py accepts a file or a directory here.
+chkpt_directory: ${asset:diffspectra/pretrained/diffspectra_pretrained.ckpt}
+
+atom_vocab: [H, C, N, O, F]
+seed: 42
+diffusion_steps: 0        # 0 => leave the model's own noise schedule alone
+
+# The architecture is also carried inside the converted checkpoint's
+# hyper_parameters.model_config, so this block is here only to be read.
+tasks:
+  spectra_version: allspectra
+
+interference:
+  # Route (1): the converted corpus written by scripts/convert_dataset.py.
+  # For route (2), point this at a JSON file of unknown spectra instead --
+  # see the header comment above.
+  spectra_source: ${asset:diffspectra/data/diffspectra_smoke_spectra.npz}
+  spectra_index: 0
+  max_records: null          # null => every record in the corpus
+  num_candidates: 100        # upstream's own diffusion_samples for top-10
+  batch_size: 10             # k is a BATCH dimension, never a Python loop
+  num_steps: 1000            # upstream's own sampling.steps default
+  guidance_scale: null       # DiffSpectra has no CFG branch -- must stay null
+  top_k: [1, 10]
+  drop_channels: []          # no maskable channels declared -- see the task
+  output_path: "diffspectra_generate"
