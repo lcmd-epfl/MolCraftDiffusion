@@ -1,0 +1,106 @@
+# @package _global_
+# Transition-state generation for GoFlow.
+#
+#   MolCraftDiff generate examples/goflow_generate.yaml
+#
+# Galustian, Mark, Karwounopoulos, Kovar & Heid, "GoFlow: Efficient
+# Transition State Geometry Prediction with Flow Matching and
+# E(3)-Equivariant Neural Networks", ChemRxiv (2025),
+# doi:10.26434/chemrxiv-2025-bk2rh.
+#
+# NO PRETRAINED CHECKPOINT EXISTS FOR THIS MODEL, ANYWHERE. Verified
+# directly: a search of the entire upstream checkout (`find . -iname
+# "*.ckpt"` inside others/nice/goflow) returns nothing; the only weight
+# files present belong to the vendored TsDiff baseline (a different,
+# separate model, out of scope for this integration -- see
+# INTEGRATION_PLAN.md). So, UNLIKE configs/examples/oareactdiff_generate.yaml
+# / configs/examples/reactot_generate.yaml, `chkpt_directory` below is `???`
+# -- train one yourself first, then point it at your own run:
+#
+#   MolCraftDiff zoo fetch --model goflow
+#   MolCraftDiff train configs/goflow_train.yaml
+#   find training_outputs/goflow -name last.ckpt
+#   MolCraftDiff generate examples/goflow_generate.yaml \
+#     chkpt_directory=training_outputs/goflow/lightning_logs/version_0/checkpoints/last.ckpt
+#
+# `last.ckpt` is the newest epoch; point at one of the `epoch=...`
+# checkpoints in the same directory to sample from the best-scoring epoch
+# instead.
+#
+# WHAT THE MODEL CONDITIONS ON. A reaction's condensed graph of reaction
+# (CGR): the reactant's bonds and the product's bonds on one shared
+# atom-mapped index, plus each atom's RDKit descriptors (aromaticity,
+# formal charge, hybridisation, H count, valence, degree, chirality, ring
+# membership). NOT 3D geometry -- reactant/product coordinates are parsed
+# from the source data and written to reactant.xyz/product.xyz alongside
+# the samples, but the model itself never reads them. There is no
+# unconditional mode: it always needs a reactant and a product, atom-mapped
+# to each other, exactly like OA-ReactDiff/React-OT need a reaction, just
+# connectivity rather than a 3D starting guess.
+#
+# SAMPLING ALGORITHM. `num_generate` independent forward-Euler integrations
+# of the learned velocity field, `num_steps` steps each, starting from an
+# independent Gaussian draw. Unlike React-OT, this IS stochastic -- expect
+# different draws to differ. Unlike OA-ReactDiff, there is no RePaint
+# re-noising and no best-of-N ranking: every sample comes back independently
+# and unranked (upstream's own GT-anchored median-consensus ensembling
+# requires a KNOWN transition state and cannot be reproduced for a real,
+# blind reaction -- see INTEGRATION_PLAN.md's Repo Inspection caveat).
+# Ranking or filtering the ensemble is left to you.
+#
+# WHAT YOU GET. `molecule_NNN.xyz` transition states, plus `reactant.xyz`,
+# `product.xyz` and `reference_ts.xyz` (the corpus's own DFT transition
+# state, if the reaction source carries one) written once, so a sample can
+# be judged against its own inputs without going back to the pickle.
+#
+# KNOWN LIMITATIONS baked into the defaults:
+#
+#   * The reaction source is the FULL converted RDB7 corpus (the platform's
+#     own conversion of Spiekermann et al.'s raw rdb7_full.csv/.xyz,
+#     Zenodo record 13328872, CC-BY-4.0). `split: test` + `reaction_index: 0`
+#     below indexes the first of random_split.pkl's 1,194 held-out
+#     reactions.
+#   * H / C / N / O only in practice ("F" is in the output vocabulary but
+#     never populated -- RDB7 is a C/H/N/O corpus), reactions of roughly
+#     4-23 atoms.
+#   * The output still needs a DFT saddle-point confirmation, same as every
+#     other TS model in this platform. GoFlow's own reported accuracy
+#     (recovering the paper's exact numbers) additionally requires the
+#     GT-anchored ensembling this integration does not port -- see the
+#     Repo Inspection caveat in INTEGRATION_PLAN.md.
+defaults:
+  - tasks: diffusion_goflow
+  - interference: gen_goflow_ts
+  - _self_
+
+name: "goflow_generate"
+# No pretrained checkpoint exists upstream -- see the header above. Fill
+# this in with your own training run before generating.
+chkpt_directory: ???
+# Column order the network's output is decoded against (see
+# diffusion_goflow.py: atom identity is copied through from the input
+# reaction, never predicted). "F" is in the vocabulary but absent from RDB7.
+atom_vocab: [H, C, N, O, F]
+seed: 42
+
+interference:
+  reaction_source: ${asset:data/rdb7/reactions/goflow_rdb7_reactions.pkl}
+  feat_dict_file: ${asset:data/rdb7/reactions/feat_dict.pkl}
+  split_path: ${asset:data/rdb7/reactions}
+  split_file: random_split.pkl
+  split: test
+  reaction_index: 0
+
+  # The actual headline run's own ensemble size
+  # (train_test_all_splits.sh's model.num_samples=25). Every draw is
+  # independent and unranked -- see "SAMPLING ALGORITHM" above.
+  num_generate: 25
+  batch_size: 4
+
+  # The actual headline run's own Euler step count
+  # (train_test_all_splits.sh's model.num_steps=25). Upstream's own
+  # step-count ablation (test_ablate_steps.sh) shows accuracy close to
+  # saturated by 10-25 steps.
+  num_steps: 25
+
+  output_path: "generated_goflow"

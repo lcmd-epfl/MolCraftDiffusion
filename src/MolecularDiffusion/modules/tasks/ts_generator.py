@@ -85,6 +85,7 @@ from MolecularDiffusion.modules.tasks.pocket_generator import (
 _TASK_TO_TS_GENERATOR = {
     "OAReactDiffTask": ("diffusion_oareactdiff", "OAReactDiffTSGenerator"),
     "ReactOTTask": ("diffusion_reactot", "ReactOTTSGenerator"),
+    "GoFlowTask": ("diffusion_goflow", "GoFlowTSGenerator"),
 }
 
 

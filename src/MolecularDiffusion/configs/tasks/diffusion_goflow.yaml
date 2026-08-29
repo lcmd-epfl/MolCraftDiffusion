@@ -1,0 +1,79 @@
+# GoFlow: conditional flow matching that generates a TRANSITION STATE given
+# a reaction's condensed graph of reaction (reactant + product bonds, no
+# 3D endpoint geometry needed). See
+# docs/model_integrations/goflow/INTEGRATION_PLAN.md.
+#
+# No pretrained checkpoint exists anywhere in the upstream checkout
+# (verified -- see the plan's Data & Pretrained Provenance), so every value
+# below is the upstream Hydra config's own -- specifically the ACTUAL
+# headline run's resolved config (`train_test_all_splits.sh`), not just the
+# bare shipped default, where the two disagree (see the plan's
+# Hyperparameter Provenance table: `n_atom_basis` 256 not 128,
+# `num_samples` 25 not 50).
+_target_: MolecularDiffusion.modules.tasks.diffusion_goflow.ModelTaskFactory
+
+task_type: diffusion_goflow
+
+# --- GotenNet, the CGR-conditioned equivariant backbone ----------------- #
+# Hydra instantiates this nested _target_ into a real GotenNet BEFORE
+# ModelTaskFactory is constructed -- mirroring upstream's own
+# configs/model/flow.yaml nesting (model.representation._target_: ...).
+representation:
+  _target_: MolecularDiffusion.modules.models.goflow.gotennet.GotenNet
+  # configs/experiment/flow3.yaml:3 -- the ACTUAL headline run's value.
+  # The bare configs/model/flow.yaml:22 default is 128; ablation configs
+  # flow1/2/4/5.yaml (64/128/344/512) exist upstream but only flow3 is the
+  # paper's main setting.
+  n_atom_basis: 256
+  # Dataset-derived constant (8 RDKit descriptors, learned cardinalities),
+  # verified against the shipped feat_dict.pkl at data-conversion time --
+  # not a free architecture choice.
+  n_atom_rdkit_feats: 27
+  n_interactions: 3
+  n_rbf: 20
+  cutoff_fn:
+    _target_: MolecularDiffusion.modules.models.goflow.ops.CosineCutoff
+    cutoff: 5.0        # notably smaller than OA-ReactDiff/React-OT's 10.0
+    scaling: 0.5
+  radial_basis: expnorm
+  activation: swish
+  max_z: 100
+  weight_init: xavier_uniform
+  bias_init: zeros
+  int_layer_norm: ""
+  int_vector_norm: ""
+  num_heads: 8
+  attn_dropout: 0.1
+  # Selects the non-rejection edge-update branch (GATA.edge_update).
+  edge_updates: norej
+  aggr: add
+  edge_ln: ""
+  sep_int_vec: true
+  lmax: 2
+  # gotennet.py:460's class default, never overridden by any shipped
+  # config -- higher-order CGR connectivity depth.
+  edge_order: 4
+
+# Atomwise3DOut's hidden width (configs/model/flow.yaml:18 output.n_hidden).
+output_n_hidden: 64
+
+# Default Euler steps for sample(). CONFLICT in upstream, resolved in
+# favour of the run that produced the reported numbers: the bare
+# configs/model/flow.yaml:12 default is num_samples=50 and num_steps=25,
+# but train_test_all_splits.sh overrides both num_steps AND num_samples to
+# 25 -- 25 is used here for num_steps (the ODE integration length);
+# num_samples (the sampling ensemble size) is a generation-time knob, see
+# configs/interference/gen_goflow_ts.yaml's num_generate.
+num_steps: 25
+
+# Output atom vocabulary. "F" is in the vocabulary but never populated --
+# RDB7 is a C/H/N/O corpus (verified: grepped every element symbol in
+# rdb7_full.xyz) -- reusing the five-wide layout avoids a near-duplicate
+# padding function for one architecture (see diffusion_goflow.py).
+atom_vocab: [H, C, N, O, F]
+
+# runmodes/train/eval.py's generative analysis assumes the GenerativeFactory
+# contract (node_dist_model.sample(batch_size)), which this model does not
+# implement -- the TS size comes from the input reaction, so there is no
+# size prior. cli/train.py defaults this to false anyway; stated explicitly.
+generative_analysis: false

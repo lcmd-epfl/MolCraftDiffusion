@@ -1,0 +1,55 @@
+# RDB7 reactions for GoFlow, read from a converted Reaction pickle (built by
+# docs/model_integrations/goflow/scripts/convert_dataset.py from RDB7's raw
+# .csv/.xyz + the frozen feat_dict.pkl -- see INTEGRATION_PLAN.md's Data &
+# Pretrained Provenance). There is no on-the-fly parsing here: the data
+# module (data/component/goflow_data.py) reads the already-converted
+# pickle directly.
+#
+# THREE SPLITS SHIP IN-TREE (data/RDB7/splits/): random_split.pkl (default),
+# rxn_core_split.pkl (by reaction-core cluster) and barrier_split.pkl (by
+# barrier height) -- each testing a different generalisation axis. Only
+# `split_file` needs to change to switch between them; the converted
+# reaction pickle (`data_file`) is shared across all three.
+_target_: MolecularDiffusion.data.component.goflow_data.GoFlowDataModule
+
+data_file: ???
+feat_dict_file: ???
+split_path: ???
+split_file: random_split.pkl
+
+# Dataset-derived constant (see configs/tasks/diffusion_goflow.yaml) --
+# verified against feat_dict_file at data-load time. A mismatch means the
+# shipped feat_dict.pkl and the task's GotenNet(n_atom_rdkit_feats=...)
+# have drifted apart.
+n_atom_rdkit_feats: 27
+
+# Upstream's configs/data/rdb7.yaml:6. PyG-native variable-size batching,
+# no size-aware sampler needed (unlike React-OT's declared-deviation
+# DynamicBatchSampler) -- reactions are small (RDB7 is C/H/N/O, roughly
+# 4-23 atoms per object) and the CGR is not fully connected the way
+# React-OT's R+TS+P triple is.
+batch_size: 200
+num_workers: 0
+
+# null = every reaction in the split; set an int to cap it (smoke tests).
+limit: null
+
+# --- keys cli/train.py reads off cfg.data ------------------------------ #
+# GoFlow has no output atom vocabulary of its own (atom identity is
+# supplied by the input reaction and copied through at sample() time, from
+# oareactdiff's ATOM_MAPPING -- see diffusion_goflow.py). Recorded here only
+# because cli/train.py reads atom_vocab off cfg.data regardless of _target_.
+atom_vocab: [H, C, N, O, F]
+# The Reaction dataclass exposes no node_feature/x, so train.py infers
+# n_dim = 0; with use_ohe_feature false the base feature dim is 0 too, so no
+# spurious extra_norm_values are injected into the task.
+use_ohe_feature: false
+allow_unknown: false
+node_feature_choice: null
+
+# Documentation only -- nothing dispatches on it (cfg.data._target_ names
+# our datamodule directly, bypassing runmodes/train/data.py's data_type
+# switch entirely). Shared with oareactdiff/reactot because the container
+# it describes (data/component/reaction_data.py) is shared: a reactant
+# side, a product side, and a transition-state target.
+data_type: reaction

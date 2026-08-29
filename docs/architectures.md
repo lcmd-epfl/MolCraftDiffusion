@@ -162,11 +162,12 @@ atom.
 | :--- | :--- | :--- | :--- |
 | `diffusion_reactot.yaml` | `diffusion_reactot` | **Reactant + product** geometries | **Start here.** Roughly ten passes instead of a few hundred, so it is quick enough to run over a whole set of reactions. It also covers more ground than OA-ReactDiff: it was trained on reactions where two molecules come together or break apart, not just ones that stay in one piece. The catch is that it gives you the same structure every time you ask, so if an answer looks wrong, asking again will not help — use OA-ReactDiff instead. |
 | `diffusion_oareactdiff.yaml` | `diffusion_oareactdiff` | **Reactant + product** geometries | **Reach for this when one attempt is not enough.** It gives a different structure each time, so you can ask for a batch and keep the best — the usual way to rescue a reaction the fast model gets wrong. Narrower scope: small organic reactions made of H, C, N, O, up to about 23 atoms, with each side a single connected molecule. Slower, by roughly the ratio above. |
+| `diffusion_goflow.yaml` | `diffusion_goflow` | **Reactant + product** connectivity (2D only) | **Needs only 2D structure** — no 3D reactant/product geometry required, unlike the two rows above; a reaction drawn on paper is enough. Ships no pretrained weights, so train it yourself before generating. |
 
-Both usually land close enough to the true transition state to optimise from.
-They have not been compared head to head on the same reactions here, so treat
-the choice above as one of speed, coverage and whether you want more than one
-attempt — not as a ranking on accuracy.
+All three usually land close enough to the true transition state to optimise
+from. They have not been compared head to head on the same reactions here, so
+treat the choice above as one of speed, coverage and whether you want more
+than one attempt — not as a ranking on accuracy.
 
 ## 7. Transition-metal complex generation
 
@@ -385,3 +386,12 @@ Backbones and objectives integrated here are based on the following work.
   rather than from noise. The preprint carries a different title: *React-OT:
   Optimal Transport for Generating Transition State in Chemical Reactions*
   ([arXiv:2404.13430](https://arxiv.org/abs/2404.13430)).
+- **GoFlow** — Galustian, Mark, Karwounopoulos, Kovar & Heid. *GoFlow:
+  Efficient Transition State Geometry Prediction with Flow Matching and
+  E(3)-Equivariant Neural Networks.* ChemRxiv (2025).
+  [doi:10.26434/chemrxiv-2025-bk2rh](https://doi.org/10.26434/chemrxiv-2025-bk2rh)
+  — conditions only on the reactant/product's 2D connectivity, not their 3D
+  shape like OA-ReactDiff/React-OT above. The backbone is **GotenNet**: Aykent
+  & Xia, *GotenNet: Rethinking Efficient 3D Equivariant Graph Neural
+  Networks*, ICLR 2025
+  ([OpenReview](https://openreview.net/forum?id=5wxCQDtbMo)).

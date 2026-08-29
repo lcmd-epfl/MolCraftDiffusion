@@ -1,0 +1,56 @@
+# Transition-state generation for GoFlow.
+#
+# GenerativeFactory's sample(batch_size, nodesxsample, ...) has no channel
+# for "which reaction", so this model bypasses it exactly as the pocket
+# models and the two existing TS models do. Nothing below is GoFlow-only
+# plumbing beyond which corpus and which collate: the loop is
+# modules/tasks/pocket_generator.py::PocketGenerator, the reaction handling
+# on top of it (read one Reaction, size the TS from it, write
+# reactant/product/reference_ts.xyz beside the samples) is
+# modules/tasks/ts_generator.py::TSGenerator. GoFlow has no RePaint knobs
+# (OA-ReactDiff) and no solver choice (React-OT) -- just a fixed-step Euler
+# integrator with one knob, num_steps, which the base already carries.
+#
+# There is no unconditional mode: GoFlow's whole conditioning signal is the
+# reaction's condensed graph (reactant + product bonds and per-atom RDKit
+# descriptors) -- it always needs a reactant and a product, exactly like
+# both existing TS models, just connectivity rather than geometry.
+_target_: MolecularDiffusion.modules.tasks.diffusion_goflow.GoFlowTSGenerator
+
+# The converted Reaction pickle (Dict[int, Reaction] keyed by RDB7's `rxn`
+# id), built by docs/model_integrations/goflow/scripts/convert_dataset.py,
+# e.g. docs/model_integrations/goflow/data/goflow_rdb7_reactions.pkl.
+reaction_source: ???
+reaction_index: 0
+
+# GoFlow's corpus is not one self-contained pickle: the dataset also needs
+# the frozen feat_dict.pkl (the one-hot vocabulary ReactionSide.feat was
+# built against) and the split directory/file the converted pickle was
+# built alongside.
+feat_dict_file: ???
+split_path: ???
+split_file: random_split.pkl
+# "test" (held-out) by default -- generating from a reaction the model
+# trained on would be misleading. Set "train"/"val" deliberately if that is
+# what you want.
+split: test
+
+# 25 mirrors the actual headline run's ensemble size
+# (train_test_all_splits.sh's model.num_samples=25) -- every sample is an
+# independent Euler integration from a fresh Gaussian draw, returned
+# unranked (see diffusion_goflow.py: no GT-anchored median-consensus
+# collapsing is ported).
+num_generate: 25
+batch_size: 4
+
+# Euler integration steps. 25 is the ACTUAL headline run's value
+# (train_test_all_splits.sh's model.num_steps=25), not the bare
+# configs/model/flow.yaml:11 default of the same number by coincidence --
+# see the plan's Hyperparameter Provenance table for the num_samples
+# conflict this run also resolves. Upstream's own step/sample ablation
+# (test_ablate_steps.sh) shows accuracy close to saturated by 10-25 steps.
+num_steps: 25
+
+seed: 42
+device: null                 # null => cuda if available
+output_path: generated_goflow

@@ -1820,9 +1820,9 @@ assets:
     redistribute: true
     reason: 'Weights repo https://huggingface.co/AzureLeon1/DiffSpectra: API cardData.license
       apache-2.0, tags include license:apache-2.0, model card badge agrees (no separate
-      prose statement, but this is the repo owner''s own first-party frontmatter, not
-      an auto-detected guess; no LICENSE file ships alongside the .pth files, the
-      frontmatter tag is the only artifact). Matches the code repo''s own Apache-2.0
+      prose statement, but this is the repo owner''s own first-party frontmatter,
+      not an auto-detected guess; no LICENSE file ships alongside the .pth files,
+      the frontmatter tag is the only artifact). Matches the code repo''s own Apache-2.0
       (others/DiffSpectra/LICENSE, api.github.com/repos/AzureLeon1/DiffSpectra ->
       license.spdx_id Apache-2.0). No gating, no non-commercial language, no NOASSERTION.'
     upstream:
@@ -1859,6 +1859,70 @@ assets:
       source: 50-molecule SMILES-matched slice, joined against data/qm9_graph3d.db
         by canonical SMILES (98.0% join rate)
       script: docs/model_integrations/diffspectra/scripts/convert_dataset.py
+  data/rdb7/reactions:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: goflow_rdb7_reactions.pkl
+      sha256: 8fe5354c932f3a35b3ee21c2514a0b691272024441477dd651425ffee42a454b
+      size: 105450993
+    - path: feat_dict.pkl
+      sha256: 261f2026b5aa5f7f5291431d3bae4b0e9a820c89a56e1958278188f333b5e10f
+      size: 394
+    - path: random_split.pkl
+      sha256: 48c2cc603a87a7c48f30ad387e00b34ba7f3bbee88a28a1bf85cbda4b7e667c5
+      size: 35596
+    - path: rxn_core_split.pkl
+      sha256: 9e8870231fd7881208add21d1af665f6ebe80e8c1bc4fca6c2bffec182358db1
+      size: 35596
+    - path: barrier_split.pkl
+      sha256: 9097fdacd1451c28817d8620348d827d908b6b9fad794634742ce835d63a4d5f
+      size: 35596
+    license: CC-BY-4.0
+    redistribute: true
+    reason: 'Two layers, audited separately, both permissive. (1) The corpus:
+      RDB7 (Spiekermann et al., "High Accuracy Barrier Heights, Enthalpies,
+      and Rate Coefficients for Chemical Reactions") is deposited on Zenodo
+      as record 13328872; the record''s own API metadata declares
+      license.id "cc-by-4.0", access_right "open" (checked directly via
+      https://zenodo.org/api/records/13328872, not assumed from GoFlow''s
+      readme). goflow_rdb7_reactions.pkl, random_split.pkl,
+      rxn_core_split.pkl and barrier_split.pkl are all RDB7-derived
+      (reactions.pkl is this platform''s own conversion of the raw
+      rdb7_full.csv/.xyz; the three split files are GoFlow''s own
+      pre-computed 80/10/10 partitions of that same corpus, shipped
+      in-tree at others/nice/goflow/data/RDB7/splits/). CC-BY-4.0 permits
+      redistribution with attribution -- Spiekermann et al. must be
+      credited alongside any redistribution of these files. (2) The code
+      that produced feat_dict.pkl and the conversion script is GoFlow''s
+      own (MIT, see goflow/pretrained''s sibling reasoning below) --
+      irrelevant to this asset''s own licence since feat_dict.pkl is a
+      derived numeric vocabulary (per-descriptor cardinalities), not a
+      creative work, and carries no separate rights beyond the CC-BY-4.0
+      corpus it was learned from. GoFlow''s own code licence (MIT --
+      LICENSE file at others/nice/goflow/LICENSE, "MIT License, Copyright
+      (c) 2025 Leonard Galustian, Esther Heid"; confirmed independently via
+      api.github.com/repos/heid-lab/goflow -> .license.spdx_id "MIT") is a
+      SEPARATE audit from this data asset''s CC-BY-4.0 -- no pretrained
+      checkpoint exists to register (verified: no *.ckpt anywhere in the
+      upstream checkout), so there is no code-licensed weight asset here
+      to conflate this data asset with.'
+    upstream:
+      repo: https://github.com/heid-lab/goflow
+      commit: 3ec00a09d9b283e3258ae01fe5d3e35bb3812bff
+      corpus: https://zenodo.org/records/13328872
+      source: 'others/nice/goflow/data/RDB7/{raw_data,processed_data,splits}/
+        (already vendored in the checkout, no re-fetch needed -- see
+        readme.md:29,39). goflow_rdb7_reactions.pkl converted from
+        raw_data/{rdb7_full.csv,rdb7_full.xyz} by
+        docs/model_integrations/goflow/scripts/convert_dataset.py, the
+        full 11,926-reaction corpus, zero conversion errors.'
+      note: REQUIRED together -- GoFlowDataModule.load() reads feat_dict.pkl
+        to fix n_atom_rdkit_feats and asserts its width against the
+        converted reactions; split_path/split_file select one of the three
+        split pickles to partition goflow_rdb7_reactions.pkl into
+        train/val/test.
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -2481,3 +2545,17 @@ models:
         configs:
         - diffspectra_train.yaml
         - diffspectra_generate.yaml
+  goflow:
+    family: reaction-diffusion
+    task_type: diffusion_goflow
+    tags:
+    - transition-state
+    - reaction-conditioned
+    - flow-matching
+    - connectivity-only
+    variants:
+      default:
+        data: data/rdb7/reactions
+        configs:
+        - goflow_train.yaml
+        - goflow_generate.yaml
