@@ -11,10 +11,13 @@ Submodules
    :maxdepth: 1
 
    /autoapi/MolecularDiffusion/modules/models/apo2mol/index
+   /autoapi/MolecularDiffusion/modules/models/chefnmr/index
    /autoapi/MolecularDiffusion/modules/models/difflinker/index
    /autoapi/MolecularDiffusion/modules/models/diffpharma/index
    /autoapi/MolecularDiffusion/modules/models/diffsbdd/index
    /autoapi/MolecularDiffusion/modules/models/diffsmol/index
+   /autoapi/MolecularDiffusion/modules/models/diffspectra/index
+   /autoapi/MolecularDiffusion/modules/models/ditmc/index
    /autoapi/MolecularDiffusion/modules/models/egcl/index
    /autoapi/MolecularDiffusion/modules/models/egt/index
    /autoapi/MolecularDiffusion/modules/models/en_diffusion/index
@@ -22,22 +25,30 @@ Submodules
    /autoapi/MolecularDiffusion/modules/models/equiformer_v2_backbone/index
    /autoapi/MolecularDiffusion/modules/models/equiformer_v2_dynamics/index
    /autoapi/MolecularDiffusion/modules/models/esen/index
+   /autoapi/MolecularDiffusion/modules/models/etflow/index
    /autoapi/MolecularDiffusion/modules/models/flowmol/index
    /autoapi/MolecularDiffusion/modules/models/flowmol_graph3d/index
+   /autoapi/MolecularDiffusion/modules/models/gcdm/index
    /autoapi/MolecularDiffusion/modules/models/geoldm/index
    /autoapi/MolecularDiffusion/modules/models/gfmdiff/index
    /autoapi/MolecularDiffusion/modules/models/ipdiff/index
+   /autoapi/MolecularDiffusion/modules/models/jodo/index
    /autoapi/MolecularDiffusion/modules/models/kgdiff/index
    /autoapi/MolecularDiffusion/modules/models/ldm/index
    /autoapi/MolecularDiffusion/modules/models/ligandiff/index
    /autoapi/MolecularDiffusion/modules/models/ligandiff_multi/index
+   /autoapi/MolecularDiffusion/modules/models/loqi/index
    /autoapi/MolecularDiffusion/modules/models/midi/index
+   /autoapi/MolecularDiffusion/modules/models/nextmol/index
    /autoapi/MolecularDiffusion/modules/models/noisemodel/index
+   /autoapi/MolecularDiffusion/modules/models/oareactdiff/index
    /autoapi/MolecularDiffusion/modules/models/painn_backbone/index
    /autoapi/MolecularDiffusion/modules/models/painn_dynamics/index
    /autoapi/MolecularDiffusion/modules/models/pharmacophore_dynamics/index
    /autoapi/MolecularDiffusion/modules/models/pmdm/index
+   /autoapi/MolecularDiffusion/modules/models/reactot/index
    /autoapi/MolecularDiffusion/modules/models/shepherd_arch/index
+   /autoapi/MolecularDiffusion/modules/models/syncogen/index
    /autoapi/MolecularDiffusion/modules/models/tabasco/index
 
 
