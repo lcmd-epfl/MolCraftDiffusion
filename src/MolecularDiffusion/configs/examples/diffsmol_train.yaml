@@ -1,0 +1,121 @@
+# DiffSMol training on upstream's EXACT MOSES2 training pool, resolved from
+# the zoo.
+#
+#   MolCraftDiff zoo fetch --config diffsmol_train.yaml
+#   MolCraftDiff train diffsmol_train.yaml
+#
+# WHERE THIS DATA CAME FROM
+#   Zenodo record 14855728 (linked from others/DiffSMol/ReadMe.md as "our
+#   processed training data"; it is in fact the pre-embedding raw molecule
+#   set -- upstream's own training config reads it as `data.path` verbatim).
+#   Licensed CC-BY-4.0 by the Zenodo record itself (separate from, and more
+#   permissive than, the DiffSMol code/checkpoint's PolyForm-Noncommercial
+#   licence -- code and data licences were audited separately, see
+#   docs/model_zoo/registering.md).
+#
+#   150,000 molecules -- the EXACT pool the released diffusion.pt checkpoint
+#   was trained on, not a subsample. Confirmed against upstream's own split
+#   file (others/DiffSMol/data/MOSES2/MOSES2_training_val_dataset_split.pt):
+#   its train (119,917) and valid (30,083) index sets partition range(150000)
+#   exactly, with no gaps or overlap -- i.e. upstream's training pool is
+#   literally the first 150,000 molecules of the raw pkl's list, in original
+#   order. This db is that same prefix, written in order (db_entry_0..149999
+#   corresponds 1:1 to upstream's own indices, so their split.pt's train/valid
+#   membership applies directly if you want to reproduce it exactly instead of
+#   using this platform's own train_ratio split below).
+#
+#   Heavy atoms only, no explicit hydrogens at all -- upstream's own
+#   preprocessing already drops them (AddHs -> embed -> MMFF -> RemoveHs) --
+#   9 to 27 heavy atoms per molecule, median 22, 19 distinct sizes, matching
+#   the model's [C,N,O,F,P,S,Cl,Br,I] vocab exactly (this corpus covers
+#   C,N,O,F,S,Cl,Br -- no P or I in the first 150,000 entries).
+#
+# THIS RUNS UNCONDITIONALLY AS SHIPPED -- shape conditioning is opt-in
+#   `tasks.shape_cache_path` is null below, so every sample uses the zero
+#   latent (the CFG unconditional branch) -- exactly what the bundled smoke
+#   config (train_cond.yaml vs train.yaml) also does when no cache is set.
+#   Nothing is broken; you get a plain 3D generator trained on real,
+#   drug-like MOSES2 molecules instead of QM9's tiny ones.
+#
+#   To add shape conditioning, precompute a shape cache against this same db
+#   and point tasks.shape_cache_path at the output:
+#     python docs/model_integrations/diffsmol/scripts/precompute_shapes.py \
+#       --ase-db "$(MolCraftDiff zoo path data/moses2/ase-150k)/moses2_ase_150k.db" \
+#       --out docs/model_integrations/diffsmol/shape_cache/moses2_ase_150k.pt
+#   Measured on this machine: ~2.5s/molecule, sequential -- so ~104h for all
+#   150,000, unattended. That is a lot; consider --limit on a prefix of the
+#   db first, or budget real wall-clock time. Run it plainly (no thread/
+#   process tricks): capping threads on a single process measured 4x SLOWER
+#   here, and running several worker processes in parallel spiked system
+#   load enough to trip this machine's watchdog into a hard shutdown. Only
+#   the plain sequential form (no extra flags) has actually been verified
+#   safe.
+#
+# WHAT THIS FIXES THAT THE SMOKE CONFIG COULD NOT PROVE
+#   The bundled smoke test (train.yaml, 300 QM9 molecules) itself flagged
+#   its corpus as degenerate: "only 4 unique atom counts, so both size
+#   histograms are degenerate. Fine for a smoke test, not representative for
+#   real training." This corpus is upstream's actual training scale.
+
+defaults:
+  - data: mol_dataset
+  - tasks: diffusion_diffsmol
+  - logger: default          # swap for `wandb` to log a real run
+  - trainer: default
+  - hydra: default
+  - _self_
+
+name: "diffsmol_moses2_150k"
+tags: ["diffsmol", "moses2"]
+seed: 42
+
+data:
+  root: work/diffsmol_moses2_150k/        # working dir, NOT the asset cache
+  ase_db_path: ${asset:data/moses2/ase-150k/moses2_ase_150k.db}
+  dataset_name: moses2
+  filename: null
+  xyz_dir: null
+  # Heavy atoms only -- DiffSMol never generates hydrogens, and if shape
+  # conditioning is added later the surface mesh, the sampled point cloud
+  # and the diffused atoms must be the identical atom set. This corpus has
+  # no explicit H at all, so this is a no-op pass-through, not an actual
+  # filtering step.
+  with_hydrogen: false
+  atom_vocab: [C, N, O, F, S, Cl, Br]
+  max_atom: 27
+  batch_size: 32
+  num_workers: 0
+  train_ratio: 0.9
+  data_type: pointcloud
+  data_efficient_collator: true
+
+tasks:
+  shape_cache_path: null   # see "opt-in" note above to add shape conditioning
+  # Architecture and schedule are the full upstream configuration --
+  # configs/tasks/diffusion_diffsmol.yaml's bundled defaults, unchanged.
+  # Nothing here overrides num_diffusion_timesteps or model_config: this is
+  # a real-scale run, not a smoke test.
+
+trainer:
+  # Upstream's shipped optimizer
+  # (config/training/diff_..._layer8.yml:train, adam not adamw), scaled to
+  # this corpus's size via epochs rather than upstream's max_iters.
+  num_epochs: 50
+  validation_interval: 5
+  output_path: "logs/diffsmol_moses2_150k"
+  optimizer_choice: "adam"
+  lr: 1.0e-3
+  weight_decay: 0
+  betas: [0.95, 0.999]
+  # ONE deviation, and it is a platform limit rather than a choice: upstream
+  # uses ReduceLROnPlateau (factor 0.6, patience 10, min_lr 1e-5). Cancelling
+  # the cosine scheduler_kwargs (T_max/eta_min) this config inherits from
+  # trainer/default.yaml needs None-valued keys the engine drops before
+  # instantiating the scheduler -- verified working (apo2mol_train.yaml) only
+  # under `engine: lightning`; the default "original" engine
+  # (runmodes/train/trainer.py:161-178) passes scheduler_kwargs through
+  # unfiltered and crashes on the unexpected T_max/eta_min. Switching engines
+  # is a bigger, unrelated change to force through a scheduler fix, so this
+  # keeps the platform default (cosineannealing, T_max=num_epochs) instead --
+  # the same engine every other diffsmol config here already uses.
+  grad_clip_value: 8.0

@@ -18,7 +18,7 @@ Three deliberate deviations from upstream:
   pass a no-op. It takes one cutoff here.
 
 # ponytail: the vendored surface is the reachable subset only. If a future
-# pass turns on ``vae_context``/``linker_mask``, port those branches then.
+# pass turns on ``vae_context``, port that branch then.
 """
 
 from __future__ import annotations
@@ -276,6 +276,25 @@ def center_pos_pl(
     from torch_scatter import scatter_mean
 
     com = scatter_mean(ligand_pos, ligand_batch, dim=0)
+    return ligand_pos - com[ligand_batch], pocket_pos - com[pocket_batch]
+
+
+def center_pos_lp(
+    ligand_pos: Tensor,
+    pocket_pos: Tensor,
+    ligand_batch: Tensor,
+    pocket_batch: Tensor,
+) -> Tuple[Tensor, Tensor]:
+    """Move ligand *and* pocket so the per-complex POCKET centroid is at 0.
+
+    Unlike :func:`center_pos_pl`, this does not shift the ligand relative to
+    the pocket -- needed when the ligand's positions are real, already-placed
+    coordinates (a starting fragment from a user's SDF), not noise that can
+    be freely re-centred (``PMDMEpsNet.inpainting_sample``/``linker_sample``).
+    """
+    from torch_scatter import scatter_mean
+
+    com = scatter_mean(pocket_pos, pocket_batch, dim=0)
     return ligand_pos - com[ligand_batch], pocket_pos - com[pocket_batch]
 
 

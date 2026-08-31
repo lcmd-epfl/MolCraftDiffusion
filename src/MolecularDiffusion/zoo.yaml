@@ -285,6 +285,34 @@ assets:
     redistribute: true
     upstream:
       repo: https://github.com/ninglab/DiffSMol
+  data/moses2/ase-150k:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: moses2_ase_150k.db
+      sha256: ff025c4aeb3ab92c660daa6c752bd99d57712f6f2c912e5f2c73756a0d870eae
+      size: 168398848
+    license: CC-BY-4.0
+    redistribute: true
+    upstream:
+      repo: https://zenodo.org/records/14855728
+      note: 'MOSES2_training_val_dataset.pkl. The exact 150,000-molecule training
+        pool upstream''s released diffusion.pt was trained on -- confirmed against
+        others/DiffSMol/data/MOSES2/MOSES2_training_val_dataset_split.pt, whose
+        train (119,917) and valid (30,083) index sets partition range(150000)
+        exactly with no gaps or overlap, i.e. the first 150,000 entries of the
+        raw pkl''s molecule list, in original order (not a random sample of the
+        larger file). Zenodo record''s own API metadata declares license.id
+        "cc-by-4.0", access_right "open" (checked directly via
+        https://zenodo.org/api/records/14855728, not assumed from DiffSMol''s
+        readme) -- a separate audit from the DiffSMol code/checkpoint''s
+        PolyForm-Noncommercial licence (diffsmol/pretrained, above), since a repo
+        can license its code differently from the corpus it trains on. Coordinates
+        and heavy-atom element symbols only (no explicit hydrogens at all --
+        already stripped by upstream''s own preprocessing); no shape embeddings
+        computed yet. Run docs/model_integrations/diffsmol/scripts/precompute_shapes.py
+        against this db to add shape conditioning.'
   inputs/diffsmol/shapes:
     kind: dataset
     rev: main
@@ -2031,6 +2059,8 @@ models:
         checkpoint: diffsmol/pretrained
         extra:
           reference_shape: inputs/diffsmol/shapes
+      moses2_ase:
+        data: data/moses2/ase-150k
     summary: 'DiffSMol is a shape-conditioned hybrid DDPM: continuous Gaussian diffusion
       on positions plus discrete D3PM categorical diffusion on atom types, conditioned
       on a 128x3 vector-neuron shape latent via classifier-free guidance. Bonds and

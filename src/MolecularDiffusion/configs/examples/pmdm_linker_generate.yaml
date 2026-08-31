@@ -1,0 +1,72 @@
+# Linker design with PMDM's EXACT MOSES2/CrossDocked pretrained weights,
+# resolved from the zoo. SAME checkpoint as examples/pmdm_generate.yaml's de
+# novo generation and examples/pmdm_leadopt_generate.yaml's lead
+# optimisation -- upstream's own sample_linker.py --mask runs off the
+# identical `500.pt`; linker design is a different sampling method at
+# inference time, not a different model.
+#
+#   MolCraftDiff zoo fetch --model pmdm
+#   python docs/model_integrations/pmdm/scripts/extract_smoke_pair.py
+#   MolCraftDiff generate pmdm_linker_generate.yaml
+#
+# WHY THE EXTRA SCRIPT STEP, UNLIKE pmdm_generate.yaml's zero-step fetch
+#   Lead-opt and linker take the pocket and the ligand to modify as PLAIN
+#   FILES (an SDF + a PDB), not the converted ASE db -- mirroring upstream's
+#   own sample_linker.py --mol_file/--pdb_path exactly, so you can point
+#   either command straight at fragments you've already placed with no
+#   conversion step of your own. That means there is nothing to
+#   `${asset:...}`-resolve for `mol_file`/`pocket_file` directly:
+#   extract_smoke_pair.py reads one row out of the already-fetched
+#   `data/crossdocked/pmdm` zoo asset and writes a standalone ligand SDF +
+#   pocket PDB pair to docs/model_integrations/pmdm/scripts/ -- run it once,
+#   the same way you'd run convert_checkpoint.py once for the checkpoint
+#   itself.
+#
+# YOUR OWN FRAGMENTS. Swap `mol_file`/`pocket_file` below for your own
+# ligand SDF -- typically two fragments already placed where you want them
+# bridged -- and pocket PDB once you've tried the smoke pair.
+# `atoms_to_replace` are 0-indexed atoms of `mol_file` (RDKit's read order)
+# to DELETE and regrow as the new linker; everything you do NOT list stays
+# fixed. Find indices with:
+#   from rdkit import Chem
+#   m = Chem.SDMolSupplier("your_ligand.sdf")[0]
+#   for a in m.GetAtoms(): print(a.GetIdx(), a.GetSymbol())
+# The values below (atoms 8-14 of the smoke ligand, leaving fragments at
+# 0-7 and 15-22) are an arbitrary smoke-scale choice -- a coarse stand-in
+# for "two fragments to bridge," not chemically meaningful.
+
+defaults:
+  - tasks: diffusion_pmdm
+  - interference: gen_pocket
+  - _self_
+
+name: "pmdm_linker_generate"
+chkpt_directory: ${asset:pmdm/pretrained/pmdm_pretrained.ckpt}
+atom_vocab: [H, C, N, O, F, P, S, Cl, Se, others]
+seed: 42
+
+# interference: gen_pocket is the fully generic pocket-conditioned config
+# (shared with 6 other models). PMDM's constrained modes reach it via
+# `mode`, added here on top -- see gen_pocket.yaml's own header for why
+# `mode` lives here rather than as a gen_pocket.yaml field.
+interference:
+  mode: linker
+  pocket_db: null   # unused for this mode; overrides gen_pocket.yaml's
+                     # required "???" placeholder so composition doesn't fail
+  pocket_file: docs/model_integrations/pmdm/scripts/smoke_pocket.pdb
+  mol_file: docs/model_integrations/pmdm/scripts/smoke_ligand.sdf
+  atoms_to_replace: [8, 9, 10, 11, 12, 13, 14]
+  atoms_to_add: 6
+
+  num_generate: 24
+  batch_size: 4     # bump to 64 for ~10x wall-clock, same tradeoff as
+                    # pmdm_generate.yaml -- 1000 steps sequential per batch,
+                    # batch itself parallel.
+  num_steps: null   # null => the model's full T (1000).
+
+  # OFF deliberately, same reasoning as pmdm_generate.yaml's de novo path --
+  # the retry loop is inherited PMDMPocketGenerator machinery and showed the
+  # same low-pass-rate behaviour there.
+  validity_filter: false
+  max_retries: 10
+  output_path: "generated_pmdm_linker"

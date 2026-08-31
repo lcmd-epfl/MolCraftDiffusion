@@ -20,8 +20,6 @@ Differences from upstream, all of them removals of code that this
 integration's scope (see ``docs/model_integrations/pmdm/INTEGRATION_PLAN.md``)
 puts out of reach:
 
-* ``inpainting_sample`` (lead optimisation) and ``linker_sample`` (fragment
-  linking), plus their ``frag_mask``/``linker_mask`` plumbing;
 * the ``vae_context`` VAE latent branch and the ``context`` property list
   (both default-off upstream);
 * ``atom_num_emb`` (default-off), ``is_sidechain`` (always ``None``),
@@ -46,6 +44,7 @@ from torch_scatter import scatter_mean
 from tqdm.auto import tqdm
 
 from .common import (
+    center_pos_lp,
     center_pos_pl,
     clip_norm,
     eq_transform,
@@ -92,6 +91,12 @@ def get_beta_schedule(
     if betas.shape != (num_diffusion_timesteps,):
         raise ValueError(f"bad beta schedule shape {betas.shape}")
     return betas
+
+
+def _compute_alpha(betas: Tensor, t: Tensor) -> Tensor:
+    """Cumulative ``alpha`` at timestep ``t``. Shared by every sampler below."""
+    betas = torch.cat([torch.zeros(1).to(betas.device), betas], dim=0)
+    return (1 - betas).cumprod(dim=0).index_select(0, t + 1)
 
 
 class PMDMEpsNet(nn.Module):
@@ -220,9 +225,17 @@ class PMDMEpsNet(nn.Module):
         protein_pos: Tensor,
         protein_batch: Tensor,
         time_step: Tensor,
+        linker_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """One denoiser pass. Returns the global/local position and node scores
-        plus the ligand edge bookkeeping the loss needs."""
+        plus the ligand edge bookkeeping the loss needs.
+
+        ``linker_mask`` (bool, ``(n_ligand,)``, ``True`` = regenerate): used
+        only by :meth:`linker_sample`, to bias the EGNN coordinate update
+        toward the region being regenerated (see ``encoders.py``'s module
+        docstring). ``None`` (default) reproduces training/default-sampling
+        behaviour exactly.
+        """
         n_ligand = ligand_atom_type.size(0)
 
         # pooled pocket context, broadcast onto every ligand token
@@ -289,6 +302,7 @@ class PMDMEpsNet(nn.Module):
             edge_attr=edge_attr_global,
             batch=pocket_batch,
             n_ligand=n_ligand,
+            linker_mask=linker_mask,
         )
 
         edge_attr_local = self.edge_encoder_local(
@@ -301,6 +315,7 @@ class PMDMEpsNet(nn.Module):
             edge_attr=edge_attr_local,
             batch=pocket_batch,
             n_ligand=n_ligand,
+            linker_mask=linker_mask,
         )
 
         node_score_global = self.grad_global_node_mlp(node_attr_global)
@@ -610,6 +625,438 @@ class PMDMEpsNet(nn.Module):
                 atom_traj.append(ligand_atom_type.clone().cpu())
 
         # back into the input pocket's frame
+        protein_final = scatter_mean(protein_pos, protein_batch, dim=0)
+        shift = protein_com - protein_final
+        ligand_pos = ligand_pos + shift[ligand_batch]
+        return ligand_pos, pos_traj, ligand_atom_type, atom_traj
+
+    # ------------------------------------------------------------------ #
+    # constrained sampling (lead optimisation / linker design)
+    # ------------------------------------------------------------------ #
+    def _reverse_step(
+        self,
+        ligand_pos: Tensor,
+        ligand_atom_type: Tensor,
+        pos_eq_global: Tensor,
+        pos_eq_local: Tensor,
+        node_score_global,
+        node_score_local,
+        sigma_i: Tensor,
+        at: Tensor,
+        at_next: Tensor,
+        t0: Tensor,
+        clip: float,
+        clip_local: Optional[float],
+        global_start_sigma: float,
+        local_start_sigma: float,
+        w_global_pos: float,
+        w_global_node: float,
+        w_local_pos: float,
+        w_local_node: float,
+        sampling_type: str,
+        step_lr: float,
+        eta: float,
+    ) -> Tuple[Tensor, Tensor]:
+        """One reverse-diffusion update, given the network's scores for the
+        current step. Identical math to the per-step body of
+        :meth:`langevin_dynamics_sample`, factored out here since both
+        :meth:`inpainting_sample` and :meth:`linker_sample` need it verbatim.
+        """
+        if sigma_i < local_start_sigma:
+            node_eq_local = pos_eq_local
+            if clip_local is not None:
+                node_eq_local = clip_norm(node_eq_local, limit=clip_local)
+        else:
+            node_eq_local, node_score_local = 0, 0
+
+        if sigma_i < global_start_sigma:
+            node_eq_global = clip_norm(pos_eq_global, limit=clip)
+        else:
+            node_eq_global, node_score_global = 0, 0
+
+        eps_pos = w_local_pos * node_eq_local + w_global_pos * node_eq_global
+        eps_node = w_local_node * node_score_local + w_global_node * node_score_global
+
+        noise = torch.randn_like(ligand_pos)
+        noise_node = torch.randn_like(ligand_atom_type)
+
+        if sampling_type == "generalized":
+            et = -eps_pos
+            c1 = eta * ((1 - at / at_next) * (1 - at_next) / (1 - at)).sqrt()
+            c2 = ((1 - at_next) - c1**2).sqrt()
+
+            step_size_pos_ld = step_lr * (sigma_i / 0.01) ** 2 / sigma_i
+            step_size_pos_gen = 3 * ((1 - at).sqrt() / at.sqrt() - c2 / at_next.sqrt())
+            step_size_pos = min(step_size_pos_ld, step_size_pos_gen)
+
+            step_size_noise_ld = torch.sqrt((step_lr * (sigma_i / 0.01) ** 2) * 2)
+            step_size_noise_gen = 5 * (c1 / at_next.sqrt())
+            step_size_noise = min(step_size_noise_ld, step_size_noise_gen)
+
+            eps_node = eps_node / (1 - at).sqrt()
+            pos_next = ligand_pos - et * step_size_pos + noise * step_size_noise
+            atom_next = (
+                ligand_atom_type - eps_node * step_size_pos + noise_node * step_size_noise
+            )
+        elif sampling_type == "ddpm_noisy":
+            atm1 = at_next
+            beta_t = 1 - at / atm1
+            e = -eps_pos
+            mean = (ligand_pos - beta_t * e) / (1 - beta_t).sqrt()
+            mask = 1 - (t0 == 0).float()
+            logvar = beta_t.log()
+            pos_next = mean + mask * torch.exp(0.5 * logvar) * noise
+
+            e = eps_node
+            node0_from_e = (1.0 / at).sqrt() * ligand_atom_type - (
+                1.0 / at - 1
+            ).sqrt() * e
+            mean = (
+                (atm1.sqrt() * beta_t) * node0_from_e
+                + ((1 - beta_t).sqrt() * (1 - atm1)) * ligand_atom_type
+            ) / (1.0 - at)
+            atom_next = mean + mask * torch.exp(0.5 * logvar) * noise_node
+        elif sampling_type == "ld":
+            step_size = step_lr * (sigma_i / 0.01) ** 2
+            pos_next = (
+                ligand_pos
+                + step_size * eps_pos / sigma_i
+                + noise * torch.sqrt(step_size * 2)
+            )
+            eps_node = eps_node / (1 - at).sqrt()
+            atom_next = (
+                ligand_atom_type
+                - step_size * eps_node / sigma_i
+                + noise_node * torch.sqrt(step_size * 2)
+            )
+        else:
+            raise ValueError(
+                "sampling_type must be one of [generalized, ddpm_noisy, ld], "
+                f"got {sampling_type!r}"
+            )
+        return pos_next, atom_next
+
+    @torch.no_grad()
+    def inpainting_sample(
+        self,
+        ligand_atom_type: Tensor,
+        ligand_pos_init: Tensor,
+        ligand_bond_index: Tensor,
+        ligand_bond_type: Optional[Tensor],
+        ligand_batch: Tensor,
+        frag_mask: Tensor,
+        protein_atom_feature_full: Tensor,
+        protein_pos: Tensor,
+        protein_batch: Tensor,
+        num_graphs: int,
+        n_steps: int = 100,
+        step_lr: float = 1.0e-6,
+        clip: float = 1000.0,
+        clip_local: Optional[float] = None,
+        clip_pos: Optional[float] = None,
+        global_start_sigma: float = float("inf"),
+        local_start_sigma: float = float("inf"),
+        w_global_pos: float = 1.0,
+        w_global_node: float = 1.0,
+        w_local_pos: float = 1.0,
+        w_local_node: float = 1.0,
+        sampling_type: str = "generalized",
+        eta: float = 1.0,
+        keep_traj: bool = False,
+    ) -> Tuple[Tensor, List[Tensor], Tensor, List[Tensor]]:
+        """RePaint-style constrained sampling ("lead optimisation" upstream):
+        keep ``frag_mask`` atoms of a starting ligand fixed, regenerate the
+        rest, inside the same fixed pocket.
+
+        ``frag_mask`` (bool, ``(n_ligand,)``): ``True`` = keep exactly as
+        given in ``ligand_pos_init``/``ligand_atom_type``; ``False`` =
+        regenerate. Every reverse step re-noises the kept fragment's atom
+        *type* to the current timestep before scoring, then force-restores
+        both its position and type afterward -- classic RePaint. Position is
+        never re-noised (upstream's matching line is dead/commented-out
+        code, not ported). Port of upstream ``inpainting_sample``,
+        ``MDM_pocket_coor_shared.py:929-1183``.
+        """
+        sigmas = (1.0 - self.alphas).sqrt() / self.alphas.sqrt()
+        pos_traj: List[Tensor] = []
+        atom_traj: List[Tensor] = []
+
+        n_steps = max(1, min(int(n_steps), self.num_timesteps))
+        skip = max(1, self.num_timesteps // n_steps)
+        seq = range(0, self.num_timesteps, skip)
+        seq_next = [-1] + list(seq[:-1])
+
+        protein_com = scatter_mean(protein_pos, protein_batch, dim=0)
+        # The fragment's positions are real, already-placed coordinates (the
+        # user's SDF); the newly-appended atoms are raw N(0,1) noise centred
+        # on world-origin, not on the pocket. center_pos_lp always subtracts
+        # the pocket's own (real-world) centroid, so without this shift the
+        # noise atoms land ~|protein_com| away from the pocket/fragment after
+        # centering -- often tens of angstroms, outside every radius-graph
+        # cutoff, leaving them permanently edge-less and unable to receive
+        # any score signal pulling them toward the fragment (upstream has a
+        # dead, commented-out line at this exact spot -- applying it to the
+        # WHOLE tensor would instead un-centre the fragment; shifting only
+        # the new atoms is the part that is actually needed).
+        new_atom_mask = ~frag_mask
+        ligand_pos_init = ligand_pos_init.clone()
+        ligand_pos_init[new_atom_mask] = (
+            ligand_pos_init[new_atom_mask] + protein_com[ligand_batch][new_atom_mask]
+        )
+        ligand_pos, protein_pos = center_pos_lp(
+            ligand_pos_init, protein_pos, ligand_batch, protein_batch
+        )
+        ligand_atom_type = ligand_atom_type.clone()
+
+        protein_ctx = self.protein_encoder(
+            node_attr=protein_atom_feature_full, pos=protein_pos, batch=protein_batch
+        )
+
+        for i, j in tqdm(
+            list(zip(reversed(seq), reversed(seq_next))), desc="pmdm inpaint", leave=False
+        ):
+            t = torch.full(
+                size=(num_graphs,), fill_value=i, dtype=torch.long, device=ligand_pos.device
+            )
+            at = _compute_alpha(self.betas, t[0].long())
+            step_mask = 1.0 - (t[0] == 0).float()
+
+            frag_pos = ligand_pos[frag_mask]
+            frag_atom_type = ligand_atom_type[frag_mask]
+
+            atom_noise = torch.randn_like(frag_atom_type)
+            ligand_atom_type = ligand_atom_type.clone()
+            ligand_atom_type[frag_mask] = (
+                at.sqrt() * frag_atom_type + (1.0 - at).sqrt() * atom_noise * step_mask
+            )
+
+            (
+                pos_eq_global,
+                pos_eq_local,
+                node_score_global,
+                node_score_local,
+                _edge_index,
+                _edge_type,
+                _edge_length,
+                _local_edge_mask,
+            ) = self.net(
+                ligand_atom_type=ligand_atom_type,
+                ligand_pos=ligand_pos,
+                ligand_bond_index=ligand_bond_index,
+                ligand_bond_type=ligand_bond_type,
+                ligand_batch=ligand_batch,
+                protein_embeddings=protein_ctx,
+                protein_pos=protein_pos,
+                protein_batch=protein_batch,
+                time_step=t,
+            )
+
+            t0 = t[0]
+            next_t = (torch.ones(1) * j).to(ligand_pos.device)
+            at_next = _compute_alpha(self.betas, next_t.long())
+            pos_next, atom_next = self._reverse_step(
+                ligand_pos,
+                ligand_atom_type,
+                pos_eq_global,
+                pos_eq_local,
+                node_score_global,
+                node_score_local,
+                sigmas[i],
+                at,
+                at_next,
+                t0,
+                clip,
+                clip_local,
+                global_start_sigma,
+                local_start_sigma,
+                w_global_pos,
+                w_global_node,
+                w_local_pos,
+                w_local_node,
+                sampling_type,
+                step_lr,
+                eta,
+            )
+            ligand_pos, ligand_atom_type = pos_next, atom_next
+            if torch.isnan(ligand_pos).any():
+                raise FloatingPointError(
+                    "NaN in sampled ligand coordinates -- lower step_lr / w_*_pos, "
+                    "or set interference.clip_pos."
+                )
+
+            # RePaint restore: force the kept fragment back to its true value
+            ligand_pos = ligand_pos.clone()
+            ligand_pos[frag_mask] = frag_pos
+            ligand_atom_type = ligand_atom_type.clone()
+            ligand_atom_type[frag_mask] = frag_atom_type
+
+            ligand_pos, protein_pos = center_pos_pl(
+                ligand_pos, protein_pos, ligand_batch, protein_batch
+            )
+            if clip_pos is not None:
+                ligand_pos = torch.clamp(ligand_pos, min=-clip_pos, max=clip_pos)
+            if keep_traj:
+                pos_traj.append(ligand_pos.clone().cpu())
+                atom_traj.append(ligand_atom_type.clone().cpu())
+
+        protein_final = scatter_mean(protein_pos, protein_batch, dim=0)
+        shift = protein_com - protein_final
+        ligand_pos = ligand_pos + shift[ligand_batch]
+        return ligand_pos, pos_traj, ligand_atom_type, atom_traj
+
+    @torch.no_grad()
+    def linker_sample(
+        self,
+        ligand_atom_type: Tensor,
+        ligand_pos_init: Tensor,
+        ligand_bond_index: Tensor,
+        ligand_bond_type: Optional[Tensor],
+        ligand_batch: Tensor,
+        frag_mask: Tensor,
+        protein_atom_feature_full: Tensor,
+        protein_pos: Tensor,
+        protein_batch: Tensor,
+        num_graphs: int,
+        n_steps: int = 100,
+        step_lr: float = 1.0e-6,
+        clip: float = 1000.0,
+        clip_local: Optional[float] = None,
+        clip_pos: Optional[float] = None,
+        global_start_sigma: float = float("inf"),
+        local_start_sigma: float = float("inf"),
+        w_global_pos: float = 1.0,
+        w_global_node: float = 1.0,
+        w_local_pos: float = 1.0,
+        w_local_node: float = 1.0,
+        sampling_type: str = "generalized",
+        eta: float = 1.0,
+        keep_traj: bool = False,
+    ) -> Tuple[Tensor, List[Tensor], Tensor, List[Tensor]]:
+        """RePaint-style constrained sampling for linker design: keep two (or
+        more) disjoint fragments of a starting ligand fixed (``frag_mask``),
+        regenerate the region between them, inside the same fixed pocket.
+
+        Structurally identical to :meth:`inpainting_sample` (same
+        restore-after-every-step loop), with two differences: the kept
+        fragment is fed to the network exactly as given, with no per-step
+        forward-noise on its atom type (upstream computes a matching noise
+        tensor here but never uses it -- dead code, not ported); and the
+        network additionally receives ``linker_mask`` (the region being
+        regenerated), which biases its coordinate update toward that region
+        (see ``encoders.py``). Port of upstream ``linker_sample``,
+        ``MDM_pocket_coor_shared.py:1186-1425``.
+        """
+        sigmas = (1.0 - self.alphas).sqrt() / self.alphas.sqrt()
+        pos_traj: List[Tensor] = []
+        atom_traj: List[Tensor] = []
+
+        n_steps = max(1, min(int(n_steps), self.num_timesteps))
+        skip = max(1, self.num_timesteps // n_steps)
+        seq = range(0, self.num_timesteps, skip)
+        seq_next = [-1] + list(seq[:-1])
+
+        linker_mask = ~frag_mask
+
+        protein_com = scatter_mean(protein_pos, protein_batch, dim=0)
+        # Same fix as inpainting_sample: shift only the newly-appended
+        # (linker) atoms' raw N(0,1) noise into the pocket's real-world
+        # frame before center_pos_lp subtracts it back out -- otherwise
+        # they land tens of angstroms from the kept fragments, outside
+        # every radius-graph cutoff, and never receive a score signal
+        # pulling them toward the gap they are meant to bridge.
+        ligand_pos_init = ligand_pos_init.clone()
+        ligand_pos_init[linker_mask] = (
+            ligand_pos_init[linker_mask] + protein_com[ligand_batch][linker_mask]
+        )
+        ligand_pos, protein_pos = center_pos_lp(
+            ligand_pos_init, protein_pos, ligand_batch, protein_batch
+        )
+        ligand_atom_type = ligand_atom_type.clone()
+
+        protein_ctx = self.protein_encoder(
+            node_attr=protein_atom_feature_full, pos=protein_pos, batch=protein_batch
+        )
+
+        for i, j in tqdm(
+            list(zip(reversed(seq), reversed(seq_next))), desc="pmdm linker", leave=False
+        ):
+            t = torch.full(
+                size=(num_graphs,), fill_value=i, dtype=torch.long, device=ligand_pos.device
+            )
+            at = _compute_alpha(self.betas, t[0].long())
+
+            frag_pos = ligand_pos[frag_mask]
+            frag_atom_type = ligand_atom_type[frag_mask]
+
+            (
+                pos_eq_global,
+                pos_eq_local,
+                node_score_global,
+                node_score_local,
+                _edge_index,
+                _edge_type,
+                _edge_length,
+                _local_edge_mask,
+            ) = self.net(
+                ligand_atom_type=ligand_atom_type,
+                ligand_pos=ligand_pos,
+                ligand_bond_index=ligand_bond_index,
+                ligand_bond_type=ligand_bond_type,
+                ligand_batch=ligand_batch,
+                protein_embeddings=protein_ctx,
+                protein_pos=protein_pos,
+                protein_batch=protein_batch,
+                time_step=t,
+                linker_mask=linker_mask,
+            )
+
+            t0 = t[0]
+            next_t = (torch.ones(1) * j).to(ligand_pos.device)
+            at_next = _compute_alpha(self.betas, next_t.long())
+            pos_next, atom_next = self._reverse_step(
+                ligand_pos,
+                ligand_atom_type,
+                pos_eq_global,
+                pos_eq_local,
+                node_score_global,
+                node_score_local,
+                sigmas[i],
+                at,
+                at_next,
+                t0,
+                clip,
+                clip_local,
+                global_start_sigma,
+                local_start_sigma,
+                w_global_pos,
+                w_global_node,
+                w_local_pos,
+                w_local_node,
+                sampling_type,
+                step_lr,
+                eta,
+            )
+            ligand_pos, ligand_atom_type = pos_next, atom_next
+            if torch.isnan(ligand_pos).any():
+                raise FloatingPointError(
+                    "NaN in sampled ligand coordinates -- lower step_lr / w_*_pos, "
+                    "or set interference.clip_pos."
+                )
+
+            ligand_pos = ligand_pos.clone()
+            ligand_pos[frag_mask] = frag_pos
+            ligand_atom_type = ligand_atom_type.clone()
+            ligand_atom_type[frag_mask] = frag_atom_type
+
+            ligand_pos, protein_pos = center_pos_pl(
+                ligand_pos, protein_pos, ligand_batch, protein_batch
+            )
+            if clip_pos is not None:
+                ligand_pos = torch.clamp(ligand_pos, min=-clip_pos, max=clip_pos)
+            if keep_traj:
+                pos_traj.append(ligand_pos.clone().cpu())
+                atom_traj.append(ligand_atom_type.clone().cpu())
+
         protein_final = scatter_mean(protein_pos, protein_batch, dim=0)
         shift = protein_com - protein_final
         ligand_pos = ligand_pos + shift[ligand_batch]

@@ -31,6 +31,26 @@
 #
 # What IS rejected is a key NO generator in the chain declares -- a typo'd
 # `guide_mdoe` raises naming the key, rather than quietly doing nothing.
+#
+# MULTI-MODE MODELS (currently: PMDM). One task class can dispatch to more
+# than one generator when `interference.mode` selects which -- e.g. PMDM's
+# de novo path (mode unset) needs a converted `pocket_db` row; its
+# constrained modes (`mode: lead_opt` / `mode: linker`) read a standalone
+# `pocket_file`/`mol_file` pair instead, a different input source, so a
+# different generator class. `mode` is deliberately NOT a field below (it
+# would break every single-mode model, which none of their generators
+# declare) -- add it, plus that mode's own fields, as overrides on top of
+# this file, the same way `configs/pmdm_leadopt_generate.yaml` does:
+#   interference:
+#     mode: lead_opt
+#     pocket_db: null              # unused for this mode; gen_pocket.yaml's
+#                                   # own pocket_db default is Hydra's
+#                                   # required "???" placeholder, so this
+#                                   # must be overridden even though ignored
+#     pocket_file: path/to/pocket.pdb
+#     mol_file: path/to/ligand.sdf
+#     fixed_atoms: [0, 1, 2]        # mode=linker uses atoms_to_replace instead
+#     atoms_to_add: 8
 _target_: MolecularDiffusion.modules.tasks.pocket_generator.PocketGenerator
 
 # A converted ASE db (each model has its own converter under

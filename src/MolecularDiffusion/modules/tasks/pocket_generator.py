@@ -67,21 +67,36 @@ INT_TYPE = torch.int64
 #: ``cli/generate.py`` has at instantiate time (``task_type`` lives on the
 #: *factory*, not the built task).
 #:
+#: A value is either a plain ``(module, name)`` tuple (the task has exactly
+#: one generator) or a ``{mode: (module, name)}`` dict, for a task whose
+#: generator depends on ``interference.mode`` -- e.g. PMDM's de novo path
+#: (``mode=None``) needs a converted ``pocket_db`` row, while its constrained
+#: modes (``mode="lead_opt"``/``"linker"``) read a standalone ``pocket_file``/
+#: ``mol_file`` pair instead: a genuinely different input source, not a value
+#: on the same one, so it is a different generator class even though it is
+#: the SAME task class (``PMDMDiffusionTask`` throughout).
+#:
 #: DiffInt is deliberately absent: it reuses ``DiffSBDDTask`` verbatim, so the
-#: task cannot distinguish the two. DiffInt runs keep using
-#: ``gen_diffint_pocket.yaml``.
-_TASK_TO_GENERATOR = {
+#: task cannot distinguish the two -- unlike PMDM's modes, there is no kwarg
+#: DiffInt's runs set that DiffSBDD's don't, so a ``mode`` axis cannot resolve
+#: this one. DiffInt runs keep using ``gen_diffint_pocket.yaml``.
+_TASK_TO_GENERATOR: Dict[str, Any] = {
     "DiffSBDDTask": ("diffusion_diffsbdd", "DiffSBDDPocketGenerator"),
     "KGDiffDiffusionTask": ("diffusion_kgdiff", "KGDiffPocketGenerator"),
     "IPDiffDiffusionTask": ("diffusion_ipdiff", "IPDiffPocketGenerator"),
-    "PMDMDiffusionTask": ("diffusion_pmdm", "PMDMPocketGenerator"),
+    "PMDMDiffusionTask": {
+        None: ("diffusion_pmdm", "PMDMPocketGenerator"),
+        "lead_opt": ("diffusion_pmdm", "PMDMConstrainedGenerator"),
+        "linker": ("diffusion_pmdm", "PMDMConstrainedGenerator"),
+    },
     "Apo2MolDiffusionTask": ("diffusion_apo2mol", "Apo2MolPocketGenerator"),
     "DiffPharmaTask": ("diffusion_diffpharma", "DiffPharmaPocketGenerator"),
 }
 
 
-def _for_task(task: Any) -> type:
-    """The concrete generator matching ``task``, imported lazily."""
+def _for_task(task: Any, mode: Optional[str] = None) -> type:
+    """The concrete generator matching ``task`` (and ``mode``, for
+    multi-mode tasks), imported lazily."""
     import importlib  # noqa: PLC0415
 
     entry = _TASK_TO_GENERATOR.get(type(task).__name__)
@@ -92,7 +107,24 @@ def _for_task(task: Any) -> type:
             f"Known: {sorted(_TASK_TO_GENERATOR)}. Point `interference` at "
             f"that model's own gen_*.yaml instead."
         )
-    module, name = entry
+    if isinstance(entry, dict):
+        target = entry.get(mode)
+        if target is None:
+            known = sorted(k for k in entry if k is not None)
+            raise ValueError(
+                f"interference/gen_pocket.yaml: task {type(task).__name__} has "
+                f"no generator for interference.mode={mode!r}. Known modes: "
+                f"{known} (omit `mode`, or set it null, for the default)."
+            )
+    else:
+        if mode is not None:
+            raise ValueError(
+                f"interference/gen_pocket.yaml: task {type(task).__name__} "
+                f"does not support interference.mode (got {mode!r}) -- only "
+                f"multi-mode tasks like PMDM's do. Remove `mode` from this run."
+            )
+        target = entry
+    module, name = target
     mod = importlib.import_module(f"MolecularDiffusion.modules.tasks.{module}")
     return getattr(mod, name)
 
@@ -115,8 +147,12 @@ class PocketGenerator:
 
     def __new__(cls, task: Any = None, *args: Any, **kwargs: Any) -> Any:  # noqa: ARG004
         # CPython calls ``type(obj).__init__``, so the subclass' own
-        # __init__ still runs with the config's keys.
-        return object.__new__(_for_task(task) if cls is PocketGenerator else cls)
+        # __init__ still runs with the config's keys (`mode` included --
+        # it is a real constructor param on multi-mode subclasses like
+        # PMDMConstrainedGenerator, not consumed here).
+        return object.__new__(
+            _for_task(task, kwargs.get("mode")) if cls is PocketGenerator else cls
+        )
 
     def __init__(
         self,

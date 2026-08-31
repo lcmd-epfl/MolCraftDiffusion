@@ -58,6 +58,19 @@ MAX_NUM_AA = 20
 _ELEMENT_REMAP = {35: 17}
 
 
+#: PMDM ``utils/protein_ligand.py:18-28`` -- amino-acid index vocabulary.
+AA_NAME_NUMBER = {
+    k: i
+    for i, k in enumerate(
+        "ALA CYS ASP GLU PHE GLY HIS ILE LYS LEU "
+        "MET ASN PRO GLN ARG SER THR VAL TRP TYR".split()
+    )
+}
+#: Reverse of :data:`AA_NAME_NUMBER`, for writing a PDB back out.
+_AA_NUMBER_NAME = {v: k for k, v in AA_NAME_NUMBER.items()}
+BACKBONE_NAMES = ["CA", "C", "N", "O"]
+
+
 def _one_hot_elements(z: np.ndarray) -> torch.Tensor:
     """``(N,)`` raw atomic numbers -> ``(N, len(PMDM_ELEMENTS))`` float one-hot.
 
@@ -149,6 +162,95 @@ class PMDMDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         return self.entries[idx]
+
+
+def parse_pocket_pdb(path: str) -> Dict[str, np.ndarray]:
+    """Minimal PDB ATOM-line parser for a live pocket file, at generate time.
+
+    Relocated from ``docs/model_integrations/pmdm/scripts/convert_dataset.py``
+    (that script now imports this instead of keeping its own copy) so
+    :class:`~MolecularDiffusion.modules.tasks.diffusion_pmdm.PMDMConstrainedGenerator`
+    can read a plain ``pocket_file`` PDB directly, the same way
+    ``PMDMDataset`` reads a converted db row. Returns **raw**
+    arrays (element Z, amino-acid index, backbone flag) -- one-hot expansion
+    is the caller's job, same convention as :class:`PMDMDataset`.
+    """
+    from rdkit import Chem  # noqa: PLC0415
+
+    ptable = Chem.GetPeriodicTable()
+    coords, element, aa_type, is_backbone = [], [], [], []
+    with open(path) as f:
+        for line in f:
+            if line[0:6].strip() == "ENDMDL":
+                break
+            if line[0:6].strip() != "ATOM":
+                continue
+            symb = line[76:78].strip().capitalize() or line[13:14]
+            res_name = line[17:20].strip()
+            if res_name not in AA_NAME_NUMBER:
+                # Non-standard residue: upstream would KeyError. Skip the
+                # whole complex rather than silently mislabel it.
+                raise KeyError(res_name)
+            coords.append([float(line[30:38]), float(line[38:46]), float(line[46:54])])
+            element.append(ptable.GetAtomicNumber(symb))
+            aa_type.append(AA_NAME_NUMBER[res_name])
+            is_backbone.append(line[12:16].strip() in BACKBONE_NAMES)
+    if not coords:
+        raise ValueError(f"no ATOM records found in {path}")
+    return {
+        "pos": np.array(coords, dtype=np.float32),
+        "element": np.array(element, dtype=np.int64),
+        "aa_type": np.array(aa_type, dtype=np.int64),
+        "is_backbone": np.array(is_backbone, dtype=bool),
+    }
+
+
+def write_pocket_pdb(pocket: Dict[str, np.ndarray], path: str) -> None:
+    """Write a pocket back to a PDB that :func:`parse_pocket_pdb` can read.
+
+    Only what the parser actually checks round-trips exactly: element,
+    amino-acid identity, coordinates, and backbone-set membership (not the
+    specific atom name -- ``"CA"``/``"CB"`` stand in for backbone/sidechain).
+    Used by ``docs/model_integrations/pmdm/scripts/extract_smoke_pair.py`` to
+    reconstruct a smoke-test pocket from a converted db row (the original raw
+    PDBs were deleted after conversion).
+    """
+    from rdkit import Chem  # noqa: PLC0415
+
+    ptable = Chem.GetPeriodicTable()
+    n = len(pocket["pos"])
+    with open(path, "w") as f:
+        for i in range(n):
+            elem = ptable.GetElementSymbol(int(pocket["element"][i]))
+            resname = _AA_NUMBER_NAME[int(pocket["aa_type"][i])]
+            name = "CA" if bool(pocket["is_backbone"][i]) else "CB"
+            x, y, z = (float(v) for v in pocket["pos"][i])
+            f.write(
+                f"ATOM  {i + 1:5d} {name:<4s} {resname:<3s} A{1:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}{0.0:6.2f}{0.0:6.2f}          {elem:>2s}\n"
+            )
+
+
+def _read_ligand_sdf(mol_file: str) -> Dict[str, torch.Tensor]:
+    """Read a ligand SDF with a real 3D conformer, at generate time.
+
+    Positions + element one-hot only (against :data:`PMDM_ELEMENTS`) -- the
+    pocket network never reads the rdkit ``ATOM_FAMILIES`` feature
+    (``ligand_atom_feature_full`` is carried by :class:`PMDMDataset` for
+    training parity only), so this skips that feature-factory work entirely.
+    """
+    from rdkit import Chem  # noqa: PLC0415
+
+    supplier = Chem.SDMolSupplier(mol_file, removeHs=False, sanitize=False)
+    mol = next(iter(supplier), None)
+    if mol is None:
+        raise ValueError(f"could not read a molecule from {mol_file}")
+    if mol.GetNumConformers() == 0:
+        raise ValueError(f"{mol_file} has no 3D conformer -- a 2D sketch is not enough.")
+    conf = mol.GetConformer()
+    pos = np.array(conf.GetPositions(), dtype=np.float32)
+    z = np.array([a.GetAtomicNum() for a in mol.GetAtoms()], dtype=np.int64)
+    return {"pos": torch.from_numpy(pos), "atom_feature": _one_hot_elements(z)}
 
 
 def fully_connected_edges(sizes: List[int]) -> torch.Tensor:

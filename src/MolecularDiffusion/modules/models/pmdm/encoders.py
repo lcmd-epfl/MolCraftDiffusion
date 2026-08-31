@@ -24,9 +24,20 @@ Two deliberate deviations from upstream:
 Dropped as unreachable under this integration's scope: the fourier-feature
 branch (``fourier_features=0``), global linear attention
 (``global_linear_attn_every=0``), the node/edge embedding-table branch
-(empty dims), ``linker_mask`` (linker sampling is out of scope), and
-upstream's unused ``ligandemb``/``proteinemb``/inner ``atten_layer``
-parameters in ``EGNN_Sparse_Network`` (the live code path is ``h = z``).
+(empty dims), and upstream's unused ``ligandemb``/``proteinemb``/inner
+``atten_layer`` parameters in ``EGNN_Sparse_Network`` (the live code path is
+``h = z``).
+
+``linker_mask`` (used by ``PMDMEpsNet.linker_sample`` -- see
+``modules/tasks/diffusion_pmdm.py``'s ``PMDMConstrainedGenerator``,
+``mode: linker``) zeros the coordinate-update contribution for every atom it
+does not cover, biasing the EGNN toward moving only the region being
+regenerated
+(``others/PMDM/models/encoders/egnn.py:268-274``). Upstream additionally
+concatenates a zero mask for the pocket half before this point, but that
+pocket-half masking is a no-op on the coordinates this port returns (the
+pocket rows of ``coors_out`` never receive ``+mhat_i`` regardless of the
+mask), so only the ligand-sized mask is threaded through here.
 """
 
 from __future__ import annotations
@@ -375,6 +386,7 @@ class EGNNSparseLayer(nn.Module):
         edge_attr: Optional[Tensor],
         batch: Tensor,
         n_ligand: int,
+        linker_mask: Optional[Tensor] = None,
     ) -> Tensor:
         coors, feats = x[:, : self.pos_dim], x[:, self.pos_dim :]
         src, dst = edge_index[0], edge_index[1]
@@ -393,8 +405,11 @@ class EGNNSparseLayer(nn.Module):
         mhat_i = scatter_add(
             self.coors_mlp(m_ij) * self.coors_norm(rel_coors), dst, dim=0, dim_size=n
         )
+        mhat_i_ligand = mhat_i[:n_ligand]
+        if linker_mask is not None:
+            mhat_i_ligand = mhat_i_ligand * linker_mask.unsqueeze(1)
         coors_out = torch.cat(
-            [coors[:n_ligand] + mhat_i[:n_ligand], coors[n_ligand:]], dim=0
+            [coors[:n_ligand] + mhat_i_ligand, coors[n_ligand:]], dim=0
         )
 
         m_i = scatter_add(m_ij, dst, dim=0, dim_size=n)
@@ -451,10 +466,13 @@ class EGNNSparseNetwork(nn.Module):
         edge_attr: Tensor,
         batch: Tensor,
         n_ligand: int,
+        linker_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         x = torch.cat([pos, z], dim=1)
         for layer in self.mpnn_layers:
-            x = layer(x, edge_index, edge_attr, batch=batch, n_ligand=n_ligand)
+            x = layer(
+                x, edge_index, edge_attr, batch=batch, n_ligand=n_ligand, linker_mask=linker_mask
+            )
         coors, feats = x[:, : self.pos_dim], x[:, self.pos_dim :]
         coors = coors - pos
         return feats[:n_ligand], coors[:n_ligand]

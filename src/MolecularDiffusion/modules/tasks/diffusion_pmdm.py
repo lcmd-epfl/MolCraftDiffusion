@@ -20,26 +20,39 @@ fixed pocket cloud, flat-concatenated with scatter indices. The collate in
 ``data/component/pmdm_data.py`` already emits PMDM's own attribute names, so
 the adapter here is a one-line ``SimpleNamespace(**batch)``.
 
-Out of scope this pass (see the integration plan): ``inpainting_sample`` /
-``linker_sample``, the VAE-latent and property-context branches, and CFG /
-gradient guidance.
+:class:`PMDMConstrainedGenerator` adds the two constrained-sampling modes
+upstream calls "lead optimisation" and "linker design" (``mode: lead_opt``
+/ ``mode: linker``) -- keep part of a starting ligand fixed, regenerate the
+rest, inside the same fixed pocket. Both modes read the pocket and the
+starting ligand from plain files (``pocket_file``/``mol_file``), not a
+converted db -- see ``docs/model_integrations/pmdm/INTEGRATION_PLAN.md``'s
+revision-3 Q1/Q1b. One class for both modes, not two -- the same pattern
+DiffSBDD already uses for its own de novo/inpaint split.
+
+Out of scope this pass (see the integration plan): the VAE-latent and
+property-context branches, and CFG / gradient guidance.
 """
 
 from __future__ import annotations
 
+import os
 import random
 from collections import Counter
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from torch import nn
 
 from MolecularDiffusion.data.component.pmdm_data import (
+    MAX_NUM_AA,
     PMDM_ATOM_VOCAB,
     PMDMDataset,
+    _one_hot_elements,
+    _read_ligand_sdf,
     fully_connected_edges,
+    parse_pocket_pdb,
 )
 from MolecularDiffusion.modules.models.pmdm import PMDMEpsNet
 from MolecularDiffusion.modules.tasks.pocket_generator import PocketGenerator
@@ -81,6 +94,47 @@ _BATCH_KEYS = (
     "protein_atom_feature_full",
     "protein_element_batch",
 )
+
+
+def _build_fragment_init(
+    frag_pos: torch.Tensor,
+    frag_atom_feature: torch.Tensor,
+    frag_batch: torch.Tensor,
+    n_new_atoms: int,
+    num_atom: int,
+    n_samples: int,
+    device: Any,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[int]]:
+    """Per-graph ``ligand_pos_init``/``ligand_atom_type``/``frag_mask`` for
+    constrained sampling: concatenate each graph's (tiled, identical) kept
+    fragment with ``n_new_atoms`` fresh noise-initialised atoms.
+
+    Kept-first, new-appended per graph -- matches upstream
+    ``construct_dataset_pocket``'s ``frag_mask = cat([ones(n_kept), zeros(n_new)])``.
+    Called from :meth:`PMDMDiffusionTask.sample`, since this ~15-line
+    arithmetic is identical between :class:`PMDMConstrainedGenerator`'s two
+    modes.
+    """
+    pos_blocks, feat_blocks, mask_blocks, batch_blocks, sizes = [], [], [], [], []
+    for g in range(n_samples):
+        sel = frag_batch == g
+        n_kept = int(sel.sum().item())
+        pos_blocks.append(frag_pos[sel])
+        pos_blocks.append(torch.randn(n_new_atoms, 3, device=device))
+        feat_blocks.append(frag_atom_feature[sel])
+        feat_blocks.append(torch.randn(n_new_atoms, num_atom, device=device))
+        mask_blocks.append(torch.ones(n_kept, dtype=torch.bool, device=device))
+        mask_blocks.append(torch.zeros(n_new_atoms, dtype=torch.bool, device=device))
+        n_total = n_kept + n_new_atoms
+        batch_blocks.append(torch.full((n_total,), g, dtype=INT_TYPE, device=device))
+        sizes.append(n_total)
+    return (
+        torch.cat(pos_blocks, dim=0),
+        torch.cat(feat_blocks, dim=0),
+        torch.cat(mask_blocks, dim=0),
+        torch.cat(batch_blocks, dim=0),
+        sizes,
+    )
 
 
 class LigandSizeDistribution:
@@ -196,6 +250,8 @@ class PMDMDiffusionTask(nn.Module):
         nodesxsample=None,
         num_steps=None,
         batch=None,
+        mode: Optional[str] = None,
+        n_new_atoms: Optional[int] = None,
         **kwargs,
     ):
         """Sample ligands inside the pocket carried by ``batch``.
@@ -205,6 +261,17 @@ class PMDMDiffusionTask(nn.Module):
         batch (:class:`PMDMPocketGenerator` builds it). There is no
         unconditional mode -- the network has no path that runs without a
         pocket.
+
+        ``mode`` (``None`` | ``"lead_opt"`` | ``"linker"``): ``None`` (default)
+        is the existing de novo path, unchanged. Either other value is
+        constrained sampling -- ``batch`` must ALSO carry
+        ``frag_ligand_pos``/``frag_ligand_atom_feature``/``frag_element_batch``
+        (the kept fragment, tiled once per sample -- :class:`PMDMConstrainedGenerator`
+        builds these), and ``n_new_atoms`` is
+        required (how many brand-new atoms to grow, mirroring upstream's
+        single ``--num_atom``). Dispatches to ``PMDMEpsNet.inpainting_sample``
+        (``"lead_opt"``) or ``linker_sample`` (``"linker"``) instead of
+        ``langevin_dynamics_sample``.
 
         Returns ``(one_hot, charges, coords, node_mask)`` padded to
         ``(B, N, .)``, in the ORIGINAL pocket frame. ``charges`` is zeros:
@@ -220,41 +287,92 @@ class PMDMDiffusionTask(nn.Module):
         device = self.device
         protein_batch = batch["protein_element_batch"].to(device, INT_TYPE)
         n_samples = int(protein_batch.max().item()) + 1
-
-        if nodesxsample is None:
-            nodesxsample = self.node_dist_model.sample(n_samples)
-        sizes = torch.as_tensor(nodesxsample).long().tolist()
-        if len(sizes) != n_samples:
-            raise ValueError(
-                f"nodesxsample has {len(sizes)} entries but the batch carries "
-                f"{n_samples} pockets."
-            )
-
-        total = int(sum(sizes))
         num_atom = self.model.num_atom
-        ligand_batch = torch.repeat_interleave(
-            torch.arange(n_samples, device=device), torch.tensor(sizes, device=device)
+
+        if mode is None:
+            if nodesxsample is None:
+                nodesxsample = self.node_dist_model.sample(n_samples)
+            sizes = torch.as_tensor(nodesxsample).long().tolist()
+            if len(sizes) != n_samples:
+                raise ValueError(
+                    f"nodesxsample has {len(sizes)} entries but the batch carries "
+                    f"{n_samples} pockets."
+                )
+
+            total = int(sum(sizes))
+            ligand_batch = torch.repeat_interleave(
+                torch.arange(n_samples, device=device), torch.tensor(sizes, device=device)
+            )
+            edge_index = fully_connected_edges(sizes).to(device)
+
+            ligand_pos, _pos_traj, ligand_atom_type, _atom_traj = (
+                self.model.langevin_dynamics_sample(
+                    ligand_atom_type=torch.randn(total, num_atom, device=device),
+                    ligand_pos_init=torch.randn(total, 3, device=device),
+                    ligand_bond_index=edge_index,
+                    ligand_bond_type=torch.full(
+                        (edge_index.size(1),), 2, dtype=INT_TYPE, device=device
+                    ),
+                    ligand_batch=ligand_batch,
+                    protein_atom_feature_full=batch["protein_atom_feature_full"].to(
+                        device, torch.float32
+                    ),
+                    protein_pos=batch["protein_pos"].to(device, torch.float32),
+                    protein_batch=protein_batch,
+                    num_graphs=n_samples,
+                    n_steps=int(num_steps or self.model.T),
+                    **kwargs,
+                )
+            )
+            return self._pad(ligand_pos, ligand_atom_type, sizes)
+
+        if mode not in ("lead_opt", "linker"):
+            raise ValueError(
+                f"mode must be one of [None, 'lead_opt', 'linker'], got {mode!r}"
+            )
+        if n_new_atoms is None:
+            raise ValueError("mode requires n_new_atoms: how many new atoms to add.")
+        missing = [
+            k
+            for k in ("frag_ligand_pos", "frag_ligand_atom_feature", "frag_element_batch")
+            if k not in batch
+        ]
+        if missing:
+            raise ValueError(f"mode={mode!r} requires batch keys {missing}.")
+
+        frag_batch = batch["frag_element_batch"].to(device, INT_TYPE)
+        ligand_pos_init, ligand_atom_type, frag_mask, ligand_batch, sizes = (
+            _build_fragment_init(
+                batch["frag_ligand_pos"].to(device, torch.float32),
+                batch["frag_ligand_atom_feature"].to(device, torch.float32),
+                frag_batch,
+                int(n_new_atoms),
+                num_atom,
+                n_samples,
+                device,
+            )
         )
         edge_index = fully_connected_edges(sizes).to(device)
-
-        ligand_pos, _pos_traj, ligand_atom_type, _atom_traj = (
-            self.model.langevin_dynamics_sample(
-                ligand_atom_type=torch.randn(total, num_atom, device=device),
-                ligand_pos_init=torch.randn(total, 3, device=device),
-                ligand_bond_index=edge_index,
-                ligand_bond_type=torch.full(
-                    (edge_index.size(1),), 2, dtype=INT_TYPE, device=device
-                ),
-                ligand_batch=ligand_batch,
-                protein_atom_feature_full=batch["protein_atom_feature_full"].to(
-                    device, torch.float32
-                ),
-                protein_pos=batch["protein_pos"].to(device, torch.float32),
-                protein_batch=protein_batch,
-                num_graphs=n_samples,
-                n_steps=int(num_steps or self.model.T),
-                **kwargs,
-            )
+        sampler = (
+            self.model.inpainting_sample if mode == "lead_opt" else self.model.linker_sample
+        )
+        ligand_pos, _pos_traj, ligand_atom_type, _atom_traj = sampler(
+            ligand_atom_type=ligand_atom_type,
+            ligand_pos_init=ligand_pos_init,
+            ligand_bond_index=edge_index,
+            ligand_bond_type=torch.full(
+                (edge_index.size(1),), 2, dtype=INT_TYPE, device=device
+            ),
+            ligand_batch=ligand_batch,
+            frag_mask=frag_mask,
+            protein_atom_feature_full=batch["protein_atom_feature_full"].to(
+                device, torch.float32
+            ),
+            protein_pos=batch["protein_pos"].to(device, torch.float32),
+            protein_batch=protein_batch,
+            num_graphs=n_samples,
+            n_steps=int(num_steps or self.model.T),
+            **kwargs,
         )
         return self._pad(ligand_pos, ligand_atom_type, sizes)
 
@@ -534,3 +652,208 @@ class PMDMPocketGenerator(PocketGenerator):
                 "or set interference.validity_filter=false to keep raw samples."
             )
         print(f"[{self.tag}] wrote {written} ligands to {self.output_path}")
+
+
+def _pocket_from_file(pocket_file: str) -> Dict[str, torch.Tensor]:
+    """Used by :class:`PMDMConstrainedGenerator`: parse a plain pocket PDB
+    and build the same 31-dim
+    ``protein_atom_feature_full`` :class:`PMDMDataset` builds from a db row.
+    """
+    pocket = parse_pocket_pdb(pocket_file)
+    pocket_element_ohe = _one_hot_elements(pocket["element"])
+    aa_ohe = torch.nn.functional.one_hot(
+        torch.from_numpy(pocket["aa_type"]).long(), num_classes=MAX_NUM_AA
+    ).float()
+    is_backbone = torch.from_numpy(pocket["is_backbone"])
+    return {
+        "protein_pos": torch.from_numpy(pocket["pos"]).float(),
+        "protein_atom_feature_full": torch.cat(
+            [pocket_element_ohe, aa_ohe, is_backbone.view(-1, 1).float()], dim=-1
+        ),
+    }
+
+
+class PMDMConstrainedGenerator(PMDMPocketGenerator):
+    """Constrained generation (lead optimisation OR linker design), behind
+    ``interference/gen_pocket`` (``mode: lead_opt`` / ``mode: linker``) --
+    see ``pocket_generator.py``'s ``_TASK_TO_GENERATOR`` for the dispatch.
+
+    One class for both -- following the same pattern DiffSBDD already uses
+    for its own de novo/inpaint split (``gen_diffsbdd_pocket.yaml`` vs
+    ``gen_diffsbdd_inpaint.yaml``, same ``_target_``): the two upstream
+    sampling methods (``inpainting_sample``/``linker_sample``) share their
+    entire loop, differing only in which atoms are held fixed and which
+    internal EGNN masking mode fires (:class:`PMDMDiffusionTask.sample`'s
+    ``mode`` dispatch). A second class here would be exactly the
+    "interface with one implementation" ``gen_diffsbdd_inpaint.yaml``'s own
+    header warns against.
+
+    ``mode`` picks the task and which of the two mutually-exclusive atom
+    lists is read:
+
+    - ``"lead_opt"`` -- keep ``fixed_atoms`` of a starting ligand
+      (``mol_file``) exactly as given, grow ``atoms_to_add`` brand-new atoms
+      onto it. Mirrors upstream's ``sample_frag.py --keep_index``.
+    - ``"linker"`` -- delete ``atoms_to_replace`` (typically the gap between
+      two fragments) and regrow ``atoms_to_add`` atoms in their place.
+      Mirrors upstream's ``sample_linker.py --mask``.
+
+    Both read the pocket from ``pocket_file`` -- a plain PDB, NOT a
+    converted db, unlike :class:`PMDMPocketGenerator`'s de novo path (which
+    stays a separate class: its input genuinely is a different *source*,
+    not just a different knob -- a converted ASE db row, not a live file).
+    """
+
+    db_required_msg = None  # pocket comes from pocket_file, not pocket_db
+
+    def __init__(
+        self,
+        task,
+        mode: str = "lead_opt",
+        pocket_db: Optional[str] = None,  # noqa: ARG002 -- unused, see below
+        pocket_index: int = 0,  # noqa: ARG002
+        mol_size: Optional[list] = None,  # noqa: ARG002 -- unused, same reason
+        pocket_file: Optional[str] = None,
+        mol_file: Optional[str] = None,
+        fixed_atoms: Optional[List[int]] = None,
+        atoms_to_replace: Optional[List[int]] = None,
+        atoms_to_add: Optional[int] = None,
+        num_generate: int = 20,
+        batch_size: int = 4,
+        num_steps: Optional[int] = None,
+        sampling_type: str = "generalized",
+        step_lr: float = 1.0e-6,
+        clip: float = 1000.0,
+        clip_pos: Optional[float] = None,
+        global_start_sigma: Optional[float] = None,
+        w_global_pos: float = 1.0,
+        w_global_node: float = 1.0,
+        w_local_pos: float = 1.0,
+        w_local_node: float = 1.0,
+        output_path: str = "generated_pmdm_constrained",
+        seed: int = 42,
+        device: Optional[str] = None,
+        validity_filter: bool = True,
+        max_retries: int = 10,
+        **kwargs: Any,
+    ) -> None:
+        if mode not in ("lead_opt", "linker"):
+            raise ValueError(f"interference.mode must be 'lead_opt' or 'linker', got {mode!r}.")
+        if not pocket_file:
+            raise ValueError("interference.pocket_file is required: a plain pocket PDB.")
+        if not mol_file:
+            raise ValueError("interference.mol_file is required: the ligand to modify.")
+        if atoms_to_add is None:
+            raise ValueError(
+                "interference.atoms_to_add is required: how many new atoms to grow/regrow."
+            )
+        if mode == "lead_opt":
+            if not fixed_atoms:
+                raise ValueError(
+                    "interference.fixed_atoms is required for mode=lead_opt: "
+                    "0-indexed atoms of mol_file to keep."
+                )
+            if atoms_to_replace:
+                raise ValueError("mode=lead_opt uses fixed_atoms, not atoms_to_replace.")
+        else:
+            if not atoms_to_replace:
+                raise ValueError(
+                    "interference.atoms_to_replace is required for mode=linker: "
+                    "0-indexed atoms of mol_file to delete and regrow."
+                )
+            if fixed_atoms:
+                raise ValueError("mode=linker uses atoms_to_replace, not fixed_atoms.")
+        # pocket_db/pocket_index/mol_size are accepted-and-ignored, not
+        # forwarded: constrained mode never reads a pocket db and always
+        # derives ligand size from n_kept + n_new_atoms (see _pocket()/
+        # _pick_sizes() below), but the shared gen_pocket.yaml config always
+        # carries these three base fields. They must be declared params
+        # here -- if left undeclared, each would land in **kwargs and
+        # either hit PocketGenerator.__init__'s hard reject of undeclared
+        # keys, or (mol_size specifically) collide with the hardcoded
+        # mol_size=None a few lines below ("multiple values for keyword
+        # argument 'mol_size'").
+        super().__init__(
+            task,
+            pocket_db=None,
+            pocket_index=0,
+            num_generate=num_generate,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            mol_size=None,
+            sampling_type=sampling_type,
+            step_lr=step_lr,
+            clip=clip,
+            clip_pos=clip_pos,
+            global_start_sigma=global_start_sigma,
+            w_global_pos=w_global_pos,
+            w_global_node=w_global_node,
+            w_local_pos=w_local_pos,
+            w_local_node=w_local_node,
+            output_path=output_path,
+            seed=seed,
+            device=device,
+            validity_filter=validity_filter,
+            max_retries=max_retries,
+            **kwargs,
+        )
+        self.mode = mode
+        self.tag = f"pmdm-{'leadopt' if mode == 'lead_opt' else 'linker'}"
+        self.pocket_file = pocket_file
+        self.mol_file = mol_file
+        self.keep_atoms = sorted(set(int(i) for i in fixed_atoms)) if fixed_atoms else None
+        self.replace_atoms = set(int(i) for i in atoms_to_replace) if atoms_to_replace else None
+        self.n_new_atoms = int(atoms_to_add)
+
+    def _pocket(self) -> Dict[str, Any]:
+        item = _pocket_from_file(self.pocket_file)
+        ligand = _read_ligand_sdf(self.mol_file)
+        n_lig = ligand["pos"].size(0)
+        if self.mode == "lead_opt":
+            bad = [i for i in self.keep_atoms if i < 0 or i >= n_lig]
+            if bad:
+                raise ValueError(
+                    f"fixed_atoms {bad} out of range for mol_file with {n_lig} atoms."
+                )
+            keep_idx = torch.tensor(self.keep_atoms, dtype=torch.long)
+        else:
+            bad = [i for i in self.replace_atoms if i < 0 or i >= n_lig]
+            if bad:
+                raise ValueError(
+                    f"atoms_to_replace {bad} out of range for mol_file with {n_lig} atoms."
+                )
+            keep_idx = torch.tensor(
+                [i for i in range(n_lig) if i not in self.replace_atoms], dtype=torch.long
+            )
+            if keep_idx.numel() == 0:
+                raise ValueError(
+                    "atoms_to_replace covers every atom in mol_file -- nothing is kept."
+                )
+        item["name"] = os.path.basename(self.pocket_file)
+        item["frag_ligand_pos"] = ligand["pos"][keep_idx]
+        item["frag_ligand_atom_feature"] = ligand["atom_feature"][keep_idx]
+        return item
+
+    @staticmethod
+    def _repeat(item: Dict[str, torch.Tensor], n: int) -> Dict[str, Any]:
+        size = len(item["protein_pos"])
+        n_kept = item["frag_ligand_pos"].size(0)
+        return {
+            "protein_pos": item["protein_pos"].repeat(n, 1),
+            "protein_atom_feature_full": item["protein_atom_feature_full"].repeat(n, 1),
+            "protein_element_batch": torch.repeat_interleave(
+                torch.arange(n, dtype=INT_TYPE), size
+            ),
+            "frag_ligand_pos": item["frag_ligand_pos"].repeat(n, 1),
+            "frag_ligand_atom_feature": item["frag_ligand_atom_feature"].repeat(n, 1),
+            "frag_element_batch": torch.repeat_interleave(
+                torch.arange(n, dtype=INT_TYPE), n_kept
+            ),
+        }
+
+    def _pick_sizes(self, batch: Dict[str, Any], n: int) -> torch.Tensor:
+        n_kept = batch["frag_ligand_pos"].size(0) // n
+        return torch.full((n,), n_kept + self.n_new_atoms, dtype=INT_TYPE)
+
+    def _sample_kwargs(self, item: Dict[str, Any], n: int) -> Dict[str, Any]:
+        return {**self.sampler_kwargs, "mode": self.mode, "n_new_atoms": self.n_new_atoms}
