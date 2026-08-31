@@ -9,6 +9,7 @@
   <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Weights-HuggingFace-yellow" alt="Weights"/></a>
   <a href="https://huggingface.co/pregH/MolecularDiffusion"><img src="https://img.shields.io/badge/Dataset-HuggingFace-yellow" alt="Dataset"/></a>
   <a href="https://preghosh.github.io/MolCraftDiffusion/"><img src="https://img.shields.io/badge/Docs-blue" alt="Docs"/></a>
+  <a href="https://github.com/lcmd-epfl/AutomaticMolCraft"><img src="https://img.shields.io/badge/Web%20UI-AutomaticMolCraft-purple" alt="Web UI"/></a>
 </p>
 
 ---
@@ -17,7 +18,7 @@ Three-dimensional molecular generative models place atoms directly in Cartesian 
 
 **One platform brings together a broad range of 3D molecular generators for de novo, property-directed, structure-guided, shape-conditioned, pocket-conditioned, fragment-based, and pharmacophore-driven design.**
 
-MolCraftDiffusion unifies data preparation, training and fine-tuning, guided generation, checkpoint handling, and evaluation behind a modular architecture and consistent CLI. This shared workflow makes diverse generators easier to build, compare, and apply across virtual library construction, chemical-space exploration, inverse design, and structure-based discovery.
+MolCraftDiffusion unifies data preparation, training and fine-tuning, guided generation, checkpoint handling, and evaluation behind a modular architecture and consistent CLI. This shared workflow makes diverse generators easier to build, compare, and apply across virtual library construction, chemical-space exploration, inverse design, and structure-based discovery. A no-code browser UI, [AutomaticMolCraft](https://github.com/lcmd-epfl/AutomaticMolCraft), is also available for users who prefer not to work from the CLI.
 
 <p align="center">
   <img src="./images/overview.png" alt="workflow" width="700"/>
@@ -124,6 +125,10 @@ MolCraftDiff --help         # all commands
 MolCraftDiff train --help   # per-command help
 ```
 
+### Web interface
+
+Prefer a browser to a CLI? [AutomaticMolCraft](https://github.com/lcmd-epfl/AutomaticMolCraft) is a no-code web UI built on top of MolCraftDiffusion — property-guided generation, structure-guided inpainting/outpainting, training configuration, dataset curation, and linked 2D/3D visualization, all through a local server (`dev.sh`).
+
 ### Analysis & Post-processing
 
 ```bash
@@ -204,3 +209,4 @@ If you use MolCraftDiffusion in your research, please cite:
 	year = {2026},
 }
 ```
+
