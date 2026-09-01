@@ -22,8 +22,9 @@ from ase.data import atomic_numbers as ase_atomic_numbers
 
 from MolecularDiffusion.modules.models.difflinker import utils as dl_utils
 from MolecularDiffusion.modules.models.difflinker.edm import EDM
-from MolecularDiffusion.modules.models.difflinker.egnn import Dynamics
+from MolecularDiffusion.modules.models.difflinker.egnn import Dynamics, DynamicsWithPockets
 from MolecularDiffusion.modules.models.difflinker.linker_size import DistributionNodes
+from MolecularDiffusion.modules.models.difflinker.size_gnn import LinkerSizePredictor
 
 # Column order the conversion script
 # (docs/model_integrations/difflinker/scripts/convert_zinc_pt_to_asedb.py)
@@ -152,6 +153,10 @@ class DiffLinkerTaskFactory:
         normalize_factors: tuple = (1, 4, 10),
         center_of_mass: str = "fragments",
         atom_vocab: Optional[list] = None,
+        pocket_conditioned: bool = False,
+        context_node_nf: Optional[int] = None,
+        graph_type: str = "FC",
+        size_gnn_checkpoint: Optional[str] = None,
         **kwargs,
     ):
         self.task_type = task_type
@@ -178,6 +183,15 @@ class DiffLinkerTaskFactory:
         self.normalize_factors = tuple(normalize_factors)
         self.center_of_mass = center_of_mass
         self.atom_vocab = atom_vocab or kwargs.get("atom_vocab")
+        # Pockets checkpoint family (INTEGRATION_PLAN.md Revision 9) --
+        # additive only, every field defaults to today's non-pocket
+        # behavior.
+        self.pocket_conditioned = pocket_conditioned
+        self.context_node_nf = context_node_nf
+        self.graph_type = graph_type
+        # Size GNN (INTEGRATION_PLAN.md Revision 8) -- additive only, a
+        # converted LinkerSizePredictor checkpoint path.
+        self.size_gnn_checkpoint = size_gnn_checkpoint
         self.kwargs = kwargs
 
     def build(self) -> "DiffLinkerTask":
@@ -205,7 +219,14 @@ class DiffLinkerTaskFactory:
             normalize_factors=self.normalize_factors,
             center_of_mass=self.center_of_mass,
             atom_vocab=self.atom_vocab,
+            pocket_conditioned=self.pocket_conditioned,
+            context_node_nf=self.context_node_nf,
+            graph_type=self.graph_type,
         )
+        if self.size_gnn_checkpoint:
+            self.task.size_predictor = LinkerSizePredictor.from_checkpoint(
+                self.size_gnn_checkpoint
+            )
         return self.task
 
 
@@ -239,13 +260,36 @@ class DiffLinkerTask(nn.Module):
         normalize_factors: tuple,
         center_of_mass: str,
         atom_vocab: Optional[list] = None,
+        pocket_conditioned: bool = False,
+        context_node_nf: Optional[int] = None,
+        graph_type: str = "FC",
     ):
         super().__init__()
 
         act = nn.SiLU() if activation == "silu" else nn.SiLU()
-        context_node_nf = 2 if anchors_context else 1
+        if context_node_nf is None:
+            if pocket_conditioned:
+                raise ValueError(
+                    "DiffLinkerTask: pocket_conditioned=True requires an "
+                    "explicit context_node_nf -- the Pockets checkpoints' "
+                    "context shape (anchors + fragment_only_mask + "
+                    "pocket_mask, or fragment_only_mask + pocket_mask) "
+                    "isn't derivable from anchors_context alone. See "
+                    "INTEGRATION_PLAN.md Revision 9, Phase A6's table for "
+                    "the real per-checkpoint value."
+                )
+            context_node_nf = 2 if anchors_context else 1
 
-        dynamics = Dynamics(
+        # Pockets checkpoint family (INTEGRATION_PLAN.md Revision 9):
+        # DynamicsWithPockets overrides only forward()/edge construction --
+        # identical parameter shapes to Dynamics for the same
+        # hidden_nf/in_node_nf/context_node_nf/n_layers, so switching
+        # classes here changes no state-dict key. `graph_type` was
+        # previously hardcoded "FC"; now threaded through so pocket
+        # checkpoints (graph_type "4A"/"FC-10A-4A") get their own dispatch,
+        # unchanged default for every existing non-pocket config.
+        dynamics_cls = DynamicsWithPockets if pocket_conditioned else Dynamics
+        dynamics = dynamics_cls(
             n_dims=n_dims,
             in_node_nf=in_node_nf,
             context_node_nf=context_node_nf,
@@ -264,7 +308,7 @@ class DiffLinkerTask(nn.Module):
             model=model,
             normalization=normalization,
             centering=False,
-            graph_type="FC",
+            graph_type=graph_type,
         )
         self.edm = EDM(
             dynamics=dynamics,
@@ -283,6 +327,13 @@ class DiffLinkerTask(nn.Module):
         self.center_of_mass = center_of_mass
         self.loss_type = diffusion_loss_type
         self.atom_vocab = atom_vocab
+        self.pocket_conditioned = pocket_conditioned
+        self.context_node_nf = context_node_nf
+        self.graph_type = graph_type
+        # Size GNN (INTEGRATION_PLAN.md Revision 8) -- optional, additive
+        # alternative to node_dist_model histogram sampling in sample()
+        # below. None (default) => today's behavior, unchanged.
+        self.size_predictor: Optional[LinkerSizePredictor] = None
 
         # tasks_generate.py::preprocess_ref_structure/structural_guidance read
         # these generically off `task.model` (duck-typed, not
@@ -330,6 +381,13 @@ class DiffLinkerTask(nn.Module):
         return self._adapter
 
     def forward(self, batch: dict):
+        if self.pocket_conditioned:
+            raise NotImplementedError(
+                "DiffLinkerTask.forward(): training on pocket-conditioned "
+                "(MOAD) data is out of scope this integration -- only "
+                "inference from the released Pockets checkpoints is "
+                "supported (see INTEGRATION_PLAN.md Revision 9)."
+            )
         pc = self._get_adapter()(batch)
         x = pc["positions"]
         h = pc["one_hot"]
@@ -454,6 +512,32 @@ class DiffLinkerTask(nn.Module):
     def device(self) -> torch.device:
         return next(self.parameters()).device
 
+    def _load_pocket(self, pocket_db: str, pocket_index: int, device):
+        """Loads one pocket's positions + one-hot atom types from a
+        single-row-per-pocket ASE db (INTEGRATION_PLAN.md Revision 9's
+        pocket data adapter -- see
+        docs/model_integrations/difflinker/scripts/convert_pocket_pt_to_asedb.py
+        for how such a db is built). `pocket_index` is 0-indexed, matching
+        `PocketGenerator`'s own `pocket_index` convention (`ase.db` row ids
+        are 1-based, hence the `+ 1` below).
+        """
+        import ase.db  # noqa: PLC0415
+
+        with ase.db.connect(pocket_db) as db:
+            atoms = db.get(id=pocket_index + 1).toatoms()
+        pos = torch.tensor(atoms.get_positions(), dtype=torch.float32, device=device)
+        vocab_z = {ase_atomic_numbers[s]: i for i, s in enumerate(self.atom_vocab)}
+        one_hot = torch.zeros(len(atoms), len(self.atom_vocab), device=device)
+        for i, z in enumerate(atoms.get_atomic_numbers()):
+            if int(z) not in vocab_z:
+                raise ValueError(
+                    f"DiffLinkerTask._load_pocket(): pocket atom {i} (Z={z}) "
+                    f"is not in atom_vocab {self.atom_vocab} -- rebuild "
+                    f"{pocket_db} with only vocabulary elements."
+                )
+            one_hot[i, vocab_z[int(z)]] = 1.0
+        return pos, one_hot
+
     def sample(
         self,
         nodesxsample: Optional[torch.Tensor] = None,
@@ -476,15 +560,49 @@ class DiffLinkerTask(nn.Module):
         see INTEGRATION_PLAN.md's Task-contract mapping section for the
         exact kwarg contract this method mirrors.
 
-        Several kwargs accepted here are explicitly out of scope this pass
-        (inert, not implemented with real behavior): `batch`, `num_steps`,
-        `condition_mode`, `outpaint_cfgs`, `use_noised_conditioning`,
-        `n_frames` (no trajectory export), `n_retrys`/`t_retry` (no
-        bond-distance retry loop), `context` (property-conditioning value --
-        DiffLinker has no `prop_dist_model`, so this is always None here).
+        `outpaint_cfgs` is read for two keys: `anchor_indices` -- a list of
+        1-indexed positions into the reference fragment file, matching
+        upstream's `--anchors` CLI convention
+        (`others/difflinker/generate.py:129-132`). Required when this
+        checkpoint's `center_of_mass == "anchors"` (see INTEGRATION_PLAN.md
+        Revision 5, Point 1/2); unused when `center_of_mass == "fragments"`.
+        `max_generate_attempts` -- a bounded full-restart retry count around
+        `self.edm.sample_chain(...)`, catching `FoundNaNException`
+        (INTEGRATION_PLAN.md Revision 6, Point 1). Mirrors upstream's own
+        `generate.py` retry loop (fixed budget, full restart, no partial/
+        `t_retry`-style resume -- `EDM.sample_chain` draws fresh noise
+        internally every call). Defaults to `1` (today's single-shot
+        behavior, unchanged for any config that doesn't set it). This is
+        independent of the still-inert `n_retrys`/`t_retry` kwargs below,
+        which the shared `structural_guidance` dispatch always forces to
+        `0`/`None` -- do not confuse the two.
+
+        When `self.pocket_conditioned` (the three genuinely pocket-
+        conditioned Pockets checkpoints, INTEGRATION_PLAN.md Revision 9),
+        `outpaint_cfgs` additionally requires `pocket_db` -- a path to a
+        single-row-per-pocket ASE db (see
+        `convert_pocket_pt_to_asedb.py`) -- and accepts `pocket_index`
+        (0-indexed, default 0). The pocket is inserted as a fixed,
+        non-diffused block between the fragment and linker regions;
+        `nodesxsample` keeps its existing meaning (fragment + linker atom
+        count, NOT including the pocket).
+
+        When `self.size_predictor` is set (an optional `LinkerSizePredictor`,
+        INTEGRATION_PLAN.md Revision 8), the incoming `nodesxsample` is
+        overridden with a fragment-geometry-conditioned prediction instead
+        of whatever `GenerativeFactory` sampled from `node_dist_model`.
+
+        Several other kwargs accepted here are explicitly out of scope this
+        pass (inert, not implemented with real behavior): `batch`,
+        `num_steps`, `condition_mode`, `use_noised_conditioning`, `n_frames`
+        (no trajectory export), `n_retrys`/`t_retry` (no bond-distance retry
+        loop), `context` (property-conditioning value -- DiffLinker has no
+        `prop_dist_model`, so this is always None here).
         """
-        del batch, num_steps, condition_mode, outpaint_cfgs
+        del batch, num_steps, condition_mode
         del use_noised_conditioning, n_retrys, t_retry, context, kwargs
+        outpaint_cfgs = outpaint_cfgs or {}
+        anchor_indices = outpaint_cfgs.get("anchor_indices")
 
         if condition_tensor is None:
             raise NotImplementedError(
@@ -513,47 +631,197 @@ class DiffLinkerTask(nn.Module):
         if ref_onehot.shape[0] != batch_size:
             ref_onehot = ref_onehot.expand(batch_size, -1, -1)
 
-        max_atoms = max(int(nodesxsample.max().item()), ref_natoms)
+        if self.size_predictor is not None:
+            # Size GNN (INTEGRATION_PLAN.md Revision 8): overrides whatever
+            # GenerativeFactory already sampled from node_dist_model for
+            # this batch with a fragment-geometry-conditioned prediction.
+            # ref_onehot/ref_positions are already exactly the fragment-only
+            # tensors this predictor needs (implicit all-ones fragment mask
+            # -- the reference structure *is* the fragment, by
+            # construction). Predicted once, before the retry loop below
+            # (documented scope simplification, see sample()'s docstring
+            # discussion in INTEGRATION_PLAN.md Revision 8).
+            predicted_linker_sizes = self.size_predictor.predict(ref_onehot, ref_positions)
+            nodesxsample = ref_natoms + predicted_linker_sizes.to(device)
 
-        positions = torch.zeros(batch_size, max_atoms, 3, device=device)
-        one_hot = torch.zeros(batch_size, max_atoms, n_vocab, device=device)
-        fragment_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
-        linker_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
-        anchors = torch.zeros(batch_size, max_atoms, 1, device=device)
-        atom_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+        if self.pocket_conditioned:
+            pocket_db = outpaint_cfgs.get("pocket_db")
+            if not pocket_db:
+                raise ValueError(
+                    "DiffLinkerTask.sample(): this checkpoint is "
+                    "pocket_conditioned=True and requires "
+                    "interference.condition_configs.outpaint_cfgs.pocket_db "
+                    "(an ASE db path with one pocket per row -- see "
+                    "convert_pocket_pt_to_asedb.py); outpaint_cfgs."
+                    "pocket_index (0-indexed, default 0) selects the row."
+                )
+            pocket_index = int(outpaint_cfgs.get("pocket_index", 0))
+            pocket_pos, pocket_onehot = self._load_pocket(pocket_db, pocket_index, device)
+            pocket_natoms = pocket_pos.shape[0]
+            pocket_end = ref_natoms + pocket_natoms
 
-        for b in range(batch_size):
-            total_b = max(int(nodesxsample[b].item()), ref_natoms)
-            positions[b, :ref_natoms] = ref_positions[b]
-            one_hot[b, :ref_natoms] = ref_onehot[b]
-            fragment_mask[b, :ref_natoms, 0] = 1.0
-            linker_mask[b, ref_natoms:total_b, 0] = 1.0
-            atom_mask[b, :total_b, 0] = 1.0
-            # anchors default to zero -- a degraded-but-valid fallback, since
-            # anchors are a soft context feature in DiffLinker, not a hard
-            # constraint (INTEGRATION_PLAN.md's Task-contract mapping).
+            max_atoms = max(int(nodesxsample.max().item()), ref_natoms) + pocket_natoms
 
-        if self.anchors_context:
-            mask_context = torch.cat([anchors, fragment_mask], dim=-1)
+            positions = torch.zeros(batch_size, max_atoms, 3, device=device)
+            one_hot = torch.zeros(batch_size, max_atoms, n_vocab, device=device)
+            fragment_only_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+            pocket_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+            linker_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+            anchors = torch.zeros(batch_size, max_atoms, 1, device=device)
+            atom_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+
+            for b in range(batch_size):
+                total_b = max(int(nodesxsample[b].item()), ref_natoms) + pocket_natoms
+                positions[b, :ref_natoms] = ref_positions[b]
+                one_hot[b, :ref_natoms] = ref_onehot[b]
+                fragment_only_mask[b, :ref_natoms, 0] = 1.0
+                positions[b, ref_natoms:pocket_end] = pocket_pos
+                one_hot[b, ref_natoms:pocket_end] = pocket_onehot
+                pocket_mask[b, ref_natoms:pocket_end, 0] = 1.0
+                linker_mask[b, pocket_end:total_b, 0] = 1.0
+                atom_mask[b, :total_b, 0] = 1.0
+                # anchor_indices unchanged: still 1-indexed into the
+                # fragment-only ordering, still placed at [0:ref_natoms) --
+                # inserting the pocket after the fragment does not renumber
+                # anchors (INTEGRATION_PLAN.md Revision 9).
+                if anchor_indices:
+                    for idx in anchor_indices:
+                        if not 1 <= idx <= ref_natoms:
+                            raise ValueError(
+                                "DiffLinkerTask.sample(): anchor_indices "
+                                f"entry {idx} is out of range -- the "
+                                f"reference fragment has {ref_natoms} atoms "
+                                f"(valid range 1..{ref_natoms})."
+                            )
+                        anchors[b, idx - 1, 0] = 1.0
+
+            # EDM's "not diffused" mask is the union of fragment + pocket
+            # (EDM.forward/sample_chain: z_t = xh * fragment_mask + z_t *
+            # linker_mask) -- distinct from fragment_only_mask/pocket_mask,
+            # which instead feed context so the network can tell fragment
+            # and pocket apart (others/difflinker/src/lightning.py:163-164;
+            # see INTEGRATION_PLAN.md Revision 9's "pocket data adapter"
+            # section).
+            fragment_mask = fragment_only_mask + pocket_mask
+            if self.anchors_context:
+                mask_context = torch.cat(
+                    [anchors, fragment_only_mask, pocket_mask], dim=-1
+                )
+            else:
+                mask_context = torch.cat([fragment_only_mask, pocket_mask], dim=-1)
+
+            # DynamicsWithPockets.forward treats `edge_mask` as a flat
+            # per-node batch-index tensor (get_dist_edges_4A/get_dist_edges),
+            # not the dense pairwise mask the non-pocket path below builds.
+            edge_mask = torch.arange(batch_size, device=device).repeat_interleave(max_atoms)
+
+            if self.center_of_mass == "fragments":
+                center_of_mass_mask = fragment_only_mask
+            elif self.center_of_mass == "anchors":
+                if not anchor_indices:
+                    raise ValueError(
+                        "DiffLinkerTask.sample(): this checkpoint's "
+                        "center_of_mass == 'anchors' requires real anchor "
+                        "atom indices -- pass them via "
+                        "interference.condition_configs.outpaint_cfgs."
+                        "anchor_indices (1-indexed positions into the "
+                        "reference fragment file)."
+                    )
+                center_of_mass_mask = anchors
+            else:
+                raise NotImplementedError(self.center_of_mass)
+
+            positions = dl_utils.remove_partial_mean_with_mask(
+                positions, atom_mask, center_of_mass_mask
+            )
         else:
-            mask_context = fragment_mask
+            max_atoms = max(int(nodesxsample.max().item()), ref_natoms)
 
-        am = atom_mask.squeeze(-1)
-        edge_mask_full = am.unsqueeze(2) * am.unsqueeze(1)
-        diag = ~torch.eye(max_atoms, dtype=torch.bool, device=device)
-        edge_mask_full = edge_mask_full * diag.unsqueeze(0)
-        edge_mask = edge_mask_full.reshape(-1, 1)
+            positions = torch.zeros(batch_size, max_atoms, 3, device=device)
+            one_hot = torch.zeros(batch_size, max_atoms, n_vocab, device=device)
+            fragment_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+            linker_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
+            anchors = torch.zeros(batch_size, max_atoms, 1, device=device)
+            atom_mask = torch.zeros(batch_size, max_atoms, 1, device=device)
 
-        chain = self.edm.sample_chain(
-            x=positions,
-            h=one_hot,
-            node_mask=atom_mask,
-            fragment_mask=fragment_mask,
-            linker_mask=linker_mask,
-            edge_mask=edge_mask,
-            context=mask_context,
-            keep_frames=1,
-        )
+            for b in range(batch_size):
+                total_b = max(int(nodesxsample[b].item()), ref_natoms)
+                positions[b, :ref_natoms] = ref_positions[b]
+                one_hot[b, :ref_natoms] = ref_onehot[b]
+                fragment_mask[b, :ref_natoms, 0] = 1.0
+                linker_mask[b, ref_natoms:total_b, 0] = 1.0
+                atom_mask[b, :total_b, 0] = 1.0
+                # anchors: real indices from outpaint_cfgs.anchor_indices when
+                # supplied (upstream's --anchors convention, 1-indexed into the
+                # reference fragment), else left zero -- a degraded-but-valid
+                # fallback only when center_of_mass == "fragments" (anchors are
+                # a soft context feature there); center_of_mass == "anchors"
+                # fails fast below instead of silently centering on an
+                # all-zero mask (INTEGRATION_PLAN.md Revision 5, Points 1/2).
+                if anchor_indices:
+                    for idx in anchor_indices:
+                        if not 1 <= idx <= ref_natoms:
+                            raise ValueError(
+                                "DiffLinkerTask.sample(): anchor_indices entry "
+                                f"{idx} is out of range -- the reference "
+                                f"fragment has {ref_natoms} atoms (valid range "
+                                f"1..{ref_natoms})."
+                            )
+                        anchors[b, idx - 1, 0] = 1.0
+
+            if self.anchors_context:
+                mask_context = torch.cat([anchors, fragment_mask], dim=-1)
+            else:
+                mask_context = fragment_mask
+
+            am = atom_mask.squeeze(-1)
+            edge_mask_full = am.unsqueeze(2) * am.unsqueeze(1)
+            diag = ~torch.eye(max_atoms, dtype=torch.bool, device=device)
+            edge_mask_full = edge_mask_full * diag.unsqueeze(0)
+            edge_mask = edge_mask_full.reshape(-1, 1)
+
+            if self.center_of_mass == "fragments":
+                center_of_mass_mask = fragment_mask
+            elif self.center_of_mass == "anchors":
+                if not anchor_indices:
+                    raise ValueError(
+                        "DiffLinkerTask.sample(): this checkpoint's "
+                        "center_of_mass == 'anchors' requires real anchor atom "
+                        "indices -- pass them via "
+                        "interference.condition_configs.outpaint_cfgs."
+                        "anchor_indices (1-indexed positions into the "
+                        "reference fragment file), or use a DiffLinker "
+                        "checkpoint that does not require anchor information "
+                        "(center_of_mass == 'fragments') instead."
+                    )
+                center_of_mass_mask = anchors
+            else:
+                raise NotImplementedError(self.center_of_mass)
+
+            positions = dl_utils.remove_partial_mean_with_mask(
+                positions, atom_mask, center_of_mass_mask
+            )
+
+        max_attempts = max(1, int(outpaint_cfgs.get("max_generate_attempts", 1)))
+        last_exc: Optional[dl_utils.FoundNaNException] = None
+        chain = None
+        for _attempt in range(max_attempts):
+            try:
+                chain = self.edm.sample_chain(
+                    x=positions,
+                    h=one_hot,
+                    node_mask=atom_mask,
+                    fragment_mask=fragment_mask,
+                    linker_mask=linker_mask,
+                    edge_mask=edge_mask,
+                    context=mask_context,
+                    keep_frames=1,
+                )
+                break
+            except dl_utils.FoundNaNException as exc:
+                last_exc = exc
+        if chain is None:
+            raise last_exc
         final_xh = chain[0]
         out_positions = final_xh[..., :3]
         out_one_hot = final_xh[..., 3:]

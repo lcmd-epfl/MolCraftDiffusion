@@ -1,0 +1,94 @@
+# @package _global_
+# Fragment/linker generation from a FROM-SCRATCH DiffLinker checkpoint (train
+# your own via configs/difflinker_train.yaml -- there is no zoo checkpoint
+# asset for the from-scratch path, same as the `default` variant), with
+# linker size AUTO-SELECTED by a converted Size GNN checkpoint instead of a
+# fixed/ranged mol_size -- see
+# docs/model_integrations/difflinker/INTEGRATION_PLAN.md's "Revision 8 --
+# Size GNN" section for the full design.
+#
+#   MolCraftDiff generate configs/difflinker_train_full_with_size_gnn_generate.yaml
+#
+# PREREQUISITE 1 -- train your own DiffLinker checkpoint (there is nothing to
+# fetch here; `chkpt_directory` below points at THIS integration's own
+# smoke-test checkpoint as a working example -- replace it with wherever
+# your own configs/difflinker_train.yaml run wrote its
+# lightning_logs/version_*/checkpoints/ directory):
+#
+#   MolCraftDiff train configs/difflinker_train.yaml
+#
+# PREREQUISITE 2 -- fetch/convert the Size GNN checkpoint (this one IS a zoo
+# asset, resolved via ${asset:...} below):
+#
+#   MolCraftDiff zoo fetch difflinker_size_gnn/pretrained
+#   # or, to reproduce the conversion from raw upstream weights:
+#   python docs/model_integrations/difflinker/scripts/convert_size_gnn_checkpoint.py \
+#       --variant zinc
+#
+# WHAT THE MODEL CONDITIONS ON. Same fixed fragment atoms
+# (reference_structure_path) as every other DiffLinker generate config.
+# Additionally, `tasks.size_gnn_checkpoint` below loads a `LinkerSizePredictor`
+# (modules/models/difflinker/size_gnn.py) that predicts a linker atom count
+# from the fragment's own geometry (pairwise distances + atom types) via a
+# real forward pass -- a genuinely different mechanism from `mol_size`/
+# `node_dist_model`'s unconditional training-set histogram. When
+# `size_gnn_checkpoint` is set, `DiffLinkerTask.sample()` OVERRIDES whatever
+# `nodesxsample` GenerativeFactory computed from `interference.mol_size`
+# below -- so `mol_size` is effectively inert here (kept at a value
+# consistent with the Size GNN's own linker-size vocabulary just so
+# GenerativeFactory's pre-sample() scaffold-size validation doesn't
+# complain; see `_enforce_scaffold_size` in tasks_generate.py).
+#
+# WORKING GENERATION -- WHY THIS PAIRS WITH A FROM-SCRATCH CHECKPOINT, NOT A
+# RELEASED PRETRAINED ONE. Every released pretrained DiffLinker checkpoint
+# (zinc/geom, given-anchors or not) diverges to NaN for any nonzero linker
+# size, root-caused to their `tanh: false` unbounded per-layer coordinate
+# update (see INTEGRATION_PLAN.md's Revision 7). Size GNN's own forward pass
+# is numerically ordinary (no coordinate-update layer at all) but any
+# prediction it makes feeds a nonzero linker_mask into whichever DiffLinker
+# checkpoint samples the linker -- so pairing it with a released checkpoint
+# would buy nothing. This config instead pairs it with a from-scratch
+# checkpoint (freshly initialized weights, numerically well-behaved
+# regardless of input scale) to demonstrate the auto-size-selection
+# capability end to end -- PASS in Tester Log attempt 7: 5/5 batches, 20/20
+# molecules, no NaN/Inf, linker size confirmed genuinely varying per batch
+# (4 or 5 atoms, not a hardcoded constant), all bond distances in the real
+# covalent range (1.08-1.53 A).
+#
+# `zinc_size_gnn.ckpt`'s linker-size vocabulary is 10 discrete sizes,
+# 3-12 atoms (others/difflinker/src/const.py::ZINC_TRAIN_LINKER_ID2SIZE) --
+# predictions are always in that range, regardless of mol_size below.
+
+defaults:
+  - tasks: diffusion_difflinker
+  - interference: gen_outpaint
+  - _self_
+
+name: "difflinker_train_full_with_size_gnn_generate"
+
+# Not a zoo asset -- this is a user-trained checkpoint (see PREREQUISITE 1
+# above). The path below is this integration's own smoke-test checkpoint,
+# kept as a real, working example of the expected shape.
+chkpt_directory: "docs/model_integrations/difflinker/train_full_resumed/lightning_logs/version_3/checkpoints/"
+atom_vocab: [C, O, N, F, S, Cl, Br, I]
+
+seed: 9
+
+tasks:
+  size_gnn_checkpoint: ${asset:difflinker_size_gnn/pretrained/zinc_size_gnn.ckpt}
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  output_path: generated_difflinker_train_full_with_size_gnn
+  n_frames: 0
+  # Inert once size_gnn_checkpoint overrides nodesxsample (see header) --
+  # kept inside the reference fragment's own valid scaffold range so
+  # GenerativeFactory's pre-sample() validation doesn't reject it.
+  mol_size: [20, 25]
+  condition_configs:
+    reference_structure_path: ${asset:inputs/difflinker/fragments/reference_fragment.xyz}
+    # Same as generate_full.yaml: DiffLinkerTask.sample() doesn't implement
+    # the retry loop this inert kwarg guards, so disabling it unlocks real
+    # batching for free.
+    n_retrys: 0

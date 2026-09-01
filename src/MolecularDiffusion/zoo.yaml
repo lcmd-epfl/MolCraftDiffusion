@@ -297,22 +297,20 @@ assets:
     redistribute: true
     upstream:
       repo: https://zenodo.org/records/14855728
-      note: 'MOSES2_training_val_dataset.pkl. The exact 150,000-molecule training
-        pool upstream''s released diffusion.pt was trained on -- confirmed against
-        others/DiffSMol/data/MOSES2/MOSES2_training_val_dataset_split.pt, whose
-        train (119,917) and valid (30,083) index sets partition range(150000)
-        exactly with no gaps or overlap, i.e. the first 150,000 entries of the
-        raw pkl''s molecule list, in original order (not a random sample of the
-        larger file). Zenodo record''s own API metadata declares license.id
-        "cc-by-4.0", access_right "open" (checked directly via
-        https://zenodo.org/api/records/14855728, not assumed from DiffSMol''s
-        readme) -- a separate audit from the DiffSMol code/checkpoint''s
+      note: MOSES2_training_val_dataset.pkl. The exact 150,000-molecule training pool
+        upstream's released diffusion.pt was trained on -- confirmed against others/DiffSMol/data/MOSES2/MOSES2_training_val_dataset_split.pt,
+        whose train (119,917) and valid (30,083) index sets partition range(150000)
+        exactly with no gaps or overlap, i.e. the first 150,000 entries of the raw
+        pkl's molecule list, in original order (not a random sample of the larger
+        file). Zenodo record's own API metadata declares license.id "cc-by-4.0", access_right
+        "open" (checked directly via https://zenodo.org/api/records/14855728, not
+        assumed from DiffSMol's readme) -- a separate audit from the DiffSMol code/checkpoint's
         PolyForm-Noncommercial licence (diffsmol/pretrained, above), since a repo
         can license its code differently from the corpus it trains on. Coordinates
-        and heavy-atom element symbols only (no explicit hydrogens at all --
-        already stripped by upstream''s own preprocessing); no shape embeddings
-        computed yet. Run docs/model_integrations/diffsmol/scripts/precompute_shapes.py
-        against this db to add shape conditioning.'
+        and heavy-atom element symbols only (no explicit hydrogens at all -- already
+        stripped by upstream's own preprocessing); no shape embeddings computed yet.
+        Run docs/model_integrations/diffsmol/scripts/precompute_shapes.py against
+        this db to add shape conditioning.
   inputs/diffsmol/shapes:
     kind: dataset
     rev: main
@@ -1909,48 +1907,231 @@ assets:
       size: 35596
     license: CC-BY-4.0
     redistribute: true
-    reason: 'Two layers, audited separately, both permissive. (1) The corpus:
-      RDB7 (Spiekermann et al., "High Accuracy Barrier Heights, Enthalpies,
-      and Rate Coefficients for Chemical Reactions") is deposited on Zenodo
-      as record 13328872; the record''s own API metadata declares
-      license.id "cc-by-4.0", access_right "open" (checked directly via
-      https://zenodo.org/api/records/13328872, not assumed from GoFlow''s
-      readme). goflow_rdb7_reactions.pkl, random_split.pkl,
-      rxn_core_split.pkl and barrier_split.pkl are all RDB7-derived
-      (reactions.pkl is this platform''s own conversion of the raw
-      rdb7_full.csv/.xyz; the three split files are GoFlow''s own
-      pre-computed 80/10/10 partitions of that same corpus, shipped
-      in-tree at others/nice/goflow/data/RDB7/splits/). CC-BY-4.0 permits
-      redistribution with attribution -- Spiekermann et al. must be
-      credited alongside any redistribution of these files. (2) The code
-      that produced feat_dict.pkl and the conversion script is GoFlow''s
-      own (MIT, see goflow/pretrained''s sibling reasoning below) --
-      irrelevant to this asset''s own licence since feat_dict.pkl is a
-      derived numeric vocabulary (per-descriptor cardinalities), not a
-      creative work, and carries no separate rights beyond the CC-BY-4.0
-      corpus it was learned from. GoFlow''s own code licence (MIT --
-      LICENSE file at others/nice/goflow/LICENSE, "MIT License, Copyright
-      (c) 2025 Leonard Galustian, Esther Heid"; confirmed independently via
-      api.github.com/repos/heid-lab/goflow -> .license.spdx_id "MIT") is a
-      SEPARATE audit from this data asset''s CC-BY-4.0 -- no pretrained
-      checkpoint exists to register (verified: no *.ckpt anywhere in the
-      upstream checkout), so there is no code-licensed weight asset here
-      to conflate this data asset with.'
+    reason: 'Two layers, audited separately, both permissive. (1) The corpus: RDB7
+      (Spiekermann et al., "High Accuracy Barrier Heights, Enthalpies, and Rate Coefficients
+      for Chemical Reactions") is deposited on Zenodo as record 13328872; the record''s
+      own API metadata declares license.id "cc-by-4.0", access_right "open" (checked
+      directly via https://zenodo.org/api/records/13328872, not assumed from GoFlow''s
+      readme). goflow_rdb7_reactions.pkl, random_split.pkl, rxn_core_split.pkl and
+      barrier_split.pkl are all RDB7-derived (reactions.pkl is this platform''s own
+      conversion of the raw rdb7_full.csv/.xyz; the three split files are GoFlow''s
+      own pre-computed 80/10/10 partitions of that same corpus, shipped in-tree at
+      others/nice/goflow/data/RDB7/splits/). CC-BY-4.0 permits redistribution with
+      attribution -- Spiekermann et al. must be credited alongside any redistribution
+      of these files. (2) The code that produced feat_dict.pkl and the conversion
+      script is GoFlow''s own (MIT, see goflow/pretrained''s sibling reasoning below)
+      -- irrelevant to this asset''s own licence since feat_dict.pkl is a derived
+      numeric vocabulary (per-descriptor cardinalities), not a creative work, and
+      carries no separate rights beyond the CC-BY-4.0 corpus it was learned from.
+      GoFlow''s own code licence (MIT -- LICENSE file at others/nice/goflow/LICENSE,
+      "MIT License, Copyright (c) 2025 Leonard Galustian, Esther Heid"; confirmed
+      independently via api.github.com/repos/heid-lab/goflow -> .license.spdx_id "MIT")
+      is a SEPARATE audit from this data asset''s CC-BY-4.0 -- no pretrained checkpoint
+      exists to register (verified: no *.ckpt anywhere in the upstream checkout),
+      so there is no code-licensed weight asset here to conflate this data asset with.'
     upstream:
       repo: https://github.com/heid-lab/goflow
       commit: 3ec00a09d9b283e3258ae01fe5d3e35bb3812bff
       corpus: https://zenodo.org/records/13328872
-      source: 'others/nice/goflow/data/RDB7/{raw_data,processed_data,splits}/
-        (already vendored in the checkout, no re-fetch needed -- see
-        readme.md:29,39). goflow_rdb7_reactions.pkl converted from
-        raw_data/{rdb7_full.csv,rdb7_full.xyz} by
-        docs/model_integrations/goflow/scripts/convert_dataset.py, the
-        full 11,926-reaction corpus, zero conversion errors.'
-      note: REQUIRED together -- GoFlowDataModule.load() reads feat_dict.pkl
-        to fix n_atom_rdkit_feats and asserts its width against the
-        converted reactions; split_path/split_file select one of the three
-        split pickles to partition goflow_rdb7_reactions.pkl into
-        train/val/test.
+      source: others/nice/goflow/data/RDB7/{raw_data,processed_data,splits}/ (already
+        vendored in the checkout, no re-fetch needed -- see readme.md:29,39). goflow_rdb7_reactions.pkl
+        converted from raw_data/{rdb7_full.csv,rdb7_full.xyz} by docs/model_integrations/goflow/scripts/convert_dataset.py,
+        the full 11,926-reaction corpus, zero conversion errors.
+      note: REQUIRED together -- GoFlowDataModule.load() reads feat_dict.pkl to fix
+        n_atom_rdkit_feats and asserts its width against the converted reactions;
+        split_path/split_file select one of the three split pickles to partition goflow_rdb7_reactions.pkl
+        into train/val/test.
+  difflinker/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: zinc_difflinker.ckpt
+      sha256: 3bb0e12fe1e29c53bde226e237d78cc51cecbffc914bcfe3976fafb1b2ce3a86
+      size: 8007730
+    - path: zinc_given_anchors_difflinker.ckpt
+      sha256: 4b381094208daddaa4939f64403df51b51289242b34a4dbc2a7afec4337a48cc
+      size: 8011466
+    - path: geom_difflinker.ckpt
+      sha256: 8d3243d56735f8d512864dfbe63cb8843399fc4ae18964d02767858d3e7c03b4
+      size: 6010870
+    - path: geom_given_anchors_difflinker.ckpt
+      sha256: c3f141b07db497618a7fd573822e05bace7a17f97437e61b4acbe6e52b7c4554
+      size: 6013954
+    - path: pockets_backbone_difflinker.ckpt
+      sha256: 1bce98f7e8ad6a7e7828a4e506bb674b59ae27be277e6d7b820af599fa6725d7
+      size: 6014702
+    - path: pockets_full_difflinker.ckpt
+      sha256: 267958f1597bedc5c3ad55c61b6982baa6dd69d9360500287d9c6079a3505870
+      size: 6014150
+    - path: pockets_full_no_anchors_difflinker.ckpt
+      sha256: db461ce87abb4f991c24521d66d697da8106fd82e2096b89cbdecee8299de74b
+      size: 6014644
+    - path: pockets_unconditioned_difflinker.ckpt
+      sha256: b9629f4e8713b2b6cf6070ed657c4c51e116917dc56b1a06768d8b401994f853
+      size: 6014368
+    license: CC-BY-4.0
+    redistribute: true
+    reason: 'Extended (Revisions 8-9) with the four Pockets checkpoints, re-audited
+      on top of the original four. Code (others/difflinker, MIT) unchanged from the
+      original audit. Weights span TWO Zenodo records, checked independently via
+      their APIs, not assumed to share one licence just because both are named "DiffLinker
+      Models": zinc_difflinker.ckpt, zinc_given_anchors_difflinker.ckpt, geom_difflinker.ckpt,
+      geom_given_anchors_difflinker.ckpt, pockets_backbone_difflinker.ckpt (raw pockets_difflinker_backbone.ckpt,
+      24,348,772 B) and pockets_unconditioned_difflinker.ckpt (raw pockets_difflinker_unconditioned.ckpt,
+      24,377,320 B) all come from record 7121300 -- https://zenodo.org/api/records/7121300
+      declares license.id "cc-by-4.0", access_right "open" (re-verified this pass,
+      matches the original audit). pockets_full_difflinker.ckpt (raw pockets_difflinker_full_fc_pdb_excluded.ckpt,
+      24,127,727 B) and pockets_full_no_anchors_difflinker.ckpt (raw pockets_difflinker_full_no_anchors_fc_pdb_excluded.ckpt,
+      24,151,967 B) come from a newer, separate deposit, record 10988017 (same title,
+      "DiffLinker Models" -- a later, data-leakage-corrected retraining per INTEGRATION_PLAN.md''s
+      Revision 9 Phase A, not a new title to search for) -- checked independently via
+      https://zenodo.org/api/records/10988017, which also declares license.id "cc-by-4.0",
+      access_right "open". Both records'' file listings confirm the exact raw byte
+      sizes above, so the converted files really do derive from the records named,
+      not guessed. CC-BY-4.0 permits redistribution with attribution -- Igashov et
+      al. (DiffLinker) must be credited, citing 10.5281/zenodo.7121300 for six of
+      the eight files and 10.5281/zenodo.10988017 for the two "_fc_pdb_excluded" ones.
+      Functional status (not a redistribution blocker, a usage caveat -- see docs/architectures.md
+      and FINAL_REPORT.md for the full picture): generation from zinc*/geom*/pockets_unconditioned
+      is broken (tanh:false numerical instability, INTEGRATION_PLAN.md Revision 7).
+      pockets_backbone, pockets_full_no_anchors and pockets_full generate correctly
+      (Tester Log attempt 7, 9/9 trials, 3 seeds each) despite sharing the identical
+      tanh:false weights -- the sparser DynamicsWithPockets distance-cutoff graph
+      does not exhibit the same blow-up the dense fully-connected graph does (observed,
+      not fully root-caused). All eight files are auditably licensed for reuse regardless
+      of which subset currently generates.'
+    upstream:
+      repo: https://github.com/igashov/difflinker
+      source: https://zenodo.org/records/7121300 (Zenodo record 7121300, "DiffLinker
+        Models", DOI 10.5281/zenodo.7121300 -- six of the eight files) and https://zenodo.org/records/10988017
+        (Zenodo record 10988017, also "DiffLinker Models", DOI 10.5281/zenodo.10988017
+        -- pockets_full_difflinker.ckpt and pockets_full_no_anchors_difflinker.ckpt
+        only)
+  difflinker/data:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: geom_multifrag_test.pt
+      sha256: 887ae407a691d330e5825a8161dc6df3784645e60bfa7c993c061a7dd6afdaa6
+      size: 4633693
+    license: CC-BY-4.0
+    redistribute: true
+    reason: 'GEOM fragment/linker/anchor test split, a *separate* Zenodo record from
+      the ZINC split already registered at data/zinc/difflinker (record 7121271) --
+      this one is record 7121278, "DiffLinker GEOM Dataset", found only via the second,
+      easy-to-miss others/difflinker/data/README.md, not the top-level README. Checked
+      directly, not assumed from the ZINC entry above: https://zenodo.org/api/records/7121278
+      declares license.id "cc-by-4.0", access_right "open" -- same permissive licence
+      family as the checkpoints above, but audited as its own asset per docs/adding_new_models.md''s
+      rule that a model''s own weights are not the same asset as an upstream corpus
+      it bundles, and one dataset licence never implies another. File size (4,633,693
+      bytes) matches both the Zenodo record''s own listing and the Planner''s Phase
+      A investigation figure exactly. CC-BY-4.0 permits redistribution with attribution
+      -- Igashov et al. (DiffLinker, Zenodo DOI 10.5281/zenodo.7121278) must be credited
+      alongside any redistribution.'
+    upstream:
+      repo: https://github.com/igashov/difflinker
+      source: https://zenodo.org/records/7121278 (Zenodo record 7121278, "DiffLinker
+        GEOM Dataset", DOI 10.5281/zenodo.7121278)
+  difflinker_size_gnn/pretrained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: zinc_size_gnn.ckpt
+      sha256: a8dd0f4bd6e8e73773cdfa4566968a9e3671f15b4e293a051f15912837247cf2
+      size: 7983240
+    - path: geom_size_gnn.ckpt
+      sha256: 50f56669705f782a2228899b004aa501ab93b09287fdf7b793cfadf5aa26f6b6
+      size: 8008008
+    license: CC-BY-4.0
+    redistribute: true
+    reason: 'DiffLinker''s auxiliary linker-size classifier (SizeGNN/SizeClassifier)
+      -- a separate asset from difflinker/pretrained because it is loaded through
+      a different config key (tasks.size_gnn_checkpoint, not chkpt_directory), same
+      rule as ipdiff/ipnet. Same Zenodo record as the original ZINC/GEOM checkpoints
+      -- record 7121300, "DiffLinker Models" -- re-checked directly via https://zenodo.org/api/records/7121300,
+      which lists zinc_size_gnn.ckpt (31,857,945 B) and geom_size_gnn.ckpt (31,988,245
+      B) and declares license.id "cc-by-4.0", access_right "open". Raw byte sizes
+      match the record''s own listing exactly, confirming provenance. CC-BY-4.0 permits
+      redistribution with attribution -- Igashov et al. (DiffLinker, Zenodo DOI 10.5281/zenodo.7121300).
+      Functional note (not a licence issue): only useful paired with a numerically-stable
+      DiffLinker checkpoint -- the from-scratch train_full_resumed checkpoint (Tester
+      Log attempt 7, PASS, 100% success), not any of the released pretrained diffusion
+      checkpoints (all share the tanh:false instability). See INTEGRATION_PLAN.md''s
+      Revision 8.'
+    upstream:
+      repo: https://github.com/igashov/difflinker
+      source: https://zenodo.org/records/7121300 (Zenodo record 7121300, "DiffLinker
+        Models", DOI 10.5281/zenodo.7121300)
+  data/moad/data:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: MOAD_test.pt
+      sha256: af50b0721d0ad2b22e09846453f14361df857e668daf3623e830758a7ed06fcb
+      size: 1965077
+    - path: MOAD_test_bb.pt
+      sha256: f161779f63a24ad7487c616fa446b5d42d6b0b249e4d9208022a5c3b675a1aca
+      size: 8471337
+    - path: MOAD_test_full.pt
+      sha256: e2ab6896fe26a66b929091533edb4b658716d52a76bedbc3bbcd13bb15ecbef1
+      size: 14827177
+    license: CC-BY-4.0
+    redistribute: true
+    reason: 'Binding MOAD pocket test-split corpus, a *separate* corpus from the ZINC/GEOM
+      fragment-linking data already registered at data/zinc/difflinker and difflinker/data
+      -- named by corpus (moad), not by model, per docs/adding_new_models.md''s naming
+      rule. Used as the n_node_dist (ligand-size histogram) provenance source for
+      the four Pockets checkpoints (unconditioned from MOAD_test.pt''s num_atoms;
+      backbone/full/full_no_anchors from fragment_only_mask+linker_mask across MOAD_test_bb.pt/MOAD_test_full.pt
+      -- see INTEGRATION_PLAN.md''s Revision 9 "Data source" correction), same role
+      geom_multifrag_test.pt plays for the GEOM checkpoints. Zenodo record 7121280,
+      "DiffLinker Pockets Dataset", found via others/difflinker/data/README.md. Checked
+      directly via https://zenodo.org/api/records/7121280: license.id "cc-by-4.0",
+      access_right "open". File sizes (MOAD_test.pt 1,965,077 B, MOAD_test_bb.pt 8,471,337
+      B, MOAD_test_full.pt 14,827,177 B) match the record''s own listing exactly.
+      CC-BY-4.0 permits redistribution with attribution -- Igashov et al. (DiffLinker,
+      Zenodo DOI 10.5281/zenodo.7121280).'
+    upstream:
+      repo: https://github.com/igashov/difflinker
+      source: https://zenodo.org/records/7121280 (Zenodo record 7121280, "DiffLinker
+        Pockets Dataset", DOI 10.5281/zenodo.7121280)
+  inputs/difflinker/data:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: fragment_239.xyz
+      sha256: 12e4ca809fb53a481807d898ffa77b2dcf81dc3269796e5d39898f545a7a5a00
+      size: 1516
+    - path: pocket_239_full.db
+      sha256: 8a1ca56a2130e2874964ddffc2e94762729b8dff1b1aee1f4454b776984d7217
+      size: 69632
+    - path: pocket_239_bb.db
+      sha256: 2543d1fc2a33fb442ee7485310e07610c903e3693bb3ecab23d2824e03f0fd5c
+      size: 69632
+    license: CC-BY-4.0
+    redistribute: true
+    reason: 'A run-input fixture for the three genuinely pocket-conditioned checkpoints
+      (pockets_backbone/full/full_no_anchors), not a corpus -- one fixed fragment
+      + pocket pair (row 239 of MOAD_test_full.pt/MOAD_test_bb.pt, extracted via
+      convert_pocket_pt_to_asedb.py) that condition_configs.reference_structure_path/outpaint_cfgs.pocket_db
+      point ${asset:...} at, the same role inputs/difflinker/fragments plays for
+      the non-pocket checkpoints'' reference_fragment.xyz. Derived data, so it inherits
+      its source corpus''s licence rather than being independently audited: extracted
+      directly from data/moad/data (Zenodo record 7121280, "DiffLinker Pockets Dataset",
+      license.id "cc-by-4.0", access_right "open", checked directly via https://zenodo.org/api/records/7121280
+      -- see that asset''s own reason field for the full evidence). CC-BY-4.0 permits
+      redistribution of a derived extract with attribution -- Igashov et al. (DiffLinker,
+      Zenodo DOI 10.5281/zenodo.7121280).'
+    upstream:
+      repo: https://github.com/igashov/difflinker
+      source: https://zenodo.org/records/7121280 (Zenodo record 7121280, "DiffLinker
+        Pockets Dataset", DOI 10.5281/zenodo.7121280 -- row 239 of MOAD_test_full.pt/MOAD_test_bb.pt)
 models:
   apo2mol:
     family: pocket-conditioned-diffusion
@@ -2003,12 +2184,66 @@ models:
     tags:
     - fragment-linking
     - outpainting
+    - pretrained
+    - pocket-conditioned
     variants:
       default:
         data: data/zinc/difflinker
-    summary: DiffLinker generates the 3D linker that joins a set of given molecular
+      train_full_with_size_gnn:
+        data: data/zinc/difflinker
+        extra:
+          size_gnn: difflinker_size_gnn/pretrained
+      zinc_given_anchors:
+        checkpoint: difflinker/pretrained
+      zinc:
+        checkpoint: difflinker/pretrained
+      geom_given_anchors:
+        checkpoint: difflinker/pretrained
+        data: difflinker/data
+      geom:
+        checkpoint: difflinker/pretrained
+        data: difflinker/data
+      pockets_backbone:
+        checkpoint: difflinker/pretrained
+        data: data/moad/data
+      pockets_full_no_anchors:
+        checkpoint: difflinker/pretrained
+        data: data/moad/data
+      pockets_full:
+        checkpoint: difflinker/pretrained
+        data: data/moad/data
+      pockets_unconditioned:
+        checkpoint: difflinker/pretrained
+        data: data/moad/data
+    summary: 'DiffLinker generates the 3D linker that joins a set of given molecular
       fragments, keeping the fragment atoms fixed and growing only the connecting
-      atoms.
+      atoms. The `default` variant trains a fresh model from scratch on ZINC data
+      and is the working, smoke-tested generation path; `train_full_with_size_gnn`
+      is the same from-scratch checkpoint paired with a converted `SizeGNN` classifier
+      (`extra.size_gnn`) that auto-predicts linker size from fragment geometry instead
+      of sampling a fixed/ranged `mol_size` -- PASS, 100% success (Tester Log attempt
+      7). The four non-pocket pretrained variants (`zinc`, `zinc_given_anchors`,
+      `geom`, `geom_given_anchors`, upstream''s own released Zenodo checkpoints)
+      convert and load cleanly -- zero state-dict key drops, byte-identical to the
+      raw weights -- but **generation from these four is broken**: every real fragment-linking
+      request NaNs partway through the reverse-diffusion loop, root-caused and reproduced
+      identically against upstream''s own unmodified code -- `tanh: false`, unbounded
+      per-layer EGNN coordinate updates, a genuine numerical-instability defect in
+      the released weights themselves, not a MolCraftDiffusion porting bug. The four
+      Pockets variants (Revision 9) share that same `tanh: false` weight property,
+      yet split unevenly: `pockets_unconditioned` (architecturally identical to `geom_given_anchors`
+      -- plain `Dynamics`, dense fully-connected graph) hits the identical NaN wall.
+      `pockets_backbone`, `pockets_full_no_anchors` and `pockets_full` (genuinely
+      pocket-conditioned -- `DynamicsWithPockets`, a sparser 4A/FC-10A-4A distance-cutoff
+      graph) **generate correctly** -- 9/9 trials PASS across 3 seeds each, non-degenerate
+      3D structures, no pocket clashes (Tester Log attempt 7) -- contradicting this
+      integration''s own prediction that the shared `tanh: false` property would
+      doom them too; the sparser graph apparently does not compound the same blow-up
+      the dense graph does (an observed pattern, not a proven root cause). See docs/model_integrations/difflinker/FINAL_REPORT.md
+      for the full diagnostic chain and docs/architectures.md for the per-checkpoint
+      breakdown. Train your own weights via `configs/difflinker_train.yaml`, or use
+      `pockets_backbone`/`pockets_full_no_anchors`/`pockets_full`, for working generation
+      today.'
   diffpharma:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffpharma

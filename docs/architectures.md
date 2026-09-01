@@ -24,13 +24,39 @@ Where a row below says the shipped checkpoint behaves a certain way, that is
 the checkpoint you get. Three cases:
 
 - **Fetch and go** — apo2mol, diffdec, diffint, diffpharma, diffsbdd,
-  flowmol_graph3d, gcdm, ipdiff, kgdiff, ligandiff, ligandiff_multi, loqi, midi.
+  flowmol_graph3d, gcdm, ipdiff, kgdiff, ligandiff, ligandiff_multi, loqi, midi,
+  and three of difflinker's checkpoints (see below).
 - **Build locally** — diffsmol, ditmc, equifm, nextmol, pmdm. Weights exist,
   but their upstream projects do not permit redistribution, so the zoo ships
   the recipe instead: `MolCraftDiff zoo recipe <asset>` prints the download,
   the conversion command and the expected checksum.
-- **Train it yourself** — difflinker and silvr have no pretrained weights at
-  all. The zoo still carries their datasets and example configs.
+- **Train it yourself** — silvr has no pretrained weights at all. difflinker's
+  situation is more nuanced, split by checkpoint, not all-or-nothing:
+  - **Broken** — the four ZINC/GEOM checkpoints (`zinc`, `zinc_given_anchors`,
+    `geom`, `geom_given_anchors`) and one of the four Pockets checkpoints
+    (`pockets_unconditioned`) convert and load cleanly — zero state-dict key
+    drops — and are registered in the zoo for reuse (e.g. as an init
+    checkpoint for fine-tuning), but **generation from them is currently
+    broken**: a genuine numerical-instability defect in the released weights
+    themselves (`tanh: false`, unbounded per-layer coordinate updates),
+    reproduced identically against upstream's own unmodified code.
+  - **Fetch and go** — the other three Pockets checkpoints (`pockets_backbone`,
+    `pockets_full_no_anchors`, `pockets_full`) share that same weight defect
+    but **generate correctly** — `MolCraftDiff zoo fetch --model difflinker`
+    then `MolCraftDiff generate examples/difflinker_pockets_backbone_generate.yaml`
+    (or `..._full_generate.yaml` / `..._full_no_anchors_generate.yaml`) works
+    out of the box. Their `DynamicsWithPockets` sparser distance-cutoff graph
+    apparently does not compound the same numerical blow-up the dense
+    fully-connected graph does — observed, not fully root-caused.
+  - **Train it yourself** — for a working non-pocket checkpoint, train via
+    `configs/difflinker_train.yaml`. Optionally pair the result with the
+    zoo's `difflinker_size_gnn` checkpoint (`examples/difflinker_train_full_with_size_gnn_generate.yaml`)
+    to have linker size auto-predicted from fragment geometry instead of
+    sampling a fixed/ranged `mol_size`.
+
+  See `docs/model_integrations/difflinker/FINAL_REPORT.md` for the full
+  diagnostic chain. The zoo carries every checkpoint's datasets and example
+  configs regardless of which bucket it falls in.
 
 See the [Model Zoo](model_zoo/index.md) to get
 started.
@@ -102,7 +128,7 @@ Synthesizable generation can also be steered by a pharmacophore — see section 
 | `diffusion_kgdiff.yaml` | `diffusion_kgdiff` | **Protein pocket** | Choose this when you want samples **pushed towards better predicted binding affinity** — it scores and steers itself, with no second model to train. Turning that steering off gives you plain [TargetDiff](https://arxiv.org/abs/2303.03543), so this config doubles as the unguided baseline to compare against. The steering only means anything if your training set carries **real measured affinities**. |
 | `diffusion_ipdiff.yaml` | `diffusion_ipdiff` | **Protein pocket** | Binding awareness is learned during training rather than steered at sampling, so there is no knob to turn. The heaviest sampler here, and the shipped checkpoint tends to produce carbon-heavy, chemically dull molecules — check your output before trusting it. |
 | `diffusion_apo2mol.yaml` | `diffusion_apo2mol` | **Apo protein pocket** | The one for **targets with no known binder**: it takes a ligand-free structure and reshapes the pocket as it designs, instead of assuming the pocket is already the right shape. Run the full sampling schedule: shorten it and the pocket never moves, which defeats the point. On the one complex tested, the shipped weights moved the pocket *away* from the true bound shape — validate before relying on it. |
-| `diffusion_difflinker.yaml` | `diffusion_difflinker` | **Fragments** to join | **Linker design**: hold fragments fixed, generate the atoms joining them. You choose the linker length — it does not pick one for you. No pocket and no pretrained weights, so you train it yourself; use DiffDec instead if you need either. |
+| `diffusion_difflinker.yaml` | `diffusion_difflinker` | **Fragments** to join, optionally a **protein pocket** | **Linker design**: hold fragments (and, for the three pocket-conditioned checkpoints, a fixed pocket too) fixed, generate the atoms joining them. You choose the linker length yourself, or pair the from-scratch checkpoint with the zoo's `difflinker_size_gnn` checkpoint to have it auto-picked from fragment geometry. Checkpoint status varies (see the tip above for the full breakdown): the four ZINC/GEOM checkpoints and `pockets_unconditioned` convert and load cleanly but fail to generate (a numerical-instability defect in the released weights, not this port); `pockets_backbone`, `pockets_full_no_anchors` and `pockets_full` share that same weight defect yet generate correctly and are turnkey via `zoo fetch`. Use DiffDec instead if you want a pocket model with no per-checkpoint caveats. |
 | `diffusion_diffdec.yaml` | `diffusion_diffdec` | **Scaffold** + anchor atom + **protein pocket** | **R-group decoration**: keep a scaffold fixed, pick one attachment point, and grow a substituent there inside the pocket. Choose it over DiffLinker when you are growing off a scaffold rather than bridging two fragments. One R-group per run, and the model picks its size for you, up to about 10 heavy atoms. |
 | `pharmacophore.yaml` | `diffusion_pharmacophore` | **Pharmacophore** points, electrostatics, shape | ShEPhERD — ligand-based design when you have a reference molecule but **no protein structure**, and the one option here whose conditioning actually works end to end. Shape matching needs to be trained in; the shipped setup covers pharmacophores and electrostatics. It is also the only model in this table that generates bonds. |
 

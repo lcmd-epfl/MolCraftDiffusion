@@ -1,0 +1,92 @@
+# @package _global_
+# Fragment/linker generation from DiffLinker's CONVERTED PRETRAINED weights --
+# upstream `zinc_difflinker_given_anchors.ckpt` (Zenodo record 7121300),
+# trained on ZINC with anchor atoms marked to guide the reverse diffusion (an
+# anchor is a fragment atom the model is nudged to attach the linker to).
+#
+#   MolCraftDiff generate configs/difflinker_zinc_given_anchors_generate.yaml
+#
+# PREREQUISITE -- run once, if the converted checkpoint is not already there:
+#
+#   python docs/model_integrations/difflinker/scripts/convert_pretrained_checkpoint.py \
+#       --variant zinc_given_anchors
+#
+# This downloads the raw upstream .ckpt (32.2 MB) into
+# docs/model_integrations/difflinker/raw/zinc_given_anchors.ckpt, verifies
+# every one of its 173 tensors maps 1:1 onto DiffLinkerTask.state_dict() (no
+# key remapping needed -- the port kept upstream's attribute names verbatim,
+# confirmed directly), re-loads the WRITTEN file fresh and asserts
+# byte-identity against the raw source (the check that actually proves this
+# isn't a silent strict=False no-op), and only then deletes the raw file.
+# See docs/model_integrations/difflinker/INTEGRATION_PLAN.md's
+# "Revision 4 -- Pretrained-Weight Loading" section for the full provenance.
+#
+# WHAT THE MODEL CONDITIONS ON. A fixed set of fragment atoms (a plain .xyz
+# file, ZINC's 8-element vocab: C,O,N,F,S,Cl,Br,I -- no H, no P). DiffLinker
+# has no unconditional mode, so generation is dispatched through the generic
+# "outpaint" GenerativeFactory path (gen_outpaint.yaml), same as the
+# from-scratch smoke-test config -- nothing about the dispatch mechanism
+# changes for pretrained weights, only where the weights/size-prior come
+# from. `given_anchors` additionally uses anchor atoms (which fragment
+# atom(s) the linker should attach to) -- this checkpoint's
+# center_of_mass == "anchors" makes them a HARD requirement (sample() fails
+# fast without them, see DiffLinkerTask.sample()'s docstring and
+# INTEGRATION_PLAN.md's Revision 5). condition_configs.outpaint_cfgs.
+# anchor_indices below supplies them: [11, 16], both carbon, derived by
+# tracing reference_fragment.xyz back to its source row (ZINC test db row
+# id 12) -- see Revision 5, Point 1.
+#
+# KNOWN LIMITATION. `mol_size` is the TOTAL atom count (fragment + linker),
+# not linker size alone -- see INTEGRATION_PLAN.md's "Post-Completion Fix"
+# section for why an earlier config in this pass set mol_size below the
+# reference fragment's own atom count and got degenerate linker_size==0
+# output. Below reuses the same reference_fragment.xyz (17 atoms) as the
+# from-scratch smoke test; this checkpoint's own n_node_dist (built from
+# data/zinc/zinc_final_test.pt's num_atoms field) covers total atom counts
+# 14-36, so mol_size stays comfortably inside that range.
+
+defaults:
+  - tasks: diffusion_difflinker
+  - interference: gen_outpaint
+  - _self_
+
+name: "difflinker_zinc_given_anchors_generate"
+chkpt_directory: ${asset:difflinker/pretrained/zinc_given_anchors_difflinker.ckpt}
+atom_vocab: [C, O, N, F, S, Cl, Br, I]
+seed: 42
+
+# Overrides the handful of fields that differ from
+# src/MolecularDiffusion/configs/tasks/diffusion_difflinker.yaml's
+# from-scratch smoke-test defaults, per INTEGRATION_PLAN.md's Phase A6
+# table (in_node_nf: 8 and anchors_context: true already match the base
+# task yaml's defaults, so no override needed for those two).
+tasks:
+  n_layers: 8
+  center_of_mass: anchors
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  output_path: generated_difflinker_zinc_given_anchors
+  n_frames: 0
+  mol_size: [20, 25]
+  condition_configs:
+    reference_structure_path: ${asset:inputs/difflinker/fragments/reference_fragment.xyz}
+    # Bundled gen_outpaint.yaml defaults n_retrys: 3, which forces
+    # batch_size back down to 1 (tasks_generate.py::structural_guidance,
+    # "retry path requires one sample at a time"). DiffLinkerTask.sample()
+    # doesn't implement the retry loop anyway (inert kwarg) so there's
+    # nothing to lose by disabling it here to unlock real batching.
+    n_retrys: 0
+    # Required for this checkpoint (center_of_mass: anchors below) -- 1-indexed
+    # positions into reference_fragment.xyz, matching upstream's --anchors CLI
+    # convention. See header comment for provenance.
+    outpaint_cfgs:
+      anchor_indices: [11, 16]
+      # Pretrained released weights (tanh: false, unbounded per-layer coord
+      # updates) sometimes diverge to NaN partway through the
+      # reverse-diffusion chain -- a known, tolerated property of these
+      # checkpoints, not a construction bug (INTEGRATION_PLAN.md Revision 6).
+      # This bounds a full-restart retry loop around sampling, matching
+      # upstream's own generate.py default of 5 attempts.
+      max_generate_attempts: 5

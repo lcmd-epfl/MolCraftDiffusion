@@ -271,6 +271,7 @@ def test_dispatch_registry_lists_every_ts_generator() -> None:
     assert _TASK_TO_TS_GENERATOR == {
         "OAReactDiffTask": ("diffusion_oareactdiff", "OAReactDiffTSGenerator"),
         "ReactOTTask": ("diffusion_reactot", "ReactOTTSGenerator"),
+        "GoFlowTask": ("diffusion_goflow", "GoFlowTSGenerator"),
     }
 
 

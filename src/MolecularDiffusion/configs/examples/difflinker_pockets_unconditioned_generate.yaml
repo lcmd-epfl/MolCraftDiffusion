@@ -1,0 +1,72 @@
+# @package _global_
+# Fragment/linker generation from DiffLinker's CONVERTED PRETRAINED weights --
+# upstream `pockets_difflinker_unconditioned.ckpt` (Zenodo record 7121300).
+# Despite the "Pockets" checkpoint family name, this specific checkpoint is
+# ARCHITECTURALLY NON-POCKET: its `train_data_prefix` ("MOAD_train", no dot)
+# resolves to plain `Dynamics`/`graph_type='FC'`, the exact same dispatch as
+# `geom_difflinker_given_anchors.ckpt` -- "unconditioned" means "not
+# conditioned on the pocket" (the pocket is absent from its training data
+# entirely), NOT "unconditional generation" (it still requires anchors, see
+# below). See docs/model_integrations/difflinker/INTEGRATION_PLAN.md's
+# "Revision 9 -- Pockets Checkpoint Family" section, Phase A6.
+#
+#   MolCraftDiff generate configs/difflinker_pockets_unconditioned_generate.yaml
+#
+# PREREQUISITE -- run once, if the converted checkpoint is not already there:
+#
+#   python docs/model_integrations/difflinker/scripts/convert_pretrained_checkpoint.py \
+#       --variant pockets_unconditioned
+#
+# WHAT THE MODEL CONDITIONS ON. A fixed set of fragment atoms (a plain .xyz
+# file) plus real anchor atoms (center_of_mass == "anchors" makes anchors a
+# HARD requirement, same as geom_difflinker_given_anchors -- see
+# DiffLinkerTask.sample()'s docstring and INTEGRATION_PLAN.md's Revision 5).
+# Byte-identical in shape to
+# configs/difflinker_geom_given_anchors_generate.yaml, differing only in
+# chkpt_directory -- this checkpoint reuses the existing
+# reference_fragment.xyz (17 atoms, all-heavy elements a subset of the
+# 9-symbol GEOM vocab) + anchor_indices [11, 16] fixture, no new extraction
+# needed (Revision 9's own finding).
+#
+# KNOWN LIMITATION. Same `tanh: false` unbounded-coordinate-update
+# instability as every other released DiffLinker checkpoint
+# (INTEGRATION_PLAN.md's Revision 7) -- max_generate_attempts below bounds a
+# full-restart retry loop around it, same as every other pretrained config.
+# mol_size is the TOTAL atom count (fragment + linker), not linker size
+# alone (see INTEGRATION_PLAN.md's Post-Completion Fix section). Confirmed
+# still broken independently by Tester (attempt 7): this checkpoint builds
+# plain `Dynamics` (dense fully-connected graph), architecturally identical
+# to `geom_given_anchors_difflinker.ckpt`, and hits the identical
+# `FoundNaNException` on the very first reverse-diffusion step -- unlike its
+# three genuinely pocket-conditioned siblings
+# (backbone/full/full_no_anchors), which use `DynamicsWithPockets`'s sparser
+# graph and DO generate correctly despite sharing the same `tanh: false`
+# weight property. See docs/architectures.md for the full per-checkpoint
+# breakdown.
+
+defaults:
+  - tasks: diffusion_difflinker
+  - interference: gen_outpaint
+  - _self_
+
+name: "difflinker_pockets_unconditioned_generate"
+chkpt_directory: ${asset:difflinker/pretrained/pockets_unconditioned_difflinker.ckpt}
+atom_vocab: [C, O, N, F, S, Cl, Br, I, P]
+seed: 42
+
+tasks:
+  in_node_nf: 9
+  center_of_mass: anchors
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  output_path: generated_difflinker_pockets_unconditioned
+  n_frames: 0
+  mol_size: [20, 25]
+  condition_configs:
+    reference_structure_path: ${asset:inputs/difflinker/fragments/reference_fragment.xyz}
+    n_retrys: 0
+    outpaint_cfgs:
+      anchor_indices: [11, 16]
+      max_generate_attempts: 5

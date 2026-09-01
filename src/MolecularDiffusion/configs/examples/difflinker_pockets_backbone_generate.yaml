@@ -1,0 +1,75 @@
+# @package _global_
+# Pocket-conditioned fragment/linker generation from DiffLinker's CONVERTED
+# PRETRAINED weights -- upstream `pockets_difflinker_backbone.ckpt` (Zenodo
+# record 7121300). Genuinely pocket-conditioned: builds `DynamicsWithPockets`
+# with a pure 4A-distance-cutoff graph (`graph_type: "4A"`) over a
+# BACKBONE-ONLY pocket representation (fewer, coarser pocket atoms than the
+# `..._full`/`..._full_no_anchors` siblings' all-heavy-atom pocket). See
+# docs/model_integrations/difflinker/INTEGRATION_PLAN.md's "Revision 9 --
+# Pockets Checkpoint Family" section.
+#
+#   MolCraftDiff generate configs/difflinker_pockets_backbone_generate.yaml
+#
+# PREREQUISITE -- run once, if the converted checkpoint / pocket fixture are
+# not already there:
+#
+#   python docs/model_integrations/difflinker/scripts/convert_pretrained_checkpoint.py \
+#       --variant pockets_backbone
+#   python docs/model_integrations/difflinker/scripts/convert_pocket_pt_to_asedb.py \
+#       --pt-path docs/model_integrations/difflinker/data/pocket/MOAD_test_bb.pt \
+#       --row-index 239 \
+#       --pocket-out docs/model_integrations/difflinker/data/pocket/pocket_239_bb.db
+#   # (fragment_239.xyz is shared with the other Pockets configs -- same
+#   # source row, identical fragment coordinates across representations.)
+#
+# WHAT THE MODEL CONDITIONS ON. A fixed set of fragment atoms, a fixed
+# BACKBONE-ONLY pocket (64 atoms, {C,N,O} only, vs. the full-atom siblings'
+# 131), and anchor atoms. `center_of_mass == "anchors"` for this checkpoint
+# makes `anchor_indices` a HARD requirement (same fail-fast as
+# geom_difflinker_given_anchors -- see DiffLinkerTask.sample()'s docstring
+# and INTEGRATION_PLAN.md's Revision 5). mol_size is the TOTAL
+# fragment+linker atom count (NOT including the pocket).
+#
+# WORKING GENERATION. Unlike the plain ZINC/GEOM pretrained checkpoints,
+# this one PASSES Tester's smoke test (attempt 7, 3/3 seeds, 9/9 trials,
+# zero exceptions, non-degenerate 3D structures) despite sharing the same
+# `tanh: false` unbounded-coordinate-update weight property Revision 7
+# root-caused for the non-pocket family -- `DynamicsWithPockets`'s sparser
+# distance-cutoff graph apparently does not compound the same blow-up the
+# dense fully-connected graph does (observed, not fully root-caused; see
+# Revision 9's Tester Log entry). max_generate_attempts below still bounds a
+# full-restart retry loop as a safety margin, matching every other
+# pretrained-checkpoint config's convention.
+
+defaults:
+  - tasks: diffusion_difflinker
+  - interference: gen_outpaint
+  - _self_
+
+name: "difflinker_pockets_backbone_generate"
+chkpt_directory: ${asset:difflinker/pretrained/pockets_backbone_difflinker.ckpt}
+atom_vocab: [C, O, N, F, S, Cl, Br, I, P]
+seed: 42
+
+tasks:
+  in_node_nf: 9
+  pocket_conditioned: true
+  context_node_nf: 3
+  graph_type: "4A"
+  anchors_context: true
+  center_of_mass: anchors
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  output_path: generated_difflinker_pockets_backbone
+  n_frames: 0
+  mol_size: [25, 30]
+  condition_configs:
+    reference_structure_path: ${asset:inputs/difflinker/data/fragment_239.xyz}
+    n_retrys: 0
+    outpaint_cfgs:
+      pocket_db: ${asset:inputs/difflinker/data/pocket_239_bb.db}
+      pocket_index: 0
+      anchor_indices: [7, 21]
+      max_generate_attempts: 5

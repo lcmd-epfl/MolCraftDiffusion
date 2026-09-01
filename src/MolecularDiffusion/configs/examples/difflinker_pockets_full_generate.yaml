@@ -1,0 +1,77 @@
+# @package _global_
+# Pocket-conditioned fragment/linker generation from DiffLinker's CONVERTED
+# PRETRAINED weights -- upstream `pockets_difflinker_full_fc_pdb_excluded.ckpt`
+# (Zenodo record 10988017, the newer, data-leakage-corrected
+# "_fc_pdb_excluded" retraining). Genuinely pocket-conditioned: builds
+# `DynamicsWithPockets` with the same `FC-10A-4A` distance graph as the
+# sibling `..._full_no_anchors_generate.yaml`, but WITH anchor atoms in
+# context (`anchors_context: true`). See
+# docs/model_integrations/difflinker/INTEGRATION_PLAN.md's "Revision 9 --
+# Pockets Checkpoint Family" section.
+#
+#   MolCraftDiff generate configs/difflinker_pockets_full_generate.yaml
+#
+# PREREQUISITE -- run once, if the converted checkpoint / pocket fixture are
+# not already there:
+#
+#   python docs/model_integrations/difflinker/scripts/convert_pretrained_checkpoint.py \
+#       --variant pockets_full
+#   python docs/model_integrations/difflinker/scripts/convert_pocket_pt_to_asedb.py \
+#       --pt-path docs/model_integrations/difflinker/data/pocket/MOAD_test_full.pt \
+#       --row-index 239 \
+#       --fragment-out docs/model_integrations/difflinker/data/pocket/fragment_239.xyz \
+#       --pocket-out docs/model_integrations/difflinker/data/pocket/pocket_239_full.db
+#
+# WHAT THE MODEL CONDITIONS ON. A fixed set of fragment atoms, a fixed
+# pocket (same row-239 fixture as the sibling config), and anchor atoms
+# (`anchor_indices: [7, 21]`, 1-indexed into the fragment-only ordering).
+# For this checkpoint `center_of_mass == "fragments"` (NOT "anchors"), so
+# anchors are a quality-of-conditioning input feeding `context` only, not a
+# hard requirement -- supplied anyway since it's free (same row already
+# yields it). mol_size is the TOTAL fragment+linker atom count (NOT
+# including the pocket -- see Revision 9's "Data source" correction).
+#
+# WORKING GENERATION. Unlike the plain ZINC/GEOM pretrained checkpoints,
+# this one PASSES Tester's smoke test (attempt 7, 3/3 seeds, 9/9 trials,
+# zero exceptions, non-degenerate 3D structures, no pocket clashes) despite
+# sharing the same `tanh: false` unbounded-coordinate-update weight property
+# Revision 7 root-caused for the non-pocket family -- `DynamicsWithPockets`'s
+# sparser distance-cutoff graph apparently does not compound the same
+# blow-up the dense fully-connected graph does (observed, not fully
+# root-caused; see Revision 9's Tester Log entry). max_generate_attempts
+# below still bounds a full-restart retry loop as a safety margin, matching
+# every other pretrained-checkpoint config's convention. Upstream itself
+# does not support linker-size prediction for pocket models (README.md:133).
+
+defaults:
+  - tasks: diffusion_difflinker
+  - interference: gen_outpaint
+  - _self_
+
+name: "difflinker_pockets_full_generate"
+chkpt_directory: ${asset:difflinker/pretrained/pockets_full_difflinker.ckpt}
+atom_vocab: [C, O, N, F, S, Cl, Br, I, P]
+seed: 42
+
+tasks:
+  in_node_nf: 9
+  pocket_conditioned: true
+  context_node_nf: 3
+  graph_type: "FC-10A-4A"
+  anchors_context: true
+  center_of_mass: fragments
+
+interference:
+  batch_size: 4
+  num_generate: 20
+  output_path: generated_difflinker_pockets_full
+  n_frames: 0
+  mol_size: [25, 30]
+  condition_configs:
+    reference_structure_path: ${asset:inputs/difflinker/data/fragment_239.xyz}
+    n_retrys: 0
+    outpaint_cfgs:
+      pocket_db: ${asset:inputs/difflinker/data/pocket_239_full.db}
+      pocket_index: 0
+      anchor_indices: [7, 21]
+      max_generate_attempts: 5
