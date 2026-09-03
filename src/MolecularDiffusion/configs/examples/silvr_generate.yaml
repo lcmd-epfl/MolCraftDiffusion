@@ -42,7 +42,11 @@ name: "silvr_generate"
 
 # Any EDM checkpoint. This one is the GEOM-drugs prior SILVR itself was built
 # on, and is the one the integration was validated against.
-chkpt_directory: "/media/mohammed/TW/RF/hoshino/Morpho/assets/molcraftdiffusion/edm_geom"
+# Any EDM checkpoint works -- SILVR adds no weights of its own. This is the
+# GEOM-drugs prior SILVR was built on, resolved from the zoo
+# (MolCraftDiff zoo fetch edm/geom -- MIT, redistributable, holds
+# edm_chem.pkl + edm_stat.pkl). Swap in edm/qm9 or your own EDM run.
+chkpt_directory: ${asset:edm/geom}
 atom_vocab: [H, B, C, N, O, F, Al, Si, P, S, Cl, As, Se, Br, I, Hg, Bi]
 
 # The checkpoint is a 900-step model; lower this to trade quality for speed.
