@@ -682,9 +682,20 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             f"token so decoding uses the one-hot path instead of the raw atomic-number channel."
         )
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not hasattr(task, 'device'):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         recursive_module_to_device(task, device)
+    else:
+        # recursive_module_to_device also assigns `child_module.device = device`,
+        # which raises AttributeError on a task whose `device` is a read-only
+        # property (e.g. `next(self.parameters()).device`, used by ~30 task
+        # classes including DiffLinkerTask) -- checkpoints are always loaded
+        # with map_location="cpu" (load_lightning_model above), so without this
+        # branch every such task silently stayed on CPU regardless of GPU
+        # availability. Plain .to() moves parameters/buffers without touching
+        # attribute assignment, so it's safe for both property and plain-attr
+        # `device` implementations.
+        task.to(device)
 
     # --- Reconcile extra_norm_values between training config and loaded model ---
     # The generation config may default extra_norm_values=[] even though the

@@ -1,0 +1,69 @@
+# @package _global_
+# Shape-conditioned generation from the MOSES2 shape-conditioned DiffSMol
+# checkpoint.
+#
+#   MolCraftDiff zoo fetch --model diffsmol --variant moses2_shape
+#   MolCraftDiff generate examples/diffsmol_moses2_shape_generate.yaml
+#
+# This is the working shape-conditioned path. Unlike the converted upstream
+# checkpoint (examples/diffsmol_generate.yaml), whose conditioning channel is
+# unusable because upstream's released shape encoder is incomplete, this
+# checkpoint was trained against this port's own complete, deterministic
+# shape autoencoder, so the latent it reads is the latent the precompute
+# writes.
+#
+# REFERENCE SHAPE
+#   `reference_shape` is any .pt written by
+#   docs/model_integrations/diffsmol/scripts/precompute_shapes.py -- run it on
+#   your own molecule with --single, or point at the registered 150k training
+#   cache and pick an entry with `reference_key`. Same script, same vendored
+#   encoder, so the reference latent lands in the same frame the model was
+#   trained in. Remember --device cuda; the encoder is ~75x faster on GPU.
+#
+# guide_stren
+#   0.0 is the default here and it is NOT unconditional -- it is the pure
+#   conditional pass, with the shape latent fully in play. (Unconditional is
+#   the zero latent, which is what you get with `interference:
+#   gen_unconditional` or a cache miss.)
+#
+#   Measured on this checkpoint, 48 molecules per setting, bonds perceived
+#   with smilify_openbabel:
+#       guide_stren 0.0 -> 46/48 valid (95.8%)
+#       guide_stren 1.0 -> 45/48 valid (93.8%)
+#       guide_stren 2.0 -> 36/48 valid (75.0%)
+#   For scale, 48 real MOSES2 training molecules through the identical
+#   perception score 47/48 (97.9%) -- so at 0.0 this model is within two
+#   points of its own training data, and zero atom clashes at every setting.
+#
+#   2.0 is upstream's shipped sampling default and it is wrong for THIS
+#   checkpoint: it over-amplifies CFG into invalid valences. The bundled
+#   interference/gen_diffsmol_shape.yaml still defaults to 2.0 for the
+#   upstream checkpoint's sake; this config overrides it.
+
+defaults:
+  - tasks: diffusion_diffsmol
+  - interference: gen_diffsmol_shape
+  - _self_
+
+name: "diffsmol_moses2_shape_generate"
+chkpt_directory: ${asset:diffsmol/moses2-shape}
+
+# Must match the training corpus's vocabulary exactly (7 classes, basic mode).
+atom_vocab: [C, N, O, F, S, Cl, Br]
+seed: 42
+
+tasks:
+  atom_mode: basic          # add_aromatic is a pretrained-checkpoint-only mode
+
+interference:
+  reference_shape: ${asset:data/moses2/shape-cache-150k/moses2_ase_150k.pt}
+  reference_key: db_entry_0
+  batch_size: 48
+  num_generate: 48
+  num_steps: null           # null => the checkpoint's full 1000 steps
+  guide_stren: 0.0          # see the measured sweep above
+  # This checkpoint ships no dataset statistics, so sizes come from mol_size.
+  # Set it from your reference's heavy-atom count.
+  mol_size: [19]
+  n_frames: 0
+  output_path: "diffsmol_moses2_shape_generate"

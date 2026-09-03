@@ -1,39 +1,37 @@
 # @package _global_
-# Fragment/linker generation from DiffLinker's CONVERTED PRETRAINED weights --
-# upstream `zinc_difflinker.ckpt` (Zenodo record 7121300), trained on ZINC
-# WITHOUT anchor conditioning (the anchors-free counterpart of
-# configs/difflinker_zinc_given_anchors_generate.yaml -- same data, same
-# architecture size, only the context channel differs).
+# Fragment/linker generation from a real, working DiffLinker checkpoint
+# trained by this project from scratch on ZINC fragment/linker/anchor data
+# (configs/difflinker_train_zinc.yaml) -- NOT upstream's own released
+# zinc_difflinker.ckpt, which was removed from the zoo after being found
+# permanently broken for generation (tanh: false numerical instability,
+# reproduced against unmodified upstream code -- see
+# docs/model_integrations/difflinker/FINAL_REPORT.md). This checkpoint
+# actually generates: 48-molecule smoke test, 45/48 (93.75%) clean, no
+# atom clashes, 21 unique linker atom-compositions.
 #
-#   MolCraftDiff generate configs/difflinker_zinc_generate.yaml
+#   MolCraftDiff zoo fetch --model difflinker --variant zinc
+#   MolCraftDiff generate examples/difflinker_zinc_generate.yaml
 #
-# PREREQUISITE -- run once, if the converted checkpoint is not already there:
-#
-#   python docs/model_integrations/difflinker/scripts/convert_pretrained_checkpoint.py \
-#       --variant zinc
-#
-# See docs/model_integrations/difflinker/configs/difflinker_zinc_given_anchors_generate.yaml's
-# header for what the conversion script does and proves (key-set/shape
-# equality, strict=False missing/unexpected assertions, post-write
-# byte-identity re-verification, delete-only-after-verified-conversion).
-# Full provenance in INTEGRATION_PLAN.md's "Revision 4" section.
+# Runs from any directory: every path below is an "asset" reference
+# resolved against your local zoo cache ($MOLCRAFT_ASSETS, default
+# ~/.cache/molcraft/zoo), not a path relative to the repo.
 #
 # WHAT THE MODEL CONDITIONS ON. A fixed set of fragment atoms (a plain .xyz
 # file, ZINC's 8-element vocab: C,O,N,F,S,Cl,Br,I -- no H, no P). DiffLinker
 # has no unconditional mode, so generation is dispatched through the generic
-# "outpaint" GenerativeFactory path (gen_outpaint.yaml). This checkpoint's
-# `anchors_context: false` means the model was never trained to look at
-# anchor atoms at all -- there is no degraded fallback to speak of here,
-# it's simply not part of this variant's conditioning signal.
+# "outpaint" GenerativeFactory path (gen_outpaint.yaml). No `tasks:` overrides
+# are needed here -- this is a native platform-trained Lightning checkpoint,
+# so `cli/generate.py` rebuilds the architecture from the checkpoint's own
+# saved hyperparameters directly, unlike the old converted upstream weights.
 #
 # KNOWN LIMITATION. `mol_size` is the TOTAL atom count (fragment + linker),
-# not linker size alone -- see INTEGRATION_PLAN.md's "Post-Completion Fix"
-# section for why setting mol_size below the reference fragment's own atom
-# count produces degenerate linker_size==0 output. Below reuses the same
-# reference_fragment.xyz (17 atoms) as the from-scratch smoke test; this
-# checkpoint's own n_node_dist (built from data/zinc/zinc_final_test.pt's
-# num_atoms field) covers total atom counts 14-36, so mol_size stays
-# comfortably inside that range.
+# not linker size alone. Below reuses the same reference_fragment.xyz
+# (17 atoms) as throughout this integration's testing; this checkpoint's own
+# n_node_dist (built during training from the real ZINC data) covers a wide
+# total-atom range, so mol_size stays comfortably inside it.
+#
+# Epoch 81/100 (global_step 533902, val_loss 0.042) as of registration --
+# training may still be running; re-fetch if a later snapshot is registered.
 
 defaults:
   - tasks: diffusion_difflinker
@@ -41,22 +39,13 @@ defaults:
   - _self_
 
 name: "difflinker_zinc_generate"
-chkpt_directory: ${asset:difflinker/pretrained/zinc_difflinker.ckpt}
+chkpt_directory: ${asset:difflinker/trained/zinc_trained_difflinker.ckpt}
 atom_vocab: [C, O, N, F, S, Cl, Br, I]
 seed: 42
 
-# Overrides the handful of fields that differ from
-# src/MolecularDiffusion/configs/tasks/diffusion_difflinker.yaml's
-# from-scratch smoke-test defaults, per INTEGRATION_PLAN.md's Phase A6
-# table (in_node_nf: 8 already matches the base task yaml's default, so no
-# override needed for it).
-tasks:
-  n_layers: 8
-  anchors_context: false
-
 interference:
-  batch_size: 4
-  num_generate: 20
+  batch_size: 8
+  num_generate: 48
   output_path: generated_difflinker_zinc
   n_frames: 0
   mol_size: [20, 25]
@@ -68,11 +57,3 @@ interference:
     # doesn't implement the retry loop anyway (inert kwarg) so there's
     # nothing to lose by disabling it here to unlock real batching.
     n_retrys: 0
-    # Pretrained released weights (tanh: false, unbounded per-layer coord
-    # updates) sometimes diverge to NaN partway through the reverse-diffusion
-    # chain -- a known, tolerated property of these checkpoints, not a
-    # construction bug (INTEGRATION_PLAN.md Revision 6). This bounds a
-    # full-restart retry loop around sampling, matching upstream's own
-    # generate.py default of 5 attempts.
-    outpaint_cfgs:
-      max_generate_attempts: 5

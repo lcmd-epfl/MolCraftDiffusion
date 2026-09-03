@@ -273,6 +273,31 @@ assets:
     upstream:
       repo: https://github.com/ninglab/DiffSMol
       note: converted checkpoint lives in pretrained/, not checkpoints/converted/
+  diffsmol/moses2-shape:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: diffsmol_moses2_shape.ckpt
+      sha256: 38a22d40a5dc554093d9d1ff2847907341200ad48db944be211440aa09234cda
+      size: 89762681
+    license: PolyForm-Noncommercial-1.0.0
+    redistribute: false
+    reason: shape latents come from the vendored DiffSMol shape autoencoder; same noncommercial
+      terms as the rest of the diffsmol family
+    upstream:
+      repo: https://github.com/ninglab/DiffSMol
+      note: 'Shape-conditioned DiffSMol over data/moses2/ase-150k with data/moses2/shape-cache-150k,
+        200 epochs / 105,600 steps, best val_loss 0.750 at epoch 175 (the checkpoint registered
+        here). Unlike diffsmol/pretrained, whose conditioning channel is unusable because upstream''s
+        released shape encoder se.pt is missing 87.4% of its parameters, this checkpoint was
+        trained against this port''s complete deterministic encoder, so the latent it reads
+        is the latent precompute_shapes.py writes. Smoke test, 48 molecules, bonds via smilify_openbabel:
+        guide_stren 0.0 -> 46/48 valid (95.8%), 1.0 -> 45/48 (93.8%), 2.0 -> 36/48 (75.0%);
+        zero atom clashes at every setting; 48 real MOSES2 molecules through the identical perception
+        score 47/48 (97.9%). USE guide_stren 0.0 -- upstream''s shipped 2.0 over-amplifies CFG
+        for this checkpoint. atom_mode must be basic and atom_vocab [C,N,O,F,S,Cl,Br]. val_loss
+        was still falling at epoch 199, so this is not a converged run.'
   data/qm9/ase-300:
     kind: dataset
     host: datasets
@@ -311,6 +336,30 @@ assets:
         stripped by upstream's own preprocessing); no shape embeddings computed yet.
         Run docs/model_integrations/diffsmol/scripts/precompute_shapes.py against
         this db to add shape conditioning.
+  data/moses2/shape-cache-150k:
+    kind: dataset
+    host: datasets
+    rev: main
+    files:
+    - path: moses2_ase_150k.pt
+      sha256: a3b045955e7b049d930c00642fbf6ae7ba53ae0f5c17150176437fb5df266370
+      size: 320817242
+    license: PolyForm-Noncommercial-1.0.0
+    redistribute: false
+    reason: derived from DiffSMol's shape autoencoder; same noncommercial terms as its weights,
+      as for inputs/diffsmol/shapes
+    upstream:
+      repo: https://github.com/ninglab/DiffSMol
+      script: docs/model_integrations/diffsmol/scripts/precompute_shapes.py
+      note: 'Shape latents for every molecule in data/moses2/ase-150k, keyed db_entry_0..149999
+        to match PointCloudDataset.load_db. 150,000/150,000 coverage verified -- a partial cache
+        trains a silently-unconditional model, since a miss falls back to the zero (CFG unconditional)
+        latent. Each entry is {shape_emb (128,3), shape_center (3,), shape_volume float}. Built
+        with --device cuda in ~2.3h; the VN-DGCNN encoder is 99.6% of the cost (3602 ms/mol
+        on CPU vs 48 ms/mol on GPU), NOT marching cubes. NOT REPRODUCIBLE: trimesh mesh.sample(512)
+        is unseeded, so a rebuild yields different latents (measured max delta 0.61 on a latent
+        of scale 0.57); shape_volume is deterministic. That is why this is registered rather
+        than regenerated.'
   inputs/diffsmol/shapes:
     kind: dataset
     rev: main
@@ -1946,18 +1995,6 @@ assets:
     host: models
     rev: main
     files:
-    - path: zinc_difflinker.ckpt
-      sha256: 3bb0e12fe1e29c53bde226e237d78cc51cecbffc914bcfe3976fafb1b2ce3a86
-      size: 8007730
-    - path: zinc_given_anchors_difflinker.ckpt
-      sha256: 4b381094208daddaa4939f64403df51b51289242b34a4dbc2a7afec4337a48cc
-      size: 8011466
-    - path: geom_difflinker.ckpt
-      sha256: 8d3243d56735f8d512864dfbe63cb8843399fc4ae18964d02767858d3e7c03b4
-      size: 6010870
-    - path: geom_given_anchors_difflinker.ckpt
-      sha256: c3f141b07db497618a7fd573822e05bace7a17f97437e61b4acbe6e52b7c4554
-      size: 6013954
     - path: pockets_backbone_difflinker.ckpt
       sha256: 1bce98f7e8ad6a7e7828a4e506bb674b59ae27be277e6d7b820af599fa6725d7
       size: 6014702
@@ -1972,42 +2009,75 @@ assets:
       size: 6014368
     license: CC-BY-4.0
     redistribute: true
-    reason: 'Extended (Revisions 8-9) with the four Pockets checkpoints, re-audited
-      on top of the original four. Code (others/difflinker, MIT) unchanged from the
-      original audit. Weights span TWO Zenodo records, checked independently via
-      their APIs, not assumed to share one licence just because both are named "DiffLinker
-      Models": zinc_difflinker.ckpt, zinc_given_anchors_difflinker.ckpt, geom_difflinker.ckpt,
-      geom_given_anchors_difflinker.ckpt, pockets_backbone_difflinker.ckpt (raw pockets_difflinker_backbone.ckpt,
-      24,348,772 B) and pockets_unconditioned_difflinker.ckpt (raw pockets_difflinker_unconditioned.ckpt,
-      24,377,320 B) all come from record 7121300 -- https://zenodo.org/api/records/7121300
-      declares license.id "cc-by-4.0", access_right "open" (re-verified this pass,
-      matches the original audit). pockets_full_difflinker.ckpt (raw pockets_difflinker_full_fc_pdb_excluded.ckpt,
-      24,127,727 B) and pockets_full_no_anchors_difflinker.ckpt (raw pockets_difflinker_full_no_anchors_fc_pdb_excluded.ckpt,
-      24,151,967 B) come from a newer, separate deposit, record 10988017 (same title,
-      "DiffLinker Models" -- a later, data-leakage-corrected retraining per INTEGRATION_PLAN.md''s
-      Revision 9 Phase A, not a new title to search for) -- checked independently via
-      https://zenodo.org/api/records/10988017, which also declares license.id "cc-by-4.0",
-      access_right "open". Both records'' file listings confirm the exact raw byte
-      sizes above, so the converted files really do derive from the records named,
-      not guessed. CC-BY-4.0 permits redistribution with attribution -- Igashov et
-      al. (DiffLinker) must be credited, citing 10.5281/zenodo.7121300 for six of
-      the eight files and 10.5281/zenodo.10988017 for the two "_fc_pdb_excluded" ones.
-      Functional status (not a redistribution blocker, a usage caveat -- see docs/architectures.md
-      and FINAL_REPORT.md for the full picture): generation from zinc*/geom*/pockets_unconditioned
-      is broken (tanh:false numerical instability, INTEGRATION_PLAN.md Revision 7).
-      pockets_backbone, pockets_full_no_anchors and pockets_full generate correctly
-      (Tester Log attempt 7, 9/9 trials, 3 seeds each) despite sharing the identical
-      tanh:false weights -- the sparser DynamicsWithPockets distance-cutoff graph
-      does not exhibit the same blow-up the dense fully-connected graph does (observed,
-      not fully root-caused). All eight files are auditably licensed for reuse regardless
-      of which subset currently generates.'
+    reason: 'The four non-pocket ZINC/GEOM checkpoints originally here
+      (zinc_difflinker.ckpt, zinc_given_anchors_difflinker.ckpt, geom_difflinker.ckpt,
+      geom_given_anchors_difflinker.ckpt) were removed and replaced by difflinker/trained
+      below: they convert and load cleanly but generation from them is permanently
+      broken (tanh:false numerical instability in the released weights themselves,
+      reproduced against unmodified upstream code, not a MolCraftDiffusion bug --
+      see FINAL_REPORT.md), and this project now has its own working replacement
+      checkpoints, so shipping known-broken weights alongside a working alternative
+      served no purpose. Kept: the four Pockets checkpoints (Revisions 8-9), still
+      CC-BY-4.0 from Zenodo records 7121300 (pockets_backbone_difflinker.ckpt,
+      raw pockets_difflinker_backbone.ckpt, 24,348,772 B; pockets_unconditioned_difflinker.ckpt,
+      raw pockets_difflinker_unconditioned.ckpt, 24,377,320 B) and 10988017
+      (pockets_full_difflinker.ckpt, raw pockets_difflinker_full_fc_pdb_excluded.ckpt,
+      24,127,727 B; pockets_full_no_anchors_difflinker.ckpt, raw
+      pockets_difflinker_full_no_anchors_fc_pdb_excluded.ckpt, 24,151,967 B) --
+      both records checked independently via their APIs, both declare license.id
+      "cc-by-4.0", access_right "open". CC-BY-4.0 permits redistribution with
+      attribution -- Igashov et al. (DiffLinker) must be credited, citing
+      10.5281/zenodo.7121300 or 10.5281/zenodo.10988017 as applicable. Functional
+      status (a usage caveat, not a redistribution blocker -- see docs/architectures.md
+      and FINAL_REPORT.md for the full picture): pockets_unconditioned is broken
+      for the same tanh:false reason as the removed ZINC/GEOM checkpoints (it is
+      architecturally identical to them -- plain Dynamics, dense fully-connected
+      graph -- despite its name); pockets_backbone, pockets_full_no_anchors and
+      pockets_full generate correctly (Tester Log attempt 7, 9/9 trials, 3 seeds
+      each) despite sharing the identical tanh:false weights -- the sparser
+      DynamicsWithPockets distance-cutoff graph does not exhibit the same blow-up
+      the dense graph does (observed, not fully root-caused).'
     upstream:
       repo: https://github.com/igashov/difflinker
       source: https://zenodo.org/records/7121300 (Zenodo record 7121300, "DiffLinker
-        Models", DOI 10.5281/zenodo.7121300 -- six of the eight files) and https://zenodo.org/records/10988017
+        Models", DOI 10.5281/zenodo.7121300 -- pockets_backbone_difflinker.ckpt and
+        pockets_unconditioned_difflinker.ckpt) and https://zenodo.org/records/10988017
         (Zenodo record 10988017, also "DiffLinker Models", DOI 10.5281/zenodo.10988017
         -- pockets_full_difflinker.ckpt and pockets_full_no_anchors_difflinker.ckpt
         only)
+  difflinker/trained:
+    kind: checkpoint
+    host: models
+    rev: main
+    files:
+    - path: zinc_trained_difflinker.ckpt
+      sha256: 144964705f661c9aec7664639ccb671f2a16fc4ab33a63c19f564319acc47503
+      size: 24117818
+    - path: geom_trained_difflinker.ckpt
+      sha256: 0cc0d4f63a319a5be4a058744546f90c25e43a8f8a6c90e13c34ab98bf3abffb
+      size: 24122620
+    license: MIT
+    redistribute: true
+    reason: 'Not third-party weights -- these are trained by this project from
+      scratch on the real ZINC/GEOM fragment/linker/anchor data (data/zinc/difflinker,
+      difflinker/data), replacing DiffLinker''s own released ZINC/GEOM checkpoints
+      after those were found permanently broken for generation (tanh:false
+      numerical instability, see difflinker/pretrained''s reason above and
+      FINAL_REPORT.md). Licensed under this repository''s own MIT license (LICENSE
+      at repo root), same as the rest of the codebase -- no upstream weight
+      redistribution question applies. zinc_trained_difflinker.ckpt: real Lightning
+      checkpoint from configs/difflinker_train_zinc.yaml, epoch 81 (global_step
+      533902, val_loss 0.042), 48-molecule smoke test 45/48 (93.75%) clean
+      (no atom clashes, no floating atoms), 21 unique linker atom-compositions.
+      geom_trained_difflinker.ckpt: from configs/difflinker_train_geom.yaml, epoch
+      75 (val_loss 0.057), 48-molecule smoke test 48/48 (100%) clean, 33 unique
+      linker atom-compositions. Both training runs were still in progress (not
+      yet at their 100-epoch target) when these snapshots were registered --
+      quality may improve further; re-register if a materially better checkpoint
+      lands. Architecture differs from the removed upstream checkpoints (n_layers=6
+      here vs. the original zinc_difflinker release''s n_layers=8) since these
+      were trained against this platform''s own task defaults, not reproduced
+      to match the broken release''s exact hyperparameters.'
   difflinker/data:
     kind: dataset
     host: datasets
@@ -2016,6 +2086,9 @@ assets:
     - path: geom_multifrag_test.pt
       sha256: 887ae407a691d330e5825a8161dc6df3784645e60bfa7c993c061a7dd6afdaa6
       size: 4633693
+    - path: geom_multifrag_train.db
+      sha256: 1268a418f48df351f5b0a1ce967158095bd0fcbbd2b0a3c6f195b71a108794c4
+      size: 582004736
     license: CC-BY-4.0
     redistribute: true
     reason: 'GEOM fragment/linker/anchor test split, a *separate* Zenodo record from
@@ -2030,7 +2103,15 @@ assets:
       bytes) matches both the Zenodo record''s own listing and the Planner''s Phase
       A investigation figure exactly. CC-BY-4.0 permits redistribution with attribution
       -- Igashov et al. (DiffLinker, Zenodo DOI 10.5281/zenodo.7121278) must be credited
-      alongside any redistribution.'
+      alongside any redistribution. geom_multifrag_train.db added later: the real GEOM
+      training split (same record, geom_multifrag_train.pt, 1,038,004,321 bytes raw --
+      matches the record''s own listing), converted via convert_zinc_pt_to_asedb.py
+      --vocab geom (282,602 molecules, verified: correct node_features shape, sensible
+      chemistry incl. phosphorus present), for training a real replacement checkpoint
+      since DiffLinker''s own released GEOM checkpoints are broken for generation (see
+      FINAL_REPORT.md). Same CC-BY-4.0 terms as the test split above -- same record,
+      same license, converted not re-licensed. Raw .pt deleted after this .db was
+      verified, same discipline as every other converted asset in this manifest.'
     upstream:
       repo: https://github.com/igashov/difflinker
       source: https://zenodo.org/records/7121278 (Zenodo record 7121278, "DiffLinker
@@ -2193,16 +2274,10 @@ models:
         data: data/zinc/difflinker
         extra:
           size_gnn: difflinker_size_gnn/pretrained
-      zinc_given_anchors:
-        checkpoint: difflinker/pretrained
       zinc:
-        checkpoint: difflinker/pretrained
-      geom_given_anchors:
-        checkpoint: difflinker/pretrained
-        data: difflinker/data
+        checkpoint: difflinker/trained
       geom:
-        checkpoint: difflinker/pretrained
-        data: difflinker/data
+        checkpoint: difflinker/trained
       pockets_backbone:
         checkpoint: difflinker/pretrained
         data: data/moad/data
@@ -2217,31 +2292,36 @@ models:
         data: data/moad/data
     summary: 'DiffLinker generates the 3D linker that joins a set of given molecular
       fragments, keeping the fragment atoms fixed and growing only the connecting
-      atoms. The `default` variant trains a fresh model from scratch on ZINC data
-      and is the working, smoke-tested generation path; `train_full_with_size_gnn`
-      is the same from-scratch checkpoint paired with a converted `SizeGNN` classifier
-      (`extra.size_gnn`) that auto-predicts linker size from fragment geometry instead
-      of sampling a fixed/ranged `mol_size` -- PASS, 100% success (Tester Log attempt
-      7). The four non-pocket pretrained variants (`zinc`, `zinc_given_anchors`,
-      `geom`, `geom_given_anchors`, upstream''s own released Zenodo checkpoints)
-      convert and load cleanly -- zero state-dict key drops, byte-identical to the
-      raw weights -- but **generation from these four is broken**: every real fragment-linking
-      request NaNs partway through the reverse-diffusion loop, root-caused and reproduced
-      identically against upstream''s own unmodified code -- `tanh: false`, unbounded
-      per-layer EGNN coordinate updates, a genuine numerical-instability defect in
-      the released weights themselves, not a MolCraftDiffusion porting bug. The four
-      Pockets variants (Revision 9) share that same `tanh: false` weight property,
-      yet split unevenly: `pockets_unconditioned` (architecturally identical to `geom_given_anchors`
-      -- plain `Dynamics`, dense fully-connected graph) hits the identical NaN wall.
-      `pockets_backbone`, `pockets_full_no_anchors` and `pockets_full` (genuinely
-      pocket-conditioned -- `DynamicsWithPockets`, a sparser 4A/FC-10A-4A distance-cutoff
-      graph) **generate correctly** -- 9/9 trials PASS across 3 seeds each, non-degenerate
+      atoms. DiffLinker''s own released non-pocket ZINC/GEOM checkpoints convert
+      and load cleanly -- zero state-dict key drops, byte-identical to the raw
+      weights -- but generation from them is permanently broken: every real
+      fragment-linking request NaNs partway through the reverse-diffusion loop,
+      root-caused and reproduced identically against upstream''s own unmodified
+      code -- `tanh: false`, unbounded per-layer EGNN coordinate updates, a
+      genuine numerical-instability defect in the released weights themselves,
+      not a MolCraftDiffusion porting bug. They have been removed from the zoo
+      and replaced: `zinc` and `geom` now point at `difflinker/trained`, real
+      working checkpoints this project trained from scratch on the same data
+      (48-molecule smoke test: zinc 45/48 clean, geom 48/48 clean -- see
+      difflinker/trained''s reason for exact provenance). `default` still trains
+      a fresh model from scratch yourself if you''d rather not use the pre-trained
+      snapshot; `train_full_with_size_gnn` pairs that from-scratch path with a
+      converted `SizeGNN` classifier (`extra.size_gnn`) that auto-predicts linker
+      size from fragment geometry instead of sampling a fixed/ranged `mol_size`
+      -- PASS, 100% success (Tester Log attempt 7). The four Pockets variants
+      (Revision 9) share the same `tanh: false` weight property as the removed
+      ZINC/GEOM checkpoints, yet split unevenly: `pockets_unconditioned`
+      (architecturally identical to the removed checkpoints -- plain `Dynamics`,
+      dense fully-connected graph) hits the identical NaN wall. `pockets_backbone`,
+      `pockets_full_no_anchors` and `pockets_full` (genuinely pocket-conditioned
+      -- `DynamicsWithPockets`, a sparser 4A/FC-10A-4A distance-cutoff graph)
+      **generate correctly** -- 9/9 trials PASS across 3 seeds each, non-degenerate
       3D structures, no pocket clashes (Tester Log attempt 7) -- contradicting this
       integration''s own prediction that the shared `tanh: false` property would
       doom them too; the sparser graph apparently does not compound the same blow-up
       the dense graph does (an observed pattern, not a proven root cause). See docs/model_integrations/difflinker/FINAL_REPORT.md
       for the full diagnostic chain and docs/architectures.md for the per-checkpoint
-      breakdown. Train your own weights via `configs/difflinker_train.yaml`, or use
+      breakdown. Use `zinc`/`geom` for working non-pocket generation today, or
       `pockets_backbone`/`pockets_full_no_anchors`/`pockets_full`, for working generation
       today.'
   diffpharma:
@@ -2294,8 +2374,17 @@ models:
         checkpoint: diffsmol/pretrained
         extra:
           reference_shape: inputs/diffsmol/shapes
+      moses2_shape:
+        data: data/moses2/ase-150k
+        checkpoint: diffsmol/moses2-shape
+        configs:
+        - diffsmol_moses2_shape_generate.yaml
+        extra:
+          shape_cache: data/moses2/shape-cache-150k
       moses2_ase:
         data: data/moses2/ase-150k
+        extra:
+          shape_cache: data/moses2/shape-cache-150k
     summary: 'DiffSMol is a shape-conditioned hybrid DDPM: continuous Gaussian diffusion
       on positions plus discrete D3PM categorical diffusion on atom types, conditioned
       on a 128x3 vector-neuron shape latent via classifier-free guidance. Bonds and
