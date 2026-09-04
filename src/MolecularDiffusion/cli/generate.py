@@ -21,6 +21,7 @@ from MolecularDiffusion.utils import (
     RankedLogger,
     seed_everything,
     recursive_module_to_device,
+    move_stray_tensor_attrs,
 )
 
 log = RankedLogger(__name__, rank_zero_only=True)
@@ -433,6 +434,29 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
     return task
 
 
+def _preimport_task_target(task_config) -> None:
+    """Import the task factory's module before torch.load() unpickles a
+    checkpoint.
+
+    Some backbone layer files run a module-level torch.load() as an import
+    side effect (e.g. equiformer_v2_s/wigner.py's precomputed Wigner-D
+    cache). If that import is first triggered by pickle's unpickler while
+    resolving a class -- i.e. nested inside another torch.load() -- the
+    inner call's cleanup deletes torch's thread-local map_location state
+    before the outer call's own cleanup runs, raising
+    "AttributeError: '_thread._local' object has no attribute
+    'map_location'" (torch/serialization.py::_load). Importing the task's
+    module ahead of time avoids the nesting. Best-effort: any failure here
+    just forgoes the pre-warm, since only some backbones need it.
+    """
+    target = task_config.get("_target_") if task_config is not None else None
+    if target:
+        try:
+            hydra.utils.get_class(target)
+        except Exception:
+            pass
+
+
 def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0, base_chkpt_path=None):
     """Load model from checkpoint directory with auto-detection.
 
@@ -469,6 +493,7 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0,
         # Detect checkpoint format before loading. Legacy Engine checkpoints may use
         # .pt/.pth/.ckpt extensions but store top-level "hyperparameters"; load those
         # through Engine.load_from_checkpoint so architecture comes from the checkpoint.
+        _preimport_task_target(task_config)
         peek = torch.load(best_checkpoint, map_location="cpu", weights_only=False)
         if "hyperparameters" in peek and ("model" in peek or "ema_model" in peek):
             log.info(f"Loading legacy engine checkpoint from: {best_checkpoint}")
@@ -535,6 +560,7 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0,
 
     # Validate task_type for original engine checkpoints
     expected_task_type = task_config.get("task_type") if task_config is not None else None
+    _preimport_task_target(task_config)
     raw_ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
     _validate_task_type(raw_ckpt, expected_task_type)
 
@@ -696,6 +722,12 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         # attribute assignment, so it's safe for both property and plain-attr
         # `device` implementations.
         task.to(device)
+
+    # Some backbones (e.g. EquiformerV2's SO3 rotation mapping) lazily cache
+    # tensors as plain instance attributes rather than registered buffers --
+    # .to(device) above never reaches those, so they stay wherever
+    # map_location loaded them (see move_stray_tensor_attrs docstring).
+    move_stray_tensor_attrs(task, device)
 
     # --- Reconcile extra_norm_values between training config and loaded model ---
     # The generation config may default extra_norm_values=[] even though the

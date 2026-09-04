@@ -31,9 +31,27 @@ def recursive_module_to_device(module: nn.Module, device: torch.device):
     # Finally, move the top-level module itself to the device
     module.to(device)
     module.device = device
-    
-    
-    
+
+
+def move_stray_tensor_attrs(module: nn.Module, device: torch.device) -> None:
+    """
+    Move plain (non-parameter, non-buffer) tensor attributes to `device`.
+
+    `nn.Module.to()` only recurses into registered parameters/buffers/
+    submodules -- a submodule that lazily caches a tensor as a plain
+    `self.foo = tensor` attribute (rather than via `register_buffer`) is
+    invisible to it, and stays wherever it was when the model was loaded.
+    A checkpoint loaded with `map_location="cpu"` remaps every tensor in
+    the pickle regardless of whether it is registered, so such caches are
+    stranded on CPU even after the model itself is moved to GPU. Call this
+    right after moving a loaded model to its target device.
+    """
+    for m in module.modules():
+        for name, value in list(vars(m).items()):
+            if isinstance(value, torch.Tensor) and value.device != device:
+                setattr(m, name, value.to(device))
+
+
 def cpu(obj, *args, **kwargs):
     """
     Transfer any nested container of tensors to CPU.

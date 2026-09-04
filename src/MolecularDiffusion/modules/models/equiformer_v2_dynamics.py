@@ -175,43 +175,16 @@ class EquiformerV2_dynamics(nn.Module, core.Configurable):
     # Forward passes
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _forward_pyG_impl(self, mol_graph: dict) -> torch.Tensor:
+    def _forward_core(self, h, pos, edge_index, batch, t=None, context=None):
         """
-        PyG-native forward pass.
-
-        Args:
-            mol_graph: dict with keys:
-                'graph': PyG Batch — .pos [N,3], .x [N,h_cat_dim]|None,
-                                     .atomic_numbers [N], .edge_index [2,E], .batch [N]
-                't':     [N, 1] per-node timestep
-                'context': [N, ctx_dim] or None
-
-        Returns:
-            [N, 3 + in_node_nf] tensor: concatenation of velocity and feature update
+        Shared tail: h [N, in_node_nf] (atom/feature block, no time or
+        context yet) -> [N, 3 + in_node_nf] velocity + feature update.
         """
-        g = mol_graph["graph"]
-        pos = g.pos                        # [N, 3]
-        batch = g.batch                    # [N]
-        edge_index = g.edge_index          # [2, E]
-        atomic_numbers = g.atomic_numbers  # [N] or [N,1]
-        extra_h = g.x                      # [N, h_cat_dim] or None
-
-        if atomic_numbers.dim() == 1:
-            atomic_numbers = atomic_numbers.unsqueeze(-1)
-        atom_feat = atomic_numbers.float()  # [N, 1]
-
-        if extra_h is None:
-            h = atom_feat
-        else:
-            h = torch.cat([atom_feat, extra_h], dim=1)  # [N, in_node_nf]
-
         # ── Timestep conditioning ─────────────────────────────────────────────
         if self.condition_time:
-            t = mol_graph["t"]  # [N, 1]
             h = torch.cat([h, t], dim=1)
 
         # ── Context routing ───────────────────────────────────────────────────
-        context = mol_graph.get("context", None)
         adapter_ctx, concat_ctx = self._split_context(context)
 
         if concat_ctx is not None:
@@ -253,6 +226,43 @@ class EquiformerV2_dynamics(nn.Module, core.Configurable):
 
         return torch.cat([vel, h_final], dim=1)  # [N, 3 + in_node_nf]
 
+    def _forward_pyG_impl(self, mol_graph: dict) -> torch.Tensor:
+        """
+        PyG-native forward pass.
+
+        Args:
+            mol_graph: dict with keys:
+                'graph': PyG Batch — .pos [N,3], .x [N,h_cat_dim]|None,
+                                     .atomic_numbers [N], .edge_index [2,E], .batch [N]
+                't':     [N, 1] per-node timestep
+                'context': [N, ctx_dim] or None
+
+        Returns:
+            [N, 3 + in_node_nf] tensor: concatenation of velocity and feature update
+        """
+        g = mol_graph["graph"]
+        pos = g.pos                        # [N, 3]
+        batch = g.batch                    # [N]
+        edge_index = g.edge_index          # [2, E]
+        atomic_numbers = g.atomic_numbers  # [N] or [N,1]
+        extra_h = g.x                      # [N, h_cat_dim] or None
+
+        if atomic_numbers.dim() == 1:
+            atomic_numbers = atomic_numbers.unsqueeze(-1)
+        atom_feat = atomic_numbers.float()  # [N, 1]
+
+        if extra_h is None:
+            h = atom_feat
+        else:
+            h = torch.cat([atom_feat, extra_h], dim=1)  # [N, in_node_nf]
+
+        t = mol_graph["t"] if self.condition_time else None  # [N, 1]
+        context = mol_graph.get("context", None)
+
+        return self._forward_core(
+            h, pos, edge_index, batch, t=t, context=context
+        )
+
     def _forward_dense(self, t, xh, node_mask, edge_mask, context):
         """
         Dense-batch path for EnVariationalDiffusion (non-PyG).
@@ -284,10 +294,12 @@ class EquiformerV2_dynamics(nn.Module, core.Configurable):
         valid_nodes = torch.where(mask_bool)[0]
         node_batch = batch_idx[valid_nodes]
 
-        # Build fully-connected intra-molecule edges for valid nodes
+        # Build fully-connected intra-molecule edges for valid nodes, indexed
+        # into the COMPACTED [0, n_valid) space -- pos/h/batch below are all
+        # `[valid_nodes]`-gathered, not the original padded [0, B*N) space.
         src_list, tgt_list = [], []
         for mol_id in range(B):
-            mol_nodes = valid_nodes[node_batch == mol_id]
+            mol_nodes = torch.where(node_batch == mol_id)[0]
             if mol_nodes.numel() < 2:
                 continue
             grid = torch.meshgrid(mol_nodes, mol_nodes, indexing='ij')
@@ -311,24 +323,18 @@ class EquiformerV2_dynamics(nn.Module, core.Configurable):
 
         ctx_flat = context.reshape(B * N, -1) if context is not None else None
 
-        # Build a lightweight object that mimics PyG Batch attributes
-        class _FakeBatch:
-            pass
-
-        g = _FakeBatch()
-        g.pos = x_flat[valid_nodes]
-        g.x = h_flat_in[valid_nodes]
-        g.atomic_numbers = torch.zeros(valid_nodes.numel(), dtype=torch.long, device=device)
-        g.edge_index = edge_index
-        g.batch = batch_idx[valid_nodes]
-
-        mol_graph = {
-            "graph": g,
-            "t": t_flat[valid_nodes],
-            "context": ctx_flat[valid_nodes] if ctx_flat is not None else None,
-        }
-
-        out_valid = self._forward_pyG_impl(mol_graph)  # [n_valid, 3 + in_node_nf]
+        # EnVariationalDiffusion's dense `h` (h_flat_in) is already the full
+        # [n_valid, in_node_nf] feature block (categorical one-hot + optional
+        # charge) -- there is no separate "atomic number" scalar to prepend
+        # here, unlike the real-PyG-graph contract in _forward_pyG_impl.
+        out_valid = self._forward_core(
+            h_flat_in[valid_nodes],
+            x_flat[valid_nodes],
+            edge_index,
+            batch_idx[valid_nodes],
+            t=t_flat[valid_nodes],
+            context=ctx_flat[valid_nodes] if ctx_flat is not None else None,
+        )  # [n_valid, 3 + in_node_nf]
 
         # Scatter back to [B*N, 3 + in_node_nf]
         out_full = torch.zeros(B * N, 3 + self.in_node_nf, device=device, dtype=out_valid.dtype)

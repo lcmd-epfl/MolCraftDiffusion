@@ -2,7 +2,11 @@ import torch
 import logging
 
 from MolecularDiffusion.modules.tasks import SSL3D, ProperyPrediction
+from MolecularDiffusion.modules.tasks.diffusion import GeomMolecularGenerative
 from MolecularDiffusion.runmodes.train.tasks_egcl import _build_ssl3d_objectives
+from MolecularDiffusion.modules.models.en_diffusion import (
+    EnVariationalDiffusion,
+)
 from MolecularDiffusion.modules.models.shepherd_arch.equiformer_v2_encoder import EquiformerV2
 from MolecularDiffusion.modules.models.equiformer_v2_dynamics import EquiformerV2_dynamics
 from MolecularDiffusion.modules.models.equiformer_v2_backbone import EquiformerV2Backbone
@@ -17,6 +21,10 @@ class ModelTaskFactory:
     Supported task_type values:
         - "ssl3d_equiformer": SSL3D pretraining with an EquiformerV2 backbone.
         - "regression": Scalar property prediction with an EquiformerV2 backbone.
+        - "diffusion": EnVariationalDiffusion generative training with
+          EquiformerV2_dynamics as the denoising network -- a backbone swap,
+          same diffusion math as every other diffusion_*.yaml (see
+          diffusion_painn.yaml / tasks_painn.py for the identical pattern).
 
     Args:
         task_type (str): One of the supported task types above.
@@ -30,6 +38,8 @@ class ModelTaskFactory:
             num_layers (int): Number of transformer layers (default 8).
             lmax_list (list[int]): Max spherical harmonic degree per resolution (default [6]).
             mmax_list (list[int]): Max order per resolution (default [2]).
+            grid_resolution (int | None): SO3 grid resolution (default None -> auto).
+            num_sphere_samples (int): Sphere-sampling points for the S2 grid (default 128).
             attn_hidden_channels (int): Attention hidden size (default 128).
             attn_alpha_channels (int): Alpha vector channels per head (default 32).
             attn_value_channels (int): Value vector channels per head (default 16).
@@ -39,9 +49,12 @@ class ModelTaskFactory:
             edge_channels (int): Edge invariant feature channels (default 128).
             use_atom_edge_embedding (bool): Use atom embedding in edge features (default True).
             share_atom_edge_embedding (bool): Share atom edge embedding (default False).
+            use_m_share_rad (bool): Share the radial function across m (default False).
             distance_function (str): Radial basis function (default "gaussian").
             num_distance_basis (int): Number of basis functions (default 512).
             attn_activation (str): Attention activation (default "scaled_silu").
+            use_s2_act_attn (bool): Use S2 activation in attention (default False).
+            use_attn_renorm (bool): Renormalise attention weights (default True).
             ffn_activation (str): FFN activation (default "scaled_silu").
             use_gate_act (bool): Use gate activation (default False).
             use_grid_mlp (bool): Use grid MLP in FFN (default False).
@@ -56,6 +69,13 @@ class ModelTaskFactory:
             ssl3d_denoise_weight, ssl3d_sigma_min, ssl3d_sigma_max, ssl3d_sigma_schedule,
             ssl3d_mtype_weight, ssl3d_mask_rate, ssl3d_atom_vocab_size,
             ssl3d_dist_weight, ssl3d_dist_k_pairs
+
+        Diffusion kwargs (see configs/tasks/diffusion_equiformer.yaml):
+            diffusion_steps, diffusion_noise_schedule,
+            diffusion_noise_precision, diffusion_loss_type,
+            normalize_factors, extra_norm_values,
+            augment_noise, data_augmentation, context_mask_rate, mask_value,
+            normalize_condition, reference_indices
 
         Regression kwargs:
             task_learn (list[str]): Property names to predict.
@@ -133,10 +153,12 @@ class ModelTaskFactory:
             self.task = self._build_ssl3d()
         elif self.task_type == "regression":
             self.task = self._build_regression()
+        elif self.task_type == "diffusion":
+            self.task = self._build_diffusion()
         else:
             raise ValueError(
                 f"Unknown task_type '{self.task_type}'. "
-                f"Expected 'ssl3d_equiformer' or 'regression'."
+                f"Expected 'ssl3d_equiformer', 'regression' or 'diffusion'."
             )
 
         if self.chkpt_path is not None:
@@ -160,12 +182,17 @@ class ModelTaskFactory:
             norm_type=k.get("norm_type", "rms_norm_sh"),
             lmax_list=k.get("lmax_list", [6]),
             mmax_list=k.get("mmax_list", [2]),
+            grid_resolution=k.get("grid_resolution", None),
+            num_sphere_samples=k.get("num_sphere_samples", 128),
             edge_channels=k.get("edge_channels", 128),
             use_atom_edge_embedding=k.get("use_atom_edge_embedding", True),
             share_atom_edge_embedding=k.get("share_atom_edge_embedding", False),
+            use_m_share_rad=k.get("use_m_share_rad", False),
             distance_function=k.get("distance_function", "gaussian"),
             num_distance_basis=k.get("num_distance_basis", 512),
             attn_activation=k.get("attn_activation", "scaled_silu"),
+            use_s2_act_attn=k.get("use_s2_act_attn", False),
+            use_attn_renorm=k.get("use_attn_renorm", True),
             ffn_activation=k.get("ffn_activation", "scaled_silu"),
             use_gate_act=k.get("use_gate_act", False),
             use_grid_mlp=k.get("use_grid_mlp", False),
@@ -217,6 +244,35 @@ class ModelTaskFactory:
             prediction_mlp_type=k.get("prediction_mlp_type", "pernode"),
             prediction_activation=k.get("prediction_activation", "relu"),
         )
+
+    def _build_diffusion(self):
+        k = self.kwargs
+        model = EnVariationalDiffusion(
+            dynamics=self._build_dynamics(),
+            in_node_nf=self.in_node_nf,
+            n_dims=3,
+            timesteps=k["diffusion_steps"],
+            noise_schedule=k.get("diffusion_noise_schedule", "polynomial_2"),
+            noise_precision=k.get("diffusion_noise_precision", 1e-5),
+            loss_type=k.get("diffusion_loss_type", "l2"),
+            norm_values=k.get("normalize_factors", [1, 4, 10]),
+            include_charges=True,
+            extra_norm_values=k.get("extra_norm_values", []),
+            context_mask_rate=k.get("context_mask_rate", 0.15),
+            mask_value=k.get("mask_value", None),
+        )
+        task = GeomMolecularGenerative(
+            model,
+            augment_noise=k.get("augment_noise", False),
+            data_augmentation=k.get("data_augmentation", False),
+            condition=self.condition_names,
+            sp_regularizer=None,
+            normalize_condition=k.get("normalize_condition", None),
+            reference_indices=k.get("reference_indices", None),
+        )
+        task.atom_vocab = self.atom_vocab
+        task.task_type = self.task_type
+        return task
 
     def _build_ssl3d(self):
         # Equiformer handles time internally via condition_time=True;

@@ -57,6 +57,7 @@ from .torch import (
     seed_everything,
     get_vram_size,
     recursive_module_to_device,
+    move_stray_tensor_attrs,
     adjust_weights,
     adjust_bias,
 )
@@ -151,6 +152,7 @@ __all__ = [
     "seed_everything",
     "get_vram_size",
     "recursive_module_to_device",
+    "move_stray_tensor_attrs",
     "adjust_weights",
     "adjust_bias",
     

@@ -1,0 +1,65 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_equiformer.ModelTaskFactory
+task_type: diffusion
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+chkpt_path: null
+
+# EquiformerV2 backbone hyperparameters -- ported from the vendored ADiT repo's
+# molecule (non-PBC) VAE encoder config, others/all-atom-diffusion-transformer/
+# configs/encoder/equiformer.yaml. ADiT uses this exact EquiformerV2 family as
+# its VAE encoder only (its diffusion itself is flow-matching over VAE latent
+# tokens via a separate DiT transformer -- an unrelated formulation to this
+# task's direct EDM-style diffusion, so only the backbone architecture below
+# is ported, not ADiT's diffusion/optimizer hyperparameters).
+sphere_channels: 128
+input_sphere_channels: 128
+num_layers: 8
+lmax_list: [2]
+mmax_list: [1]
+grid_resolution: 18
+num_sphere_samples: 128
+attn_hidden_channels: 64
+attn_alpha_channels: 64
+attn_value_channels: 16
+ffn_hidden_channels: 128
+num_heads: 8
+norm_type: "layer_norm_sh"
+edge_channels: 128
+use_atom_edge_embedding: True
+share_atom_edge_embedding: False
+use_m_share_rad: False
+distance_function: "gaussian"
+num_distance_basis: 512
+attn_activation: "silu"
+use_s2_act_attn: False
+use_attn_renorm: True
+ffn_activation: "silu"
+use_gate_act: False
+use_grid_mlp: True
+use_sep_s2_act: True
+alpha_drop: 0.1
+drop_path_rate: 0.1
+proj_drop: 0.0
+cutoff: 9.0  # ADiT's max_radius
+weight_init: "uniform"
+
+# specific to diffusion (copied verbatim from diffusion_painn.yaml -- the
+# diffusion math is EnVariationalDiffusion's, shared across every backbone)
+diffusion_steps: 1000
+diffusion_noise_schedule: polynomial_2 # learned, cosine_x, polynomial_x, issnr_x, smld_x
+diffusion_noise_precision: 1e-5
+diffusion_loss_type: vlb
+normalize_factors: [1, 4, 10]
+extra_norm_values: []
+augment_noise: False
+data_augmentation: False
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10 # None | "maxmin" | "mad" | "value_N" (divide condition by N; value_10 = default). NOT a boolean.
+reference_indices: null # indices of core atoms for the outpainting objective
+# evaluator parameters
+use_posebuster: True
+metrics: valid_posebuster
+n_samples: 24
+generative_analysis: True
+batch_size: 4
