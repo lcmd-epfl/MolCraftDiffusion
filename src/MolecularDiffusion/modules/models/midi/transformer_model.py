@@ -332,8 +332,14 @@ class GraphTransformer(nn.Module):
             ``X``/``E``/``y``/``pos``.
         hidden_dims: transformer widths, keys ``dx``/``de``/``dy``/``n_head``/
             ``dim_ffX``/``dim_ffE``/``dim_ffy``.
-        output_dims: channel counts of the prediction (``y`` is 0 -- MiDi is
-            unconditional).
+        output_dims: channel counts of the prediction (``y`` is 0 -- MiDi
+            never asks the network to predict a property value).
+        adapter_indices: indices into an external per-graph ``condition``
+            tensor routed through a per-layer adapter MLP, additively
+            injected into the evolving ``y`` after every transformer layer.
+        concat_indices: indices into ``condition`` concatenated onto ``y``
+            once, before the input embedding -- reaches every layer for free
+            via ``y``'s existing per-layer FiLM injection into ``X``/``E``.
     """
 
     def __init__(  # noqa: PLR0913
@@ -343,6 +349,8 @@ class GraphTransformer(nn.Module):
         hidden_mlp_dims: dict,
         hidden_dims: dict,
         output_dims: Dims,
+        adapter_indices: list | None = None,
+        concat_indices: list | None = None,
     ) -> None:
         super().__init__()
         self.n_layers = n_layers
@@ -350,6 +358,11 @@ class GraphTransformer(nn.Module):
         self.out_dim_E = output_dims.E
         self.out_dim_y = output_dims.y
         self.out_dim_charges = output_dims.charges
+
+        self.adapter_indices = adapter_indices or []
+        self.concat_indices = concat_indices or []
+        n_concat_context = len(self.concat_indices)
+        n_adapter_context = len(self.adapter_indices)
 
         act_fn_in = nn.ReLU()
         act_fn_out = nn.ReLU()
@@ -367,12 +380,25 @@ class GraphTransformer(nn.Module):
             act_fn_in,
         )
         self.mlp_in_y = nn.Sequential(
-            nn.Linear(input_dims.y, hidden_mlp_dims["y"]),
+            nn.Linear(
+                input_dims.y + n_concat_context, hidden_mlp_dims["y"]
+            ),
             act_fn_in,
             nn.Linear(hidden_mlp_dims["y"], hidden_dims["dy"]),
             act_fn_in,
         )
         self.mlp_in_pos = PositionsMLP(hidden_mlp_dims["pos"])
+
+        self.condition_adapters = (
+            nn.ModuleList(
+                [
+                    nn.Linear(n_adapter_context, hidden_dims["dy"])
+                    for _ in range(n_layers)
+                ]
+            )
+            if n_adapter_context > 0
+            else None
+        )
 
         # last_layer=False for every layer, upstream line 339: the released
         # checkpoints contain the y-branch weights of the final layer too.
@@ -405,8 +431,16 @@ class GraphTransformer(nn.Module):
         )
         self.mlp_out_pos = PositionsMLP(hidden_mlp_dims["pos"])
 
-    def forward(self, data: PlaceHolder) -> PlaceHolder:
-        """Denoise one batch; returns logits for the categorical modalities."""
+    def forward(
+        self, data: PlaceHolder, condition: torch.Tensor | None = None
+    ) -> PlaceHolder:
+        """Denoise one batch; returns logits for the categorical modalities.
+
+        ``condition``, when given, is a per-graph ``(B, D)`` property tensor:
+        columns in ``self.concat_indices`` are appended to ``y`` before the
+        input embedding, columns in ``self.adapter_indices`` are routed
+        through a dedicated per-layer MLP added to ``y`` after each layer.
+        """
         bs, n = data.X.shape[0], data.X.shape[1]
         node_mask = data.node_mask
 
@@ -418,19 +452,33 @@ class GraphTransformer(nn.Module):
         E_to_out = data.E[..., : self.out_dim_E]  # noqa: N806
         y_to_out = data.y[..., : self.out_dim_y]
 
+        y_in = data.y
+        adapter_ctx = None
+        if condition is not None:
+            if self.concat_indices:
+                y_in = torch.cat(
+                    [y_in, condition[..., self.concat_indices]], dim=-1
+                )
+            if self.adapter_indices:
+                adapter_ctx = condition[..., self.adapter_indices]
+
         new_E = self.mlp_in_E(data.E)  # noqa: N806
         new_E = (new_E + new_E.transpose(1, 2)) / 2  # noqa: N806
         features = PlaceHolder(
             X=self.mlp_in_X(X),
             E=new_E,
-            y=self.mlp_in_y(data.y),
+            y=self.mlp_in_y(y_in),
             charges=None,
             pos=self.mlp_in_pos(data.pos, node_mask),
             node_mask=node_mask,
         ).mask()
 
-        for layer in self.tf_layers:
+        for i, layer in enumerate(self.tf_layers):
             features = layer(features)
+            if adapter_ctx is not None:
+                features.y = features.y + self.condition_adapters[i](
+                    adapter_ctx
+                )
 
         X = self.mlp_out_X(features.X)  # noqa: N806
         E = self.mlp_out_E(features.E)  # noqa: N806

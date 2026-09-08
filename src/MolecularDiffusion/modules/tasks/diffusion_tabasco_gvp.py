@@ -58,6 +58,12 @@ class TabascoGVPDiffusionTask(TabascoDiffusionTask):
         num_atom_types: int,
         dataset_stats: dict,
         atom_vocab: Optional[list] = None,
+        condition_names: list = [],
+        context_mask_rate: float = 0.0,
+        mask_value: float = 0.0,
+        normalize_condition: Optional[str] = None,
+        adapter_conditions: Optional[list] = None,
+        use_adapter_module: bool = False,
     ):
         # Reproduces TabascoDiffusionTask.__init__ (diffusion_tabasco.py:280-326)
         # verbatim except for the backbone line below -- there is no hook to
@@ -65,11 +71,44 @@ class TabascoGVPDiffusionTask(TabascoDiffusionTask):
         # ledger's Derivation Rung), so `nn.Module.__init__` is called directly.
         nn.Module.__init__(self)
 
+        # Property-conditioning / CFG setup -- identical to
+        # TabascoDiffusionTask.__init__ (diffusion_tabasco.py), mirrored here
+        # for the same reason the backbone-construction lines are mirrored.
+        self.condition = condition_names
+        self.context_mask_rate = context_mask_rate
+        self.mask_value = mask_value
+        self.normalize_condition = normalize_condition
+        self.property_norms = None
+
+        if adapter_conditions:
+            for ac in adapter_conditions:
+                if ac not in condition_names:
+                    raise ValueError(
+                        f"adapter_conditions entry '{ac}' not found in "
+                        f"condition_names {condition_names}"
+                    )
+            self.adapter_indices = [condition_names.index(ac) for ac in adapter_conditions]
+            self.concat_indices = [
+                i for i in range(len(condition_names)) if i not in self.adapter_indices
+            ]
+        elif use_adapter_module:
+            self.adapter_indices = list(range(len(condition_names)))
+            self.concat_indices = []
+        else:
+            self.adapter_indices = []
+            self.concat_indices = list(range(len(condition_names)))
+        self.n_adapter_context = len(self.adapter_indices)
+        self.n_concat_context = len(self.concat_indices)
+
         self.to_tensordict = PointCloudToTensorDictAdapter(num_atom_types)
         self.to_pointcloud = TensorDictToPointCloudAdapter()
 
         # The one substitution: GVPBackbone in place of TransformerModule.
-        net = GVPBackbone(**gvp_config)
+        net = GVPBackbone(
+            **gvp_config,
+            adapter_indices=self.adapter_indices,
+            concat_indices=self.concat_indices,
+        )
         coords_interpolant = SDEMetricInterpolant(**coords_interpolant_config)
         atomics_interpolant = DiscreteInterpolant(**atomics_interpolant_config)
 
@@ -160,5 +199,11 @@ class ModelTaskFactory(TabascoModelTaskFactory):
             num_atom_types=self.num_atom_types,
             dataset_stats=self.dataset_stats,
             atom_vocab=self.atom_vocab,
+            condition_names=self.kwargs.get("condition_names", []),
+            context_mask_rate=self.kwargs.get("context_mask_rate", 0.0),
+            mask_value=self.kwargs.get("mask_value", 0.0),
+            normalize_condition=self.kwargs.get("normalize_condition", None),
+            adapter_conditions=self.kwargs.get("adapter_conditions", None),
+            use_adapter_module=self.kwargs.get("use_adapter_module", False),
         )
         return self.task

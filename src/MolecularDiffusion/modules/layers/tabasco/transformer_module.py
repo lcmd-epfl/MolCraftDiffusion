@@ -29,6 +29,8 @@ class TransformerModule(nn.Module):
         add_sinusoid_posenc: bool = True,
         concat_combine_input: bool = False,
         custom_weight_init: Optional[str] = None,
+        adapter_indices: Optional[list] = None,
+        concat_indices: Optional[list] = None,
     ):
         """
         Args:
@@ -65,6 +67,19 @@ class TransformerModule(nn.Module):
             self.combine_input = nn.Linear(4 * hidden_dim, hidden_dim)
 
         self.time_encoding = TimeFourierEncoding(posenc_dim=hidden_dim, max_len=200)
+
+        # Property conditioning: a single additive injection into `h_in`,
+        # not a per-layer re-injection -- `self.transformer` is PyTorch's
+        # built-in nn.TransformerEncoder (or the "reimplemented" Transformer),
+        # whose internal per-block loop isn't a safe place to hook into.
+        # Mirrors modules/models/equiformer_v2_dynamics.py's own adapter
+        # injection into its input embedding, for the same reason.
+        self.adapter_indices = adapter_indices or []
+        self.concat_indices = concat_indices or []
+        if self.adapter_indices:
+            self.adapter_embed = nn.Linear(len(self.adapter_indices), hidden_dim)
+        if self.concat_indices:
+            self.concat_embed = nn.Linear(len(self.concat_indices), hidden_dim)
 
         if activation == "SiLU":
             activation = nn.SiLU(inplace=False)
@@ -152,7 +167,7 @@ class TransformerModule(nn.Module):
                         f"Invalid custom weight init: {self.custom_weight_init}"
                     )
 
-    def forward(self, coords, atomics, padding_mask, t) -> Tensor:
+    def forward(self, coords, atomics, padding_mask, t, condition: Optional[Tensor] = None) -> Tensor:
         """Forward pass of the module."""
         real_mask = 1 - padding_mask.int()
 
@@ -191,6 +206,13 @@ class TransformerModule(nn.Module):
         else:
             
             h_in = embed_coords + embed_atom_types + embed_posenc + embed_time
+
+        if condition is not None:
+            if self.adapter_indices:
+                h_in = h_in + self.adapter_embed(condition[..., self.adapter_indices])
+            if self.concat_indices:
+                h_in = h_in + self.concat_embed(condition[..., self.concat_indices])
+
         h_in = h_in * real_mask.unsqueeze(-1)
 
         if self.implementation == "pytorch":

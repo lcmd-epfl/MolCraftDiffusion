@@ -45,8 +45,16 @@
 #   3. The `charges` channel in the platform's sample() tuple carries SIGNED
 #      FORMAL CHARGES, not atomic numbers; the element identity written to the
 #      .xyz comes from the one-hot channel.
-#   4. Unconditional only. No CFG / gradient guidance / inpainting exists for
-#      MiDi, upstream or here.
+#   4. Unconditional by default (this released checkpoint was trained without
+#      condition_names). Gradient guidance / inpainting still don't exist for
+#      MiDi, upstream or here. Property-conditioning + classifier-free
+#      guidance DO exist now (same config signature as
+#      configs/tasks/diffusion.yaml) for a checkpoint YOU train with
+#      tasks.condition_names set -- generate from one with:
+#        MolCraftDiff generate configs/examples/midi_generate.yaml \
+#            interference=gen_cfg \
+#            interference.target_values=[<value>] \
+#            interference.property_names=[<name-matching-tasks.condition_names>]
 defaults:
   - tasks: diffusion_midi
   - interference: gen_unconditional

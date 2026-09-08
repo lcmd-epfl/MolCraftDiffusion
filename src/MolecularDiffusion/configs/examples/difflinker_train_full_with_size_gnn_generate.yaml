@@ -39,18 +39,13 @@
 # GenerativeFactory's pre-sample() scaffold-size validation doesn't
 # complain; see `_enforce_scaffold_size` in tasks_generate.py).
 #
-# WORKING GENERATION -- WHY THIS PAIRS WITH A FROM-SCRATCH CHECKPOINT, NOT A
-# RELEASED PRETRAINED ONE. Every released pretrained DiffLinker checkpoint
-# (zinc/geom, given-anchors or not) diverges to NaN for any nonzero linker
-# size, root-caused to their `tanh: false` unbounded per-layer coordinate
-# update (see INTEGRATION_PLAN.md's Revision 7). Size GNN's own forward pass
-# is numerically ordinary (no coordinate-update layer at all) but any
-# prediction it makes feeds a nonzero linker_mask into whichever DiffLinker
-# checkpoint samples the linker -- so pairing it with a released checkpoint
-# would buy nothing. This config instead pairs it with a from-scratch
-# checkpoint (freshly initialized weights, numerically well-behaved
-# regardless of input scale) to demonstrate the auto-size-selection
-# capability end to end -- PASS in Tester Log attempt 7: 5/5 batches, 20/20
+# WORKING GENERATION. This config pairs the Size GNN with a from-scratch
+# checkpoint, but the pairing is not restricted to one -- any
+# generation-ready DiffLinker checkpoint works, released ones included
+# (they all generate as of 2026-09-07; see FINAL_REPORT.md). Size GNN's own
+# forward pass is numerically ordinary -- it has no coordinate-update layer
+# at all -- and only supplies a linker size to whichever checkpoint samples
+# the linker. PASS in Tester Log attempt 7: 5/5 batches, 20/20
 # molecules, no NaN/Inf, linker size confirmed genuinely varying per batch
 # (4 or 5 atoms, not a hardcoded constant), all bond distances in the real
 # covalent range (1.08-1.53 A).

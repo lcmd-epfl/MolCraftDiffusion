@@ -16,7 +16,7 @@ the upstream model, per the approved integration plan (coordinate-only):
   frames and guidance are all dropped.
 """
 
-from typing import Union
+from typing import Optional, Union
 
 import dgl
 import dgl.function as fn
@@ -66,6 +66,8 @@ class EndpointVectorField(nn.Module):
         dropout: float = 0.0,
         use_dst_feats: bool = False,
         dst_feat_msg_reduction_factor: float = 4,
+        adapter_indices: Optional[list] = None,
+        concat_indices: Optional[list] = None,
     ):
         super().__init__()
 
@@ -90,9 +92,19 @@ class EndpointVectorField(nn.Module):
         # categorical node modalities carried as continuous simplex vectors
         self.n_cat_feats = {"a": n_atom_types, "c": n_charges}
 
+        # Property-conditioning: concat-routed columns widen the scalar
+        # embedding input; adapter-routed columns get a dedicated per-layer
+        # re-injection MLP (see denoise_graph), mirroring
+        # tabasco_gvp/gvp_backbone.py's condition_adapters exactly, since
+        # this class has the identical per-layer conv-loop shape.
+        self.adapter_indices = adapter_indices or []
+        self.concat_indices = concat_indices or []
+        n_adapter_context = len(self.adapter_indices)
+        n_concat_context = len(self.concat_indices)
+
         self.scalar_embedding = nn.Sequential(
             nn.Linear(
-                n_atom_types + n_charges + self.time_embedding_dim,
+                n_atom_types + n_charges + self.time_embedding_dim + n_concat_context,
                 n_hidden_scalars,
             ),
             nn.SiLU(),
@@ -135,6 +147,11 @@ class EndpointVectorField(nn.Module):
                 for _ in range(convs_per_update * n_molecule_updates)
             ]
         )
+
+        if n_adapter_context > 0:
+            self.condition_adapters = nn.ModuleList(
+                [nn.Linear(n_adapter_context, n_hidden_scalars) for _ in self.conv_layers]
+            )
 
         self.node_position_updaters = nn.ModuleList([])
         self.edge_updaters = nn.ModuleList([])
@@ -183,6 +200,14 @@ class EndpointVectorField(nn.Module):
                 )
                 node_scalar_features.append(t_emb[node_batch_idx])
 
+            adapter_ctx = None
+            if "cond" in g.ndata:
+                cond = g.ndata["cond"]
+                if self.concat_indices:
+                    node_scalar_features.append(cond[..., self.concat_indices])
+                if self.adapter_indices:
+                    adapter_ctx = cond[..., self.adapter_indices]
+
             node_scalar_features = torch.cat(node_scalar_features, dim=-1)
             node_scalar_features = self.scalar_embedding(node_scalar_features)
 
@@ -200,6 +225,7 @@ class EndpointVectorField(nn.Module):
             node_batch_idx,
             apply_softmax,
             remove_com,
+            adapter_ctx=adapter_ctx,
         )
         return dst_dict
 
@@ -212,6 +238,7 @@ class EndpointVectorField(nn.Module):
         node_batch_idx: torch.Tensor,
         apply_softmax: bool = False,
         remove_com: bool = False,
+        adapter_ctx: Optional[torch.Tensor] = None,
     ):
         x_diff, d = self.precompute_distances(g, node_positions)
 
@@ -229,6 +256,8 @@ class EndpointVectorField(nn.Module):
                     x_diff=x_diff,
                     d=d,
                 )
+                if adapter_ctx is not None:
+                    node_scalar_features = node_scalar_features + self.condition_adapters[conv_idx](adapter_ctx)
 
                 if (
                     conv_idx != 0
@@ -303,12 +332,36 @@ class EndpointVectorField(nn.Module):
             )
         return g
 
+    @staticmethod
+    def _scale_schedule(t: torch.Tensor, cfg_scale: float, schedule_type: str) -> float:
+        """Ramp guidance strength across sampling steps.
+
+        Same 3 named schedules as TABASCO's FlowMatchingModel._scale_schedule
+        -- `t` here also runs 0 (noise) -> 1 (data) during `integrate()`, so
+        the ramp variable is `x = t` directly, same as TABASCO (the opposite
+        of en_diffusion's diffusion `t`, which runs 1 -> 0 during denoising).
+        """
+        x = float(t)
+        schedule_type = schedule_type.lower()
+        if schedule_type == "linear":
+            return cfg_scale * x
+        elif schedule_type == "exponential":
+            return cfg_scale * (x ** 2)
+        elif schedule_type == "cosine":
+            import math
+            return cfg_scale * (1 - math.cos(x * math.pi / 2))
+        raise ValueError(f"Unknown scale schedule: {schedule_type}")
+
     @torch.no_grad()
     def integrate(
         self,
         g: dgl.DGLGraph,
         node_batch_idx: torch.Tensor,
         n_timesteps: int,
+        condition: Optional[torch.Tensor] = None,
+        negative_condition: Optional[torch.Tensor] = None,
+        cfg_scale: float = 0.0,
+        cfg_scale_schedule: Optional[str] = None,
     ):
         """Integrate the trajectory from prior (x_0) to endpoint along the VF."""
         t = torch.linspace(0, 1, n_timesteps, device=g.device)
@@ -323,8 +376,13 @@ class EndpointVectorField(nn.Module):
             t_i = t[s_idx - 1]
             alpha_t_i = alpha_t[s_idx - 1]
             alpha_t_prime_i = alpha_t_prime[s_idx - 1]
+            step_cfg_scale = (
+                self._scale_schedule(t_i, cfg_scale, cfg_scale_schedule)
+                if cfg_scale_schedule else cfg_scale
+            )
             g = self.step(
-                g, s_i, t_i, alpha_t_i, alpha_t_prime_i, node_batch_idx
+                g, s_i, t_i, alpha_t_i, alpha_t_prime_i, node_batch_idx,
+                condition=condition, negative_condition=negative_condition, cfg_scale=step_cfg_scale,
             )
 
         for feat in self.canonical_feat_order:
@@ -339,14 +397,38 @@ class EndpointVectorField(nn.Module):
         alpha_t_i: torch.Tensor,
         alpha_t_prime_i: torch.Tensor,
         node_batch_idx: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
+        negative_condition: Optional[torch.Tensor] = None,
+        cfg_scale: float = 0.0,
     ):
-        dst_dict = self(
-            g,
-            t=torch.full((g.batch_size,), t_i, device=g.device),
-            node_batch_idx=node_batch_idx,
-            apply_softmax=True,
-            remove_com=True,
-        )
+        t = torch.full((g.batch_size,), t_i, device=g.device)
+
+        if condition is not None and cfg_scale != 0.0:
+            # Two sequential forward passes on the same (un-doubled) graph,
+            # swapping g.ndata["cond"] between calls, rather than DGL
+            # graph-batch doubling -- g already carries per-step evolving
+            # state (x_t/a_t/c_t) that must NOT be duplicated, only the
+            # velocity *prediction* needs the cond/uncond combination.
+            g.ndata["cond"] = condition
+            dst_cond = self(
+                g, t=t, node_batch_idx=node_batch_idx, apply_softmax=True, remove_com=True
+            )
+            g.ndata["cond"] = (
+                negative_condition if negative_condition is not None else torch.zeros_like(condition)
+            )
+            dst_uncond = self(
+                g, t=t, node_batch_idx=node_batch_idx, apply_softmax=True, remove_com=True
+            )
+            dst_dict = {
+                feat: (1 + cfg_scale) * dst_cond[feat] - cfg_scale * dst_uncond[feat]
+                for feat in dst_cond
+            }
+        else:
+            if condition is not None:
+                g.ndata["cond"] = condition
+            dst_dict = self(
+                g, t=t, node_batch_idx=node_batch_idx, apply_softmax=True, remove_com=True
+            )
 
         for feat_idx, feat in enumerate(self.canonical_feat_order):
             x_t = g.ndata[f"{feat}_t"]

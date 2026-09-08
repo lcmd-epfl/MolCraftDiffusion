@@ -20,8 +20,13 @@ GEOM -> +2/6), never baked into the dataset.
 
 Out of scope this pass (see the integration plan): ``ExtraFeatures`` (every
 released config sets ``extra_features: null``), the variational-NLL validation
-path, MiDi's own molecular metrics, the size-aware loader, and all
-conditioning/guidance modes -- MiDi is unconditional-only.
+path, MiDi's own molecular metrics, and the size-aware loader.
+
+Property-conditioning + classifier-free guidance use the same config
+signature as ``configs/tasks/diffusion.yaml`` (en_diffusion's formulation):
+set ``condition_names`` to opt in. The injection point is ``PlaceHolder.y``,
+MiDi's own per-graph global feature, already FiLM-injected into every
+transformer layer -- see ``modules/models/midi/transformer_model.py``.
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ from MolecularDiffusion.modules.models.midi import (
 from MolecularDiffusion.modules.tasks.diffusion_tabasco import (
     TabascoNodeDistribution,
 )
+from MolecularDiffusion.utils import compute_mean_mad_from_dataloader
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +251,12 @@ class ModelTaskFactory:
             e_marginals=e_marginals,
             charges_marginals=charges_marginals,
             n_atoms_hist=n_atoms_hist,
+            condition_names=self.kwargs.get("condition_names", []),
+            context_mask_rate=self.kwargs.get("context_mask_rate", 0.0),
+            mask_value=self.kwargs.get("mask_value", 0.0),
+            normalize_condition=self.kwargs.get("normalize_condition", None),
+            adapter_conditions=self.kwargs.get("adapter_conditions", None),
+            use_adapter_module=self.kwargs.get("use_adapter_module", False),
         )
         return self.task
 
@@ -270,6 +282,12 @@ class MidiDiffusionTask(nn.Module):
         e_marginals: Optional[torch.Tensor],
         charges_marginals: Optional[torch.Tensor],
         n_atoms_hist: dict,
+        condition_names: list = [],
+        context_mask_rate: float = 0.0,
+        mask_value: float = 0.0,
+        normalize_condition: Optional[str] = None,
+        adapter_conditions: Optional[list] = None,
+        use_adapter_module: bool = False,
     ) -> None:
         super().__init__()
         self.task_type = "diffusion_midi"
@@ -279,6 +297,38 @@ class MidiDiffusionTask(nn.Module):
         self.n_charge_classes = n_charge_classes
         self.lambda_train = list(lambda_train)
         self.sdf_output_path = sdf_output_path
+
+        # Property-conditioning / CFG setup -- same config signature as
+        # en_diffusion.py's GeomMolecularGenerative / TABASCO / FlowMol.
+        self.condition = condition_names
+        self.context_mask_rate = context_mask_rate
+        self.mask_value = mask_value
+        self.normalize_condition = normalize_condition
+        self.property_norms = None  # built in preprocess()
+
+        if adapter_conditions:
+            for ac in adapter_conditions:
+                if ac not in condition_names:
+                    raise ValueError(
+                        f"adapter_conditions entry '{ac}' not found in "
+                        f"condition_names {condition_names}"
+                    )
+            self.adapter_indices = [
+                condition_names.index(ac) for ac in adapter_conditions
+            ]
+            self.concat_indices = [
+                i
+                for i in range(len(condition_names))
+                if i not in self.adapter_indices
+            ]
+        elif use_adapter_module:
+            self.adapter_indices = list(range(len(condition_names)))
+            self.concat_indices = []
+        else:
+            self.adapter_indices = []
+            self.concat_indices = list(range(len(condition_names)))
+        self.n_adapter_context = len(self.adapter_indices)
+        self.n_concat_context = len(self.concat_indices)
 
         self.input_dims = Dims(
             X=self.n_atom_types,
@@ -301,6 +351,8 @@ class MidiDiffusionTask(nn.Module):
             hidden_mlp_dims=hidden_mlp_dims,
             hidden_dims=hidden_dims,
             output_dims=self.output_dims,
+            adapter_indices=self.adapter_indices,
+            concat_indices=self.concat_indices,
         )
 
         # The class marginals are dataset statistics, not learned weights --
@@ -380,6 +432,62 @@ class MidiDiffusionTask(nn.Module):
         """``{n_atoms: count}`` histogram used to clamp ``mol_size``."""
         return self.node_dist_model.n_node_dist
 
+    def preprocess(self, train_set=None, valid_set=None, test_set=None):
+        """Build self.property_norms for CFG conditioning (train-side only).
+
+        Called generically by cli/train.py if this attribute exists. Does
+        NOT touch node_dist_model/n_node_dist -- those come from
+        graph3d_stats at __init__ time via ModelTaskFactory, a separate
+        mechanism. Deliberately skips DistributionProperty/prop_dist_model
+        (out of scope -- generation always takes an explicit target_value).
+        """
+        if train_set is None or len(self.condition) == 0:
+            return
+        from . import _preprocess_cache as _ppcache
+
+        base, subset_indices = _ppcache.resolve_dataset_and_indices(train_set)
+        prop_indices = _ppcache.property_sample_indices(
+            len(train_set), subset_indices
+        )
+        props = torch.stack(
+            [
+                _ppcache.get_property_subset(base, name, prop_indices)
+                for name in self.condition
+            ]
+        )
+        self.property_norms = compute_mean_mad_from_dataloader(
+            props, self.condition
+        )
+
+    def _normalize_target(
+        self, value: torch.Tensor, key: str
+    ) -> torch.Tensor:
+        if self.normalize_condition is None:
+            return value
+        norms = self.property_norms[key]
+        if self.normalize_condition == "mad":
+            return (value - norms["mean"]) / norms["mad"]
+        if self.normalize_condition == "maxmin":
+            return (
+                2 * (value - norms["min"]) / (norms["max"] - norms["min"])
+                - 1
+            )
+        if "value" in self.normalize_condition:
+            return value / float(self.normalize_condition.split("_")[1])
+        msg = f"Unknown normalization method: {self.normalize_condition}"
+        raise ValueError(msg)
+
+    def _null_condition(self, device: torch.device) -> torch.Tensor:
+        """Adapter/concat-aware null vector for dropout and negative CFG."""
+        d = len(self.condition)
+        if self.n_adapter_context > 0:
+            null_value = torch.empty(d, device=device)
+            null_value[self.adapter_indices] = 0.0
+            null_value[self.concat_indices] = self.mask_value
+        else:
+            null_value = torch.full((d,), self.mask_value, device=device)
+        return null_value
+
     def _sync_marginals(self) -> None:
         """Point the noise model at the current marginal buffers.
 
@@ -441,14 +549,16 @@ class MidiDiffusionTask(nn.Module):
             pos=pos, X=x, charges=charges, E=e, y=y, node_mask=node_mask
         ).mask()
 
-    def _denoise(self, z_t: PlaceHolder) -> PlaceHolder:
+    def _denoise(
+        self, z_t: PlaceHolder, condition: Optional[torch.Tensor] = None
+    ) -> PlaceHolder:
         """Run the backbone on a noised batch, appending ``t`` to ``y``."""
         model_input = z_t.copy()
         model_input.X = z_t.X.float()
         model_input.charges = z_t.charges.float()
         model_input.E = z_t.E.float()
         model_input.y = torch.hstack((z_t.y, z_t.t)).float()
-        return self.backbone(model_input)
+        return self.backbone(model_input, condition=condition)
 
     # -- training -----------------------------------------------------------
 
@@ -457,7 +567,32 @@ class MidiDiffusionTask(nn.Module):
         self._sync_marginals()
         dense_data = self._to_placeholder(batch)
         z_t = self.noise_model.apply_noise(dense_data)
-        pred = self._denoise(z_t)
+
+        condition = None
+        if len(self.condition) > 0:
+            if self.property_norms is None:
+                raise RuntimeError(
+                    "condition_names is set but property_norms is None -- "
+                    "did preprocess() run? (cli/train.py calls it only if "
+                    "hasattr(task, 'preprocess'))"
+                )
+            device = dense_data.pos.device
+            vals = [
+                self._normalize_target(batch[key].float().to(device), key)
+                for key in self.condition
+            ]
+            condition = torch.stack(vals, dim=-1)
+            if self.context_mask_rate > 0:
+                drop = (
+                    torch.rand(condition.size(0), device=device)
+                    < self.context_mask_rate
+                )
+                null_value = self._null_condition(device)
+                condition = torch.where(
+                    drop.unsqueeze(-1), null_value.unsqueeze(0), condition
+                )
+
+        pred = self._denoise(z_t, condition=condition)
         return self._loss(pred, dense_data)
 
     def _loss(
@@ -528,9 +663,13 @@ class MidiDiffusionTask(nn.Module):
         batch: Optional[dict] = None,  # noqa: ARG002
         mode: Optional[str] = None,  # noqa: ARG002 - DDIM modes out of scope
         n_frames: int = 0,  # noqa: ARG002 - trajectories out of scope
+        condition: Optional[torch.Tensor] = None,
+        negative_condition: Optional[torch.Tensor] = None,
+        cfg_scale: float = 0.0,
+        cfg_scale_schedule: Optional[str] = None,
         **kwargs: Any,  # noqa: ARG002
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Unconditional sampling.
+        """Sampling, unconditional unless ``condition``/``cfg_scale`` are set.
 
         Returns the platform's ``(one_hot, charges, coords, node_mask)``
         tuple. ``charges`` carries **signed formal charges** (FlowMol's
@@ -562,7 +701,30 @@ class MidiDiffusionTask(nn.Module):
             s_array = s_int * torch.ones(
                 (bs, 1), dtype=torch.long, device=device
             )
-            pred = self._denoise(z_t)
+            if condition is not None and cfg_scale != 0.0:
+                step_scale = (
+                    self._scale_schedule(
+                        1 - z_t.t, cfg_scale, cfg_scale_schedule
+                    )
+                    if cfg_scale_schedule
+                    else cfg_scale
+                )
+                pred_cond = self._denoise(z_t, condition=condition)
+                pred_uncond = self._denoise(
+                    z_t, condition=negative_condition
+                )
+                w = step_scale
+                pred = PlaceHolder(
+                    pos=(1 + w) * pred_cond.pos - w * pred_uncond.pos,
+                    X=(1 + w) * pred_cond.X - w * pred_uncond.X,
+                    charges=(1 + w) * pred_cond.charges
+                    - w * pred_uncond.charges,
+                    E=(1 + w) * pred_cond.E - w * pred_uncond.E,
+                    y=pred_cond.y,
+                    node_mask=pred_cond.node_mask,
+                )
+            else:
+                pred = self._denoise(z_t, condition=condition)
             z_t = self.noise_model.sample_zs_from_zt_and_pred(
                 z_t=z_t, pred=pred, s_int=s_array
             )
@@ -584,6 +746,91 @@ class MidiDiffusionTask(nn.Module):
             self._write_sdf(atom_idx, charges, bond_types, coords, node_mask)
 
         return one_hot, charges, coords, node_mask.long()
+
+    @staticmethod
+    def _scale_schedule(
+        t: torch.Tensor, cfg_scale: float, schedule_type: str
+    ) -> float:
+        x = float(t)
+        schedule_type = schedule_type.lower()
+        if schedule_type == "linear":
+            return cfg_scale * x
+        if schedule_type == "exponential":
+            return cfg_scale * (x**2)
+        if schedule_type == "cosine":
+            import math
+
+            return cfg_scale * (1 - math.cos(x * math.pi / 2))
+        msg = f"Unknown scale schedule: {schedule_type}"
+        raise ValueError(msg)
+
+    @torch.no_grad()
+    def sample_guidance_conitional(  # noqa: PLR0913
+        self,
+        target_function: Any = None,  # noqa: ARG002
+        target_value: Optional[list] = None,
+        negative_target_value: Optional[list] = None,
+        nodesxsample: Optional[torch.Tensor] = None,
+        cfg_scale: float = 1,
+        cfg_scale_schedule: Optional[str] = None,
+        guidance_ver: str = "cfg",
+        n_frames: int = 0,  # noqa: ARG002 - trajectories out of scope
+        num_steps: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Classifier-free-guidance generation.
+
+        Matches the call signature ``GenerativeFactory.conditional_generation()``
+        hardcodes for ``task_type == "cfg"``, and returns
+        ``(one_hot, charges, x, node_mask)`` like ``sample()``.
+        """
+        if guidance_ver != "cfg":
+            msg = (
+                f"MidiDiffusionTask only supports guidance_ver='cfg' (got "
+                f"{guidance_ver!r}); gradient-guidance variants are out of "
+                "scope."
+            )
+            raise NotImplementedError(msg)
+
+        device = self.device
+        n_nodes = torch.as_tensor(
+            nodesxsample, dtype=torch.long, device=device
+        )
+        bs = int(n_nodes.numel())
+
+        vals = [
+            self._normalize_target(
+                torch.as_tensor(target_value[i], device=device), key
+            )
+            for i, key in enumerate(self.condition)
+        ]
+        condition = (
+            torch.stack(vals).unsqueeze(0).expand(bs, -1).float()
+        )
+
+        if negative_target_value:
+            neg = [
+                self._normalize_target(
+                    torch.as_tensor(negative_target_value[i], device=device),
+                    key,
+                )
+                for i, key in enumerate(self.condition)
+            ]
+            negative_condition = (
+                torch.stack(neg).unsqueeze(0).expand(bs, -1).float()
+            )
+        else:
+            negative_condition = (
+                self._null_condition(device).unsqueeze(0).expand(bs, -1)
+            )
+
+        return self.sample(
+            nodesxsample=nodesxsample,
+            num_steps=num_steps,
+            condition=condition,
+            negative_condition=negative_condition,
+            cfg_scale=cfg_scale,
+            cfg_scale_schedule=cfg_scale_schedule,
+        )
 
     def _write_sdf(  # noqa: PLR0913
         self,

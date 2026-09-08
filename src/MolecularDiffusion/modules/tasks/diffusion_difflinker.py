@@ -33,6 +33,43 @@ from MolecularDiffusion.modules.models.difflinker.size_gnn import LinkerSizePred
 # index len(atom_vocab) + 0 = linker_mask, len(atom_vocab) + 1 = anchors.
 DIFFLINKER_ROW_DATA_COLUMNS = ("linker_mask", "anchors")
 
+def dense_edge_mask(
+    atom_mask: torch.Tensor, *, upstream_int8: bool = False
+) -> torch.Tensor:
+    """Build the flat ``(B*N*N, 1)`` edge mask for the dense path.
+
+    ``upstream_int8`` reproduces a real integer-overflow bug in DiffLinker's
+    own ``src/datasets.py:366-369``, which every released non-pocket weight
+    was trained under::
+
+        edge_mask = atom_mask[:, None, :] * atom_mask[:, :, None]
+        diag_mask = ~torch.eye(n, dtype=const.TORCH_INT)   # TORCH_INT = int8
+        edge_mask *= diag_mask
+
+    ``~`` on an ``int8`` tensor is *bitwise* NOT, not logical NOT, so
+    ``diag_mask`` is ``-1`` off-diagonal and ``-2`` on-diagonal rather than
+    ``True``/``False``. The resulting mask therefore **negates** every real
+    message and passes self-loops through at ``-2``. That sign convention is
+    baked into the released weights: fed the arithmetically-correct
+    ``+1``/``0`` mask they diverge to NaN on the first reverse step, and fed
+    this one they generate cleanly. Weights trained *by this platform* learnt
+    the correct mask, so this defaults to ``False`` and only the converted
+    upstream checkpoints turn it on.
+
+    The pocket checkpoints are unaffected either way: ``DynamicsWithPockets``
+    builds its own distance-cutoff edges and is called with ``edge_mask=None``.
+    """
+    am = atom_mask.squeeze(-1)
+    edges = am.unsqueeze(2) * am.unsqueeze(1)
+    n = am.shape[-1]
+    if upstream_int8:
+        diag = ~torch.eye(n, dtype=torch.int8, device=am.device)
+        masked = edges.to(torch.int8) * diag.unsqueeze(0)
+        return masked.reshape(-1, 1).to(am.dtype)
+    diag = ~torch.eye(n, dtype=torch.bool, device=am.device)
+    return (edges * diag.unsqueeze(0)).reshape(-1, 1)
+
+
 class PointCloudToDiffLinkerBatch:
     """Converts a MolCraftDiffusion PointCloud batch dict into DiffLinker's
     native per-atom field layout.
@@ -50,9 +87,12 @@ class PointCloudToDiffLinkerBatch:
       atoms bordering the cut tagged as anchors.
     """
 
-    def __init__(self, atom_vocab: list):
+    def __init__(
+        self, atom_vocab: list, *, upstream_int8_edge_mask: bool = False
+    ) -> None:
         self.atom_vocab = list(atom_vocab)
         self.n_vocab = len(self.atom_vocab)
+        self.upstream_int8_edge_mask = upstream_int8_edge_mask
 
     def __call__(self, batch: dict) -> dict:
         node_feature = batch.get("node_feature")
@@ -64,7 +104,7 @@ class PointCloudToDiffLinkerBatch:
         coords = batch["coords"]
         device = coords.device
         node_mask_flat = batch["node_mask"].float().to(device)
-        _bsz, n_atoms = node_mask_flat.shape
+        _bsz, _n_atoms = node_mask_flat.shape
 
         one_hot = node_feature[..., : self.n_vocab].to(device)
 
@@ -79,11 +119,9 @@ class PointCloudToDiffLinkerBatch:
         linker_mask = linker_mask * atom_mask
         fragment_mask = (1.0 - linker_mask) * atom_mask
 
-        am = atom_mask.squeeze(-1)
-        edge_mask_full = am.unsqueeze(2) * am.unsqueeze(1)
-        diag = ~torch.eye(n_atoms, dtype=torch.bool, device=device)
-        edge_mask_full = edge_mask_full * diag.unsqueeze(0)
-        edge_mask = edge_mask_full.reshape(-1, 1)
+        edge_mask = dense_edge_mask(
+            atom_mask, upstream_int8=self.upstream_int8_edge_mask
+        )
 
         return {
             "positions": coords,
@@ -156,6 +194,7 @@ class DiffLinkerTaskFactory:
         pocket_conditioned: bool = False,
         context_node_nf: Optional[int] = None,
         graph_type: str = "FC",
+        upstream_int8_edge_mask: bool = False,
         size_gnn_checkpoint: Optional[str] = None,
         **kwargs,
     ):
@@ -189,6 +228,10 @@ class DiffLinkerTaskFactory:
         self.pocket_conditioned = pocket_conditioned
         self.context_node_nf = context_node_nf
         self.graph_type = graph_type
+        # Released-weight edge-mask sign convention -- see dense_edge_mask().
+        # False (default) = this platform's own trained weights; True = a
+        # converted upstream non-pocket checkpoint.
+        self.upstream_int8_edge_mask = upstream_int8_edge_mask
         # Size GNN (INTEGRATION_PLAN.md Revision 8) -- additive only, a
         # converted LinkerSizePredictor checkpoint path.
         self.size_gnn_checkpoint = size_gnn_checkpoint
@@ -222,6 +265,7 @@ class DiffLinkerTaskFactory:
             pocket_conditioned=self.pocket_conditioned,
             context_node_nf=self.context_node_nf,
             graph_type=self.graph_type,
+            upstream_int8_edge_mask=self.upstream_int8_edge_mask,
         )
         if self.size_gnn_checkpoint:
             self.task.size_predictor = LinkerSizePredictor.from_checkpoint(
@@ -263,6 +307,7 @@ class DiffLinkerTask(nn.Module):
         pocket_conditioned: bool = False,
         context_node_nf: Optional[int] = None,
         graph_type: str = "FC",
+        upstream_int8_edge_mask: bool = False,
     ):
         super().__init__()
 
@@ -330,6 +375,7 @@ class DiffLinkerTask(nn.Module):
         self.pocket_conditioned = pocket_conditioned
         self.context_node_nf = context_node_nf
         self.graph_type = graph_type
+        self.upstream_int8_edge_mask = upstream_int8_edge_mask
         # Size GNN (INTEGRATION_PLAN.md Revision 8) -- optional, additive
         # alternative to node_dist_model histogram sampling in sample()
         # below. None (default) => today's behavior, unchanged.
@@ -376,8 +422,15 @@ class DiffLinkerTask(nn.Module):
                 "cli/generate.py should set it after build() (see "
                 "docs/adding_new_models.md §2.1)."
             )
-        if self._adapter is None or self._adapter.atom_vocab != list(self.atom_vocab):
-            self._adapter = PointCloudToDiffLinkerBatch(self.atom_vocab)
+        if (
+            self._adapter is None
+            or self._adapter.atom_vocab != list(self.atom_vocab)
+            or self._adapter.upstream_int8_edge_mask != self.upstream_int8_edge_mask
+        ):
+            self._adapter = PointCloudToDiffLinkerBatch(
+                self.atom_vocab,
+                upstream_int8_edge_mask=self.upstream_int8_edge_mask,
+            )
         return self._adapter
 
     def forward(self, batch: dict):
@@ -774,11 +827,9 @@ class DiffLinkerTask(nn.Module):
             else:
                 mask_context = fragment_mask
 
-            am = atom_mask.squeeze(-1)
-            edge_mask_full = am.unsqueeze(2) * am.unsqueeze(1)
-            diag = ~torch.eye(max_atoms, dtype=torch.bool, device=device)
-            edge_mask_full = edge_mask_full * diag.unsqueeze(0)
-            edge_mask = edge_mask_full.reshape(-1, 1)
+            edge_mask = dense_edge_mask(
+            atom_mask, upstream_int8=self.upstream_int8_edge_mask
+        )
 
             if self.center_of_mass == "fragments":
                 center_of_mass_mask = fragment_mask

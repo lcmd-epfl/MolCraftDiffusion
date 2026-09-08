@@ -55,6 +55,7 @@ except ImportError:
 from MolecularDiffusion.modules.models.tabasco.flow_model import FlowMatchingModel
 from MolecularDiffusion.modules.layers.tabasco.transformer_module import TransformerModule
 from MolecularDiffusion.modules.models.tabasco.flow.interpolate import SDEMetricInterpolant, DiscreteInterpolant
+from MolecularDiffusion.utils import prepare_context, compute_mean_mad_from_dataloader
 
 
 class PointCloudToTensorDictAdapter(nn.Module):
@@ -267,7 +268,13 @@ class ModelTaskFactory:
             flow_matching_config=self.flow_matching_config,
             num_atom_types=self.num_atom_types,
             dataset_stats=self.dataset_stats,
-            atom_vocab=self.atom_vocab
+            atom_vocab=self.atom_vocab,
+            condition_names=self.kwargs.get("condition_names", []),
+            context_mask_rate=self.kwargs.get("context_mask_rate", 0.0),
+            mask_value=self.kwargs.get("mask_value", 0.0),
+            normalize_condition=self.kwargs.get("normalize_condition", None),
+            adapter_conditions=self.kwargs.get("adapter_conditions", None),
+            use_adapter_module=self.kwargs.get("use_adapter_module", False),
         )
         return self.task
 
@@ -285,16 +292,57 @@ class TabascoDiffusionTask(nn.Module):
         flow_matching_config: dict,
         num_atom_types: int,
         dataset_stats: dict,
-        atom_vocab: Optional[list] = None
+        atom_vocab: Optional[list] = None,
+        condition_names: list = [],
+        context_mask_rate: float = 0.0,
+        mask_value: float = 0.0,
+        normalize_condition: Optional[str] = None,
+        adapter_conditions: Optional[list] = None,
+        use_adapter_module: bool = False,
     ):
         super().__init__()
-        
+
+        # Property-conditioning / CFG setup -- same config signature as
+        # en_diffusion.py's GeomMolecularGenerative (condition_names,
+        # context_mask_rate, mask_value, normalize_condition,
+        # adapter_conditions, use_adapter_module), mirroring
+        # runmodes/train/tasks_egcl.py's adapter/concat validation exactly.
+        self.condition = condition_names
+        self.context_mask_rate = context_mask_rate
+        self.mask_value = mask_value
+        self.normalize_condition = normalize_condition
+        self.property_norms = None  # built in preprocess()
+
+        if adapter_conditions:
+            for ac in adapter_conditions:
+                if ac not in condition_names:
+                    raise ValueError(
+                        f"adapter_conditions entry '{ac}' not found in "
+                        f"condition_names {condition_names}"
+                    )
+            self.adapter_indices = [condition_names.index(ac) for ac in adapter_conditions]
+            self.concat_indices = [
+                i for i in range(len(condition_names)) if i not in self.adapter_indices
+            ]
+        elif use_adapter_module:
+            self.adapter_indices = list(range(len(condition_names)))
+            self.concat_indices = []
+        else:
+            self.adapter_indices = []
+            self.concat_indices = list(range(len(condition_names)))
+        self.n_adapter_context = len(self.adapter_indices)
+        self.n_concat_context = len(self.concat_indices)
+
         # Data format adapters
         self.to_tensordict = PointCloudToTensorDictAdapter(num_atom_types)
         self.to_pointcloud = TensorDictToPointCloudAdapter()
-        
+
         # Build TABASCO components
-        transformer = TransformerModule(**transformer_config)
+        transformer = TransformerModule(
+            **transformer_config,
+            adapter_indices=self.adapter_indices,
+            concat_indices=self.concat_indices,
+        )
         coords_interpolant = SDEMetricInterpolant(**coords_interpolant_config)
         atomics_interpolant = DiscreteInterpolant(**atomics_interpolant_config)
         
@@ -330,23 +378,72 @@ class TabascoDiffusionTask(nn.Module):
         """tasks_generate.py compatibility: exposes self as the model interface."""
         return self
 
+    def preprocess(self, train_set=None, valid_set=None, test_set=None):
+        """Build self.property_norms for CFG conditioning (train-side only).
+
+        Called generically by cli/train.py if this attribute exists. Does
+        NOT touch node_dist_model/n_node_dist -- those come from
+        dataset_stats at __init__ time via ModelTaskFactory, a separate
+        mechanism. Deliberately skips DistributionProperty/prop_dist_model
+        (out of scope -- generation always takes an explicit target_value).
+        """
+        if train_set is None or len(self.condition) == 0:
+            return
+        from . import _preprocess_cache as _ppcache
+
+        base, subset_indices = _ppcache.resolve_dataset_and_indices(train_set)
+        prop_indices = _ppcache.property_sample_indices(len(train_set), subset_indices)
+        props = torch.stack([
+            _ppcache.get_property_subset(base, name, prop_indices) for name in self.condition
+        ])
+        self.property_norms = compute_mean_mad_from_dataloader(props, self.condition)
+
     def forward(self, batch: Dict[str, torch.Tensor]):
         """
         Training forward pass.
-        
+
         Args:
             batch: PointCloud format batch from dataloader
-        
+
         Returns:
             loss: Scalar training loss
             stats: Dictionary of training statistics
         """
+        condition = None
+        if len(self.condition) > 0:
+            if self.property_norms is None:
+                raise RuntimeError(
+                    "condition_names is set but property_norms is None -- "
+                    "did preprocess() run? (cli/train.py calls it only if "
+                    "hasattr(task, 'preprocess'))"
+                )
+            condition = prepare_context(
+                self.condition, batch, self.property_norms, self.normalize_condition
+            ).to(batch["coords"].device)
+            if self.context_mask_rate > 0:
+                drop = torch.rand(condition.size(0), device=condition.device) < self.context_mask_rate
+                if self.n_adapter_context > 0:
+                    # adapter_indices/concat_indices partition all columns
+                    # (every condition name is routed one way or the other).
+                    null_value = torch.empty(
+                        condition.shape[-1], device=condition.device, dtype=condition.dtype
+                    )
+                    null_value[self.adapter_indices] = 0.0
+                    null_value[self.concat_indices] = self.mask_value
+                else:
+                    null_value = torch.full(
+                        (condition.shape[-1],), self.mask_value,
+                        device=condition.device, dtype=condition.dtype,
+                    )
+                condition = torch.where(drop.view(-1, 1, 1), null_value.view(1, 1, -1), condition)
+                condition = condition * batch["node_mask"].unsqueeze(-1).to(condition.dtype)
+
         # Convert PointCloud dict → TensorDict
         tensor_batch = self.to_tensordict(batch)
-        
+
         # Forward through TABASCO
-        loss, stats = self.tabasco_model(tensor_batch, compute_stats=True)
-        
+        loss, stats = self.tabasco_model(tensor_batch, condition=condition, compute_stats=True)
+
         return loss, stats
     
     def predict_and_target(self, batch: Dict[str, torch.Tensor]):
@@ -459,7 +556,92 @@ class TabascoDiffusionTask(nn.Module):
         # Return in EDM format: (one_hot, charges, coords, node_mask)
         return one_hot, charges, coords, node_mask
 
-    
+    def sample_guidance_conitional(
+        self,
+        target_function=None,
+        target_value=None,
+        negative_target_value=None,
+        nodesxsample: Optional[torch.Tensor] = None,
+        cfg_scale: float = 1,
+        cfg_scale_schedule: Optional[str] = None,
+        guidance_ver: str = "cfg",
+        n_frames: int = 0,
+        num_steps: int = 100,
+        **kwargs,
+    ):
+        """
+        Classifier-free-guidance generation. Matches the call signature
+        GenerativeFactory.conditional_generation() hardcodes for
+        task_type == "cfg" (runmodes/generate/tasks_generate.py), and returns
+        (one_hot, charges, x, node_mask) like sample() -- "EDM compatibility".
+
+        Only guidance_ver="cfg" is supported (plain classifier-free guidance,
+        no gradient-guidance variants).
+        """
+        if guidance_ver != "cfg":
+            raise NotImplementedError(
+                f"TabascoDiffusionTask only supports guidance_ver='cfg' (got {guidance_ver!r}); "
+                "gradient-guidance variants are out of scope."
+            )
+        if n_frames:
+            print(f"WARNING: n_frames={n_frames} is not supported for TABASCO CFG sampling; ignoring.")
+
+        batch_size = len(nodesxsample)
+        max_atoms = nodesxsample.max().item()
+        padding_mask = torch.arange(max_atoms, device=self.device)[None, :] >= nodesxsample[:, None].to(self.device)
+        node_mask_edm = (~padding_mask).float().unsqueeze(-1)  # (B, N, 1), 1=real
+
+        def _normalize(value, key):
+            if self.normalize_condition is None:
+                return value
+            norms = self.property_norms[key]
+            if self.normalize_condition == "mad":
+                return (value - norms["mean"]) / norms["mad"]
+            elif self.normalize_condition == "maxmin":
+                return 2 * (value - norms["min"]) / (norms["max"] - norms["min"]) - 1
+            elif "value" in self.normalize_condition:
+                return value / float(self.normalize_condition.split("_")[1])
+            raise ValueError(f"Unknown normalization method: {self.normalize_condition}")
+
+        vals = [_normalize(target_value[i], key) for i, key in enumerate(self.condition)]
+        context = torch.tensor(vals, dtype=torch.float, device=self.device).view(1, 1, -1)
+        context = context.expand(batch_size, max_atoms, -1) * node_mask_edm
+
+        if negative_target_value:
+            neg_vals = [_normalize(negative_target_value[i], key) for i, key in enumerate(self.condition)]
+            negative_context = torch.tensor(neg_vals, dtype=torch.float, device=self.device).view(1, 1, -1)
+            negative_context = negative_context.expand(batch_size, max_atoms, -1) * node_mask_edm
+        else:
+            # No explicit negative given -- reuse the same null value training's
+            # context_mask_rate dropout used (mask_value / 0.0 for adapter cols).
+            if self.n_adapter_context > 0:
+                null_value = torch.empty(len(self.condition), device=self.device)
+                null_value[self.adapter_indices] = 0.0
+                null_value[self.concat_indices] = self.mask_value
+            else:
+                null_value = torch.full((len(self.condition),), self.mask_value, device=self.device)
+            negative_context = null_value.view(1, 1, -1).expand(batch_size, max_atoms, -1) * node_mask_edm
+
+        batch = TensorDict({
+            "padding_mask": padding_mask,
+            "coords": torch.zeros(batch_size, max_atoms, 3, device=self.device),
+            "atomics": torch.zeros(batch_size, max_atoms, self.num_atom_types, device=self.device),
+        }, batch_size=batch_size)
+
+        samples = self.tabasco_model.sample(
+            batch=batch,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            condition=context,
+            negative_condition=negative_context,
+            cfg_scale=cfg_scale,
+            cfg_scale_schedule=cfg_scale_schedule,
+        )
+        pointcloud_result = self.to_pointcloud(samples)
+        charges = pointcloud_result["charges"]
+        one_hot = torch.nn.functional.one_hot(charges, num_classes=self.num_atom_types).float()
+        return one_hot, charges, pointcloud_result["coords"], pointcloud_result["node_mask"]
+
     @property
     def node_dist_model(self):
         """Return a node distribution sampler (EDM compatibility)."""

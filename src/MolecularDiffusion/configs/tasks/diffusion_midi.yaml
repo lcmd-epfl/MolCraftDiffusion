@@ -6,12 +6,22 @@
 # with an explicit bond table instead of needing xyz2mol/OpenBabel perception.
 #
 # Requires data_type: graph3d with bond_collate: dense
-# (see configs/data/midi_qm9_dataset.yaml). Unconditional only.
+# (see configs/data/midi_qm9_dataset.yaml). Unconditional by default; set
+# condition_names below to opt into property-conditioning + CFG.
 #
 # Hyperparameters are MiDi's configs/model/discrete.yaml verbatim, and match
 # the released QM9 explicit-H checkpoint's own saved cfg.
 _target_: MolecularDiffusion.modules.tasks.diffusion_midi.ModelTaskFactory
 task_type: diffusion_midi
+
+# Property-conditioning / classifier-free guidance -- same config signature
+# as configs/tasks/diffusion.yaml (en_diffusion's formulation).
+condition_names: []
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10   # None | "maxmin" | "mad" | "value_N"
+adapter_conditions: []          # subset of condition_names routed through the adapter MLP(s)
+use_adapter_module: false       # deprecated-but-supported: route ALL conditions through the adapter
 
 n_layers: 12
 hidden_mlp_dims: {X: 256, E: 64, y: 256, pos: 64}

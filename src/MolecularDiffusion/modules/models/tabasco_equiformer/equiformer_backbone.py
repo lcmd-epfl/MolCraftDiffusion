@@ -36,11 +36,12 @@ Six-step mechanism (see docs/model_novel/tabasco_equiformer/INTEGRATION_PLAN.md,
    locally (a two-line body, boilerplate index bookkeeping, not a
    layer/schedule) rather than importing ``EquiformerV2_dynamics`` itself,
    which this backbone otherwise never touches.
-2. Project one-hot atom type + scalar time ``t`` into the l=0 (scalar)
-   channel of a fresh ``SO3_Embedding``, following ``_build_so3_input``'s
-   pattern (``equiformer_v2_dynamics.py:118-142``) -- omitting the
-   context/adapter machinery ``EquiformerV2_dynamics`` carries for EDM
-   conditioning, since TABASCO has no conditioning context.
+2. Project one-hot atom type + scalar time ``t`` (+ concat-routed
+   conditioning, if any) into the l=0 (scalar) channel of a fresh
+   ``SO3_Embedding``, following ``_build_so3_input``'s pattern
+   (``equiformer_v2_dynamics.py:118-142``). Adapter-routed conditioning is a
+   separate single additive injection into l=0 after this projection,
+   mirroring ``EquiformerV2_dynamics``'s own ``adapter_proj``.
 3. Run the wrapped ``EquiformerV2`` encoder over the compacted graph.
 4. Read a per-atom displacement ``d`` off the l=1 channel via a
    ``FeedForwardNetwork`` SO3 head (same construction as
@@ -127,6 +128,8 @@ class EquiformerV2TabascoBackbone(nn.Module):
         proj_drop: float = 0.0,
         cutoff: float = 9.0,
         weight_init: str = "uniform",
+        adapter_indices: Optional[List[int]] = None,
+        concat_indices: Optional[List[int]] = None,
     ):
         super().__init__()
         if lmax_list is None:
@@ -177,9 +180,18 @@ class EquiformerV2TabascoBackbone(nn.Module):
             weight_init=weight_init,
         )
 
-        # Step 2: project one-hot atom type (atom_dim) + scalar time (1) into
-        # the l=0 channel -- no context/adapter machinery (TABASCO has none).
-        self.input_proj = nn.Linear(atom_dim + 1, sphere_channels)
+        # Step 2: project one-hot atom type (atom_dim) + scalar time (1) +
+        # concat-routed conditioning into the l=0 channel. Adapter-routed
+        # conditioning is a SEPARATE single additive injection into l=0 after
+        # this projection (see forward()) -- mirroring
+        # EquiformerV2_dynamics's own adapter_proj (equiformer_v2_dynamics.py:
+        # 111-112,224-226), since the wrapped EquiformerV2 encoder's internal
+        # layers are upstream-preserved and not a safe per-layer hook point.
+        self.adapter_indices = adapter_indices or []
+        self.concat_indices = concat_indices or []
+        self.input_proj = nn.Linear(atom_dim + 1 + len(self.concat_indices), sphere_channels)
+        if self.adapter_indices:
+            self.adapter_proj = nn.Linear(len(self.adapter_indices), sphere_channels)
 
         # SO3 grid for the equivariant FFN head's S2 activation, same
         # construction as `EquiformerV2_dynamics.vel_SO3_grid`
@@ -224,6 +236,7 @@ class EquiformerV2TabascoBackbone(nn.Module):
         atomics: torch.Tensor,
         padding_mask: torch.Tensor,
         t: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -231,6 +244,7 @@ class EquiformerV2TabascoBackbone(nn.Module):
             atomics: (B, N, atom_dim) one-hot (or soft) atom-type features
             padding_mask: (B, N), TABASCO convention -- 1 = padded, 0 = real
             t: (B,) timestep in [0, 1]
+            condition: (B, N, n_adapter_context + n_concat_context) or None
 
         Returns:
             coords: (B, N, 3) endpoint prediction
@@ -293,13 +307,26 @@ class EquiformerV2TabascoBackbone(nn.Module):
             .reshape(-1)[valid_nodes]
             .unsqueeze(-1)
         )
-        h = torch.cat([atomics_valid, t_flat], dim=-1)
+        adapter_ctx_valid = None
+        if condition is not None:
+            condition_flat = condition.reshape(batch_size * n_nodes, -1)
+            if self.concat_indices:
+                concat_ctx_valid = condition_flat[valid_nodes][..., self.concat_indices]
+                h = torch.cat([atomics_valid, t_flat, concat_ctx_valid], dim=-1)
+            else:
+                h = torch.cat([atomics_valid, t_flat], dim=-1)
+            if self.adapter_indices:
+                adapter_ctx_valid = condition_flat[valid_nodes][..., self.adapter_indices]
+        else:
+            h = torch.cat([atomics_valid, t_flat], dim=-1)
 
         n_valid = h.size(0)
         x_so3 = SO3_Embedding(
             n_valid, self.lmax_list, self.sphere_channels, device, dtype
         )
         x_so3.embedding[:, 0, :] = self.input_proj(h)
+        if adapter_ctx_valid is not None:
+            x_so3.embedding[:, 0, :] = x_so3.embedding[:, 0, :] + self.adapter_proj(adapter_ctx_valid)
 
         # Edge geometry -- translation-invariant relative-geometry
         # quantities (equiformer_v2_dynamics.py:_compute_edge_geometry).

@@ -65,7 +65,7 @@ below only ever transforms node features elementwise / via message-passing
 without permuting node order.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import dgl
 import dgl.function as fn
@@ -112,6 +112,8 @@ class GVPBackbone(nn.Module):
         rbf_dim: int = 16,
         n_recycles: int = 1,
         dropout: float = 0.0,
+        adapter_indices: Optional[list] = None,
+        concat_indices: Optional[list] = None,
     ):
         super().__init__()
         self.atom_dim = atom_dim
@@ -122,13 +124,17 @@ class GVPBackbone(nn.Module):
         self.n_recycles = n_recycles
         self.rbf_dmax = rbf_dmax
         self.rbf_dim = rbf_dim
+        self.adapter_indices = adapter_indices or []
+        self.concat_indices = concat_indices or []
+        n_adapter_context = len(self.adapter_indices)
+        n_concat_context = len(self.concat_indices)
 
-        # atom-type one-hot + scalar time t -> n_hidden_scalars.
-        # (mirrors EndpointVectorField.scalar_embedding, vector_field.py:93-102,
-        # minus the formal-charge channel TABASCO's pointcloud pipeline has no
-        # slot for)
+        # atom-type one-hot + scalar time t + concat-routed conditioning ->
+        # n_hidden_scalars. (mirrors EndpointVectorField.scalar_embedding,
+        # vector_field.py:93-102, minus the formal-charge channel TABASCO's
+        # pointcloud pipeline has no slot for)
         self.scalar_embedding = nn.Sequential(
-            nn.Linear(atom_dim + 1, n_hidden_scalars),
+            nn.Linear(atom_dim + 1 + n_concat_context, n_hidden_scalars),
             nn.SiLU(),
             nn.Linear(n_hidden_scalars, n_hidden_scalars),
             nn.SiLU(),
@@ -165,6 +171,15 @@ class GVPBackbone(nn.Module):
                 for _ in range(convs_per_update * n_molecule_updates)
             ]
         )
+
+        # Adapter-routed conditioning: one small MLP per conv layer,
+        # re-injected additively into node_scalar_features after each conv
+        # call (mirrors EGNN's own per-layer adapter, egcl.py:199-213 --
+        # reused across recycle passes the same way conv_layers itself is).
+        if n_adapter_context > 0:
+            self.condition_adapters = nn.ModuleList(
+                [nn.Linear(n_adapter_context, n_hidden_scalars) for _ in self.conv_layers]
+            )
 
         # A single position/edge updater reused after every `convs_per_update`
         # conv layers (FlowMol's `separate_mol_updaters: false` default,
@@ -210,6 +225,7 @@ class GVPBackbone(nn.Module):
         coords: torch.Tensor,
         atomics: torch.Tensor,
         node_mask: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
     ) -> dgl.DGLGraph:
         """Per-molecule masked-slice -> fully-connected no-self-loop DGL
         graph -> ``dgl.batch``, following ``PointCloudToDGLAdapter``'s
@@ -225,6 +241,8 @@ class GVPBackbone(nn.Module):
             g_i = dgl.graph((edges[0], edges[1]), num_nodes=n, device=device)
             g_i.ndata["pos"] = coords_b
             g_i.ndata["atom_oh"] = atom_b
+            if condition is not None:
+                g_i.ndata["cond"] = condition[b][mask_b]
             graphs.append(g_i)
         return dgl.batch(graphs)
 
@@ -234,6 +252,7 @@ class GVPBackbone(nn.Module):
         atomics: torch.Tensor,
         padding_mask: torch.Tensor,
         t: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -241,6 +260,7 @@ class GVPBackbone(nn.Module):
             atomics: (B, N, atom_dim) one-hot (or soft) atom-type features
             padding_mask: (B, N), TABASCO convention -- 1 = padded, 0 = real
             t: (B,) timestep in [0, 1]
+            condition: (B, N, n_adapter_context + n_concat_context) or None
 
         Returns:
             coords: (B, N, 3) endpoint prediction
@@ -254,11 +274,22 @@ class GVPBackbone(nn.Module):
         # egnn_backbone.py:147).
         node_mask = ~padding_mask.bool()
 
-        g = self._build_graph(coords, atomics, node_mask)
+        g = self._build_graph(coords, atomics, node_mask, condition=condition)
         node_batch_idx = get_node_batch_idxs(g)
 
         t_per_node = t.to(device=device, dtype=dtype)[node_batch_idx].unsqueeze(-1)
-        scalar_in = torch.cat([g.ndata["atom_oh"], t_per_node], dim=-1)
+        adapter_ctx = None
+        if condition is not None:
+            if self.concat_indices:
+                scalar_in = torch.cat(
+                    [g.ndata["atom_oh"], t_per_node, g.ndata["cond"][..., self.concat_indices]], dim=-1
+                )
+            else:
+                scalar_in = torch.cat([g.ndata["atom_oh"], t_per_node], dim=-1)
+            if self.adapter_indices:
+                adapter_ctx = g.ndata["cond"][..., self.adapter_indices]
+        else:
+            scalar_in = torch.cat([g.ndata["atom_oh"], t_per_node], dim=-1)
         node_scalar_features = self.scalar_embedding(scalar_in)
 
         node_positions = g.ndata["pos"]
@@ -281,6 +312,8 @@ class GVPBackbone(nn.Module):
                     x_diff=x_diff,
                     d=d,
                 )
+                if adapter_ctx is not None:
+                    node_scalar_features = node_scalar_features + self.condition_adapters[conv_idx](adapter_ctx)
 
                 if (conv_idx + 1) % self.convs_per_update == 0:
                     node_positions = self.node_position_updater(

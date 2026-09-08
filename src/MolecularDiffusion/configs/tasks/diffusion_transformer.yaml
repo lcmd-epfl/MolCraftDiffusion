@@ -1,0 +1,46 @@
+_target_: MolecularDiffusion.runmodes.train.tasks_transformer.ModelTaskFactory
+task_type: diffusion
+atom_vocab: ${data.atom_vocab}
+condition_names: []
+chkpt_path: null
+
+# TransformerDynamics backbone hyperparameters -- plain multi-head
+# self-attention over absolute coordinates (modules/layers/tabasco/
+# transformer.py::Transformer + positional_encoder.py::TimeFourierEncoding),
+# no distance/edge features and no built-in rotation-equivariance. See
+# docs/model_novel/diffusion_transformer/INTEGRATION_PLAN.md for the
+# hypothesis this backbone tests (compensating for the lack of equivariance
+# with data_augmentation below, rather than architecture).
+hidden_dim: 192
+num_layers: 9
+num_heads: 8
+mlp_dim: null
+dropout: 0.0
+activation_type: gelu
+add_sinusoid_posenc: False # ablation-only knob; atoms are an unordered set
+
+# specific to diffusion -- copied VERBATIM from configs/tasks/diffusion.yaml
+# (the EGCL ablation parent) so the ablation isolates the backbone +
+# data_augmentation swap and nothing else. Do NOT retune these.
+diffusion_steps : 900
+diffusion_noise_schedule : polynomial_2 # learned, cosine_x, polynomial_x, issnr_x, smld_x
+diffusion_noise_precision: 1e-5
+diffusion_loss_type:  vlb
+normalize_factors: [1,4,10]
+extra_norm_values: []
+augment_noise: False
+data_augmentation: True # the ONE deliberate difference from the parent
+  # (which has False, configs/tasks/diffusion.yaml:29) -- this IS part of
+  # the hypothesis: compensates for this backbone's lack of built-in
+  # rotation-equivariance. See INTEGRATION_PLAN.md's Hyperparameter
+  # Provenance table.
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10 # None | "maxmin" | "mad" | "value_N" (divide condition by N; value_10 = default). NOT a boolean.
+reference_indices: null # indices of core atoms for the outpainting objective
+# evaluator parameters
+use_posebuster: True
+metrics: valid_posebuster # use_posebuster must be true
+n_samples: 48
+batch_size: 4
+generative_analysis: True

@@ -403,6 +403,8 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
         task.node_dist_model = checkpoint['node_dist_model']
     if 'prop_dist_model' in checkpoint:
         task.prop_dist_model = checkpoint['prop_dist_model']
+    if 'property_norms' in checkpoint:
+        task.property_norms = checkpoint['property_norms']
     if 'reference_indices' in checkpoint:
         task.reference_indices = checkpoint['reference_indices']
     if 'reference_freeze_mode' in checkpoint:

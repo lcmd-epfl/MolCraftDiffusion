@@ -64,6 +64,7 @@ from MolecularDiffusion.modules.models.flowmol_graph3d import (
 from MolecularDiffusion.modules.tasks.diffusion_tabasco import (
     TabascoNodeDistribution,
 )
+from MolecularDiffusion.utils import prepare_context_pyG, compute_mean_mad_from_dataloader
 
 logger = logging.getLogger(__name__)
 
@@ -130,19 +131,33 @@ class Graph3DToDGLAdapter(nn.Module):
         #: and molecule builder (``dataset.py:120-122``, ``:64,228``).
         self.fake_atom_index = n_atom_types - 1
 
-    def forward(self, batch: Any, *, use_fake_atoms: bool) -> dgl.DGLGraph:
+    def forward(
+        self,
+        batch: Any,
+        *,
+        use_fake_atoms: bool,
+        condition: torch.Tensor | None = None,
+    ) -> dgl.DGLGraph:
         pyg = batch["graph"] if isinstance(batch, dict) else batch
         device = pyg.pos.device
 
         graphs = []
-        for item in pyg.to_data_list():
+        for b, item in enumerate(pyg.to_data_list()):
+            cond_b = condition[b] if condition is not None else None
             graphs.append(
-                self._one_molecule(item, device, use_fake_atoms=use_fake_atoms)
+                self._one_molecule(
+                    item, device, use_fake_atoms=use_fake_atoms, condition=cond_b
+                )
             )
         return dgl.batch(graphs)
 
     def _one_molecule(
-        self, item: Any, device: torch.device, *, use_fake_atoms: bool
+        self,
+        item: Any,
+        device: torch.device,
+        *,
+        use_fake_atoms: bool,
+        condition: torch.Tensor | None = None,
     ) -> dgl.DGLGraph:
         pos = item.pos.to(device).float()
         atom_idx = item.atom_idx.to(device).long()
@@ -202,6 +217,11 @@ class Graph3DToDGLAdapter(nn.Module):
         g.edata["e_1_true"] = self._edge_labels(
             bond_index, bond_type, n, device
         )
+        if condition is not None:
+            # condition is per-molecule (a single (D,) vector) -- broadcast
+            # to every node including fake atoms, same as plain FlowMol's
+            # per-molecule condition attachment.
+            g.ndata["cond"] = condition.unsqueeze(0).expand(n, -1)
         return g
 
     def _inject_fake_atoms(
@@ -408,6 +428,12 @@ class FlowMolGraph3DTaskFactory:
             vector_field_config=self.vector_field_config,
             n_atoms_hist=hist,
             task_type=self.task_type,
+            condition_names=self.kwargs.get("condition_names", []),
+            context_mask_rate=self.kwargs.get("context_mask_rate", 0.0),
+            mask_value=self.kwargs.get("mask_value", 0.0),
+            normalize_condition=self.kwargs.get("normalize_condition", None),
+            adapter_conditions=self.kwargs.get("adapter_conditions", None),
+            use_adapter_module=self.kwargs.get("use_adapter_module", False),
         )
         return self.task
 
@@ -467,8 +493,45 @@ class FlowMolGraph3DTask(nn.Module):
         vector_field_config: dict,
         n_atoms_hist: dict,
         task_type: str = "diffusion_flowmol_graph3d",
+        condition_names: list = [],
+        context_mask_rate: float = 0.0,
+        mask_value: float = 0.0,
+        normalize_condition: str | None = None,
+        adapter_conditions: list | None = None,
+        use_adapter_module: bool = False,
     ) -> None:
         super().__init__()
+
+        # Property-conditioning / CFG setup -- same config signature as
+        # en_diffusion.py's GeomMolecularGenerative / TABASCO / plain
+        # FlowMol, mirroring runmodes/train/tasks_egcl.py's adapter/concat
+        # validation exactly.
+        self.condition = condition_names
+        self.context_mask_rate = context_mask_rate
+        self.mask_value = mask_value
+        self.normalize_condition = normalize_condition
+        self.property_norms = None  # built in preprocess()
+
+        if adapter_conditions:
+            for ac in adapter_conditions:
+                if ac not in condition_names:
+                    raise ValueError(
+                        f"adapter_conditions entry '{ac}' not found in "
+                        f"condition_names {condition_names}"
+                    )
+            self.adapter_indices = [condition_names.index(ac) for ac in adapter_conditions]
+            self.concat_indices = [
+                i for i in range(len(condition_names)) if i not in self.adapter_indices
+            ]
+        elif use_adapter_module:
+            self.adapter_indices = list(range(len(condition_names)))
+            self.concat_indices = []
+        else:
+            self.adapter_indices = []
+            self.concat_indices = list(range(len(condition_names)))
+        self.n_adapter_context = len(self.adapter_indices)
+        self.n_concat_context = len(self.concat_indices)
+
         self.task_type = task_type
         self.canonical_feat_order = CANONICAL_FEAT_ORDER
         self.atom_vocab = list(atom_vocab)
@@ -504,6 +567,8 @@ class FlowMolGraph3DTask(nn.Module):
             fake_atoms=fake_atom_p > 0,
             stochasticity=stochasticity,
             high_confidence_threshold=high_confidence_threshold,
+            adapter_indices=self.adapter_indices,
+            concat_indices=self.concat_indices,
             **vector_field_config,
         )
 
@@ -548,6 +613,39 @@ class FlowMolGraph3DTask(nn.Module):
         """``{n_atoms: count}``, used by ``GenerativeFactory`` to clamp sizes."""
         return self.node_dist_model.n_node_dist
 
+    def preprocess(self, train_set=None, valid_set=None, test_set=None):
+        """Build self.property_norms for CFG conditioning (train-side only).
+
+        Called generically by cli/train.py if this attribute exists. Does
+        NOT touch node_dist_model/n_node_dist -- those come from
+        dataset_stats/graph3d_stats at __init__ time via
+        FlowMolGraph3DTaskFactory, a separate mechanism. Deliberately skips
+        DistributionProperty/prop_dist_model (out of scope -- generation
+        always takes an explicit target_value).
+        """
+        if train_set is None or len(self.condition) == 0:
+            return
+        from . import _preprocess_cache as _ppcache
+
+        base, subset_indices = _ppcache.resolve_dataset_and_indices(train_set)
+        prop_indices = _ppcache.property_sample_indices(len(train_set), subset_indices)
+        props = torch.stack([
+            _ppcache.get_property_subset(base, name, prop_indices) for name in self.condition
+        ])
+        self.property_norms = compute_mean_mad_from_dataloader(props, self.condition)
+
+    def _normalize_target(self, value, key):
+        if self.normalize_condition is None:
+            return value
+        norms = self.property_norms[key]
+        if self.normalize_condition == "mad":
+            return (value - norms["mean"]) / norms["mad"]
+        elif self.normalize_condition == "maxmin":
+            return 2 * (value - norms["min"]) / (norms["max"] - norms["min"]) - 1
+        elif "value" in self.normalize_condition:
+            return value / float(self.normalize_condition.split("_")[1])
+        raise ValueError(f"Unknown normalization method: {self.normalize_condition}")
+
     # -- priors --------------------------------------------------------------
 
     def _sample_prior(
@@ -571,7 +669,38 @@ class FlowMolGraph3DTask(nn.Module):
 
     def forward(self, batch: Any) -> tuple[torch.Tensor, dict]:
         """One training step: interpolate, distort, denoise, weight the losses."""
-        g = self.to_dgl(batch, use_fake_atoms=True)
+        condition_per_mol = None
+        if len(self.condition) > 0:
+            if self.property_norms is None:
+                raise RuntimeError(
+                    "condition_names is set but property_norms is None -- "
+                    "did preprocess() run? (cli/train.py calls it only if "
+                    "hasattr(task, 'preprocess'))"
+                )
+            pyg = batch["graph"] if isinstance(batch, dict) else batch
+            condition_per_node = prepare_context_pyG(
+                self.condition, batch, self.property_norms, self.normalize_condition
+            )
+            # Molecule-level property, broadcast to every node of that
+            # molecule by prepare_context_pyG -- take back the one row per
+            # molecule (pyg.ptr[:-1] is the first node index of each graph).
+            condition_per_mol = condition_per_node[pyg.ptr[:-1]]
+            if self.context_mask_rate > 0:
+                drop = torch.rand(condition_per_mol.size(0), device=condition_per_mol.device) < self.context_mask_rate
+                if self.n_adapter_context > 0:
+                    null_value = torch.empty(
+                        condition_per_mol.shape[-1], device=condition_per_mol.device, dtype=condition_per_mol.dtype
+                    )
+                    null_value[self.adapter_indices] = 0.0
+                    null_value[self.concat_indices] = self.mask_value
+                else:
+                    null_value = torch.full(
+                        (condition_per_mol.shape[-1],), self.mask_value,
+                        device=condition_per_mol.device, dtype=condition_per_mol.dtype,
+                    )
+                condition_per_mol = torch.where(drop.unsqueeze(-1), null_value.unsqueeze(0), condition_per_mol)
+
+        g = self.to_dgl(batch, use_fake_atoms=True, condition=condition_per_mol)
         node_batch_idx, edge_batch_idx = get_batch_idxs(g)
         upper_edge_mask = get_upper_edge_mask(g)
 
@@ -777,6 +906,79 @@ class FlowMolGraph3DTask(nn.Module):
         )
 
         # Carried on edata so it survives dgl.unbatch (upstream flowmol.py:564).
+        g.edata["ue_mask"] = upper_edge_mask
+        return self._decode(g)
+
+    @torch.no_grad()
+    def sample_guidance_conitional(
+        self,
+        target_function=None,
+        target_value=None,
+        negative_target_value=None,
+        nodesxsample=None,
+        cfg_scale: float = 1,
+        cfg_scale_schedule: str | None = None,
+        guidance_ver: str = "cfg",
+        n_frames: int = 0,
+        num_steps: int | None = None,
+        **kwargs: Any,
+    ):
+        """
+        Classifier-free-guidance generation. Matches the call signature
+        GenerativeFactory.conditional_generation() hardcodes for
+        task_type == "cfg" (runmodes/generate/tasks_generate.py), and returns
+        (one_hot, charges, x, node_mask) like sample() -- "EDM compatibility".
+        """
+        if guidance_ver != "cfg":
+            msg = (
+                f"FlowMolGraph3DTask only supports guidance_ver='cfg' (got {guidance_ver!r}); "
+                "gradient-guidance variants are out of scope."
+            )
+            raise NotImplementedError(msg)
+        if n_frames:
+            logger.warning("n_frames=%s is not supported for FlowMol3 CFG sampling; ignoring.", n_frames)
+        if num_steps is None:
+            num_steps = self.fm_num_timesteps
+
+        self._ensure_accelerated()
+        sizes = torch.as_tensor(nodesxsample, dtype=torch.long, device=self.device)
+
+        vals = [self._normalize_target(target_value[i], key) for i, key in enumerate(self.condition)]
+        context_per_mol = torch.tensor(vals, dtype=torch.float, device=self.device).unsqueeze(0).expand(len(sizes), -1)
+
+        if negative_target_value:
+            neg = [self._normalize_target(negative_target_value[i], key) for i, key in enumerate(self.condition)]
+            negative_context_per_mol = torch.tensor(neg, dtype=torch.float, device=self.device).unsqueeze(0).expand(len(sizes), -1)
+        else:
+            if self.n_adapter_context > 0:
+                null_value = torch.empty(len(self.condition), device=self.device)
+                null_value[self.adapter_indices] = 0.0
+                null_value[self.concat_indices] = self.mask_value
+            else:
+                null_value = torch.full((len(self.condition),), self.mask_value, device=self.device)
+            negative_context_per_mol = null_value.unsqueeze(0).expand(len(sizes), -1)
+
+        g = self._build_graphs(sizes)
+        node_batch_idx = get_batch_idxs(g)[0]
+        upper_edge_mask = get_upper_edge_mask(g)
+        g = self._sample_prior(g, node_batch_idx, upper_edge_mask)
+
+        condition = context_per_mol[node_batch_idx]
+        negative_condition = negative_context_per_mol[node_batch_idx]
+
+        g = self.vector_field.integrate(
+            g,
+            node_batch_idx,
+            upper_edge_mask=upper_edge_mask,
+            n_timesteps=int(num_steps),
+            stochasticity=self.stochasticity,
+            high_confidence_threshold=self.high_confidence_threshold,
+            condition=condition,
+            negative_condition=negative_condition,
+            cfg_scale=cfg_scale,
+            cfg_scale_schedule=cfg_scale_schedule,
+        )
+
         g.edata["ue_mask"] = upper_edge_mask
         return self._decode(g)
 

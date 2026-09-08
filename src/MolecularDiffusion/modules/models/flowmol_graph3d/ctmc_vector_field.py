@@ -172,6 +172,10 @@ class CTMCVectorField(EndpointVectorField):
         high_confidence_threshold: float = 0.9,
         cat_temp_func: Callable = None,
         tspan: torch.Tensor = None,
+        condition: torch.Tensor | None = None,
+        negative_condition: torch.Tensor | None = None,
+        cfg_scale: float = 0.0,
+        cfg_scale_schedule: str | None = None,
         **kwargs,
     ) -> dgl.DGLGraph:
         """Integrate from the all-mask prior to a molecule in ``n_timesteps``."""
@@ -194,6 +198,10 @@ class CTMCVectorField(EndpointVectorField):
 
         dst_dict = None
         for s_idx in range(1, t.shape[0]):
+            step_cfg_scale = (
+                self._scale_schedule(t[s_idx - 1], cfg_scale, cfg_scale_schedule)
+                if cfg_scale_schedule else cfg_scale
+            )
             g, dst_dict = self.step(
                 g,
                 t[s_idx],
@@ -209,6 +217,9 @@ class CTMCVectorField(EndpointVectorField):
                 high_confidence_threshold=high_confidence_threshold,
                 last_step=(s_idx == t.shape[0] - 1),
                 prev_dst_dict=dst_dict,
+                condition=condition,
+                negative_condition=negative_condition,
+                cfg_scale=step_cfg_scale,
                 **kwargs,
             )
 
@@ -235,6 +246,9 @@ class CTMCVectorField(EndpointVectorField):
         high_confidence_threshold: float = 0.9,
         last_step: bool = False,
         inv_temp_func: Callable = None,
+        condition: torch.Tensor | None = None,
+        negative_condition: torch.Tensor | None = None,
+        cfg_scale: float = 0.0,
         **kwargs,  # noqa: ARG002
     ):
         """One CTMC step: Euler on ``x``, Campbell unmask/re-mask on ``a/c/e``."""
@@ -251,15 +265,69 @@ class CTMCVectorField(EndpointVectorField):
         if edge_batch_idx is None:
             edge_batch_idx = get_edge_batch_idxs(g)
 
-        dst_dict = self(
-            g,
-            t=torch.full((g.batch_size,), t_i, device=g.device),
-            node_batch_idx=node_batch_idx,
-            upper_edge_mask=upper_edge_mask,
-            apply_softmax=True,
-            remove_com=True,
-            prev_dst_dict=prev_dst_dict,
-        )
+        t_full = torch.full((g.batch_size,), t_i, device=g.device)
+
+        if condition is not None and cfg_scale != 0.0:
+            # Two sequential forward passes on the same (un-doubled) graph,
+            # swapping g.ndata["cond"] between calls, rather than DGL
+            # graph-batch doubling -- g already carries per-step evolving
+            # state that must NOT be duplicated, only the velocity
+            # prediction needs the cond/uncond combination. prev_dst_dict is
+            # a (prev_cond, prev_uncond) tuple across CFG steps so
+            # self-conditioning stays consistent per branch (never mixing
+            # conditional info into the null branch's self-conditioning).
+            prev_cond = prev_dst_dict[0] if isinstance(prev_dst_dict, tuple) else None
+            prev_uncond = prev_dst_dict[1] if isinstance(prev_dst_dict, tuple) else None
+
+            g.ndata["cond"] = condition
+            dst_cond = self(
+                g, t=t_full, node_batch_idx=node_batch_idx, upper_edge_mask=upper_edge_mask,
+                apply_softmax=True, remove_com=True, prev_dst_dict=prev_cond,
+            )
+            g.ndata["cond"] = (
+                negative_condition if negative_condition is not None else torch.zeros_like(condition)
+            )
+            dst_uncond = self(
+                g, t=t_full, node_batch_idx=node_batch_idx, upper_edge_mask=upper_edge_mask,
+                apply_softmax=True, remove_com=True, prev_dst_dict=prev_uncond,
+            )
+
+            # dst_cond/dst_uncond are already-softmaxed probabilities (needed
+            # so self-conditioning continuity above stays in the format it
+            # expects). Combining them linearly would not generally produce a
+            # valid simplex for campbell_step's Categorical(...).sample()
+            # below. softmax((1+w)*log(p_cond) - w*log(p_uncond)) is
+            # mathematically identical to the textbook logit-space
+            # combination softmax((1+w)*logit_cond - w*logit_uncond) --
+            # softmax is invariant to the per-row (not per-class) additive
+            # constant the two branches' missing logsumexp terms leave
+            # behind -- so this recovers proper logit-space CFG from
+            # probabilities alone, with no separate un-softmaxed pass needed.
+            eps = 1e-12
+            dst_dict = {}
+            for feat in dst_cond:
+                if feat == "x":
+                    dst_dict[feat] = (1 + cfg_scale) * dst_cond[feat] - cfg_scale * dst_uncond[feat]
+                else:
+                    combined_logp = (
+                        (1 + cfg_scale) * torch.log(dst_cond[feat].clamp_min(eps))
+                        - cfg_scale * torch.log(dst_uncond[feat].clamp_min(eps))
+                    )
+                    dst_dict[feat] = torch.softmax(combined_logp, dim=-1)
+            next_prev_dst_dict = (dst_cond, dst_uncond)
+        else:
+            if condition is not None:
+                g.ndata["cond"] = condition
+            dst_dict = self(
+                g,
+                t=t_full,
+                node_batch_idx=node_batch_idx,
+                upper_edge_mask=upper_edge_mask,
+                apply_softmax=True,
+                remove_com=True,
+                prev_dst_dict=prev_dst_dict,
+            )
+            next_prev_dst_dict = dst_dict
 
         dt = s_i - t_i
 
@@ -315,7 +383,7 @@ class CTMCVectorField(EndpointVectorField):
 
             data_src[f"{feat}_t"] = xt
 
-        return g, dst_dict
+        return g, next_prev_dst_dict
 
     @staticmethod
     def campbell_step(  # noqa: PLR0913

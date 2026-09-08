@@ -308,6 +308,14 @@ class EngineLightning(pl.LightningModule, core.Configurable):
             checkpoint['prop_dist_model'] = self.task.prop_dist_model
             logger.info("Saved prop_dist_model to checkpoint")
 
+        # property_norms (mean/mad/min/max per condition, used by
+        # normalize_condition) is a separate, lighter-weight attribute than
+        # prop_dist_model -- TABASCO's preprocess() builds only this, not a
+        # full DistributionProperty. Generic: benefits any task exposing it.
+        if hasattr(self.task, 'property_norms') and self.task.property_norms is not None:
+            checkpoint['property_norms'] = self.task.property_norms
+            logger.info("Saved property_norms to checkpoint")
+
         if (
             hasattr(self.task, 'reference_indices')
             and self.task.reference_indices is not None
@@ -369,6 +377,14 @@ class EngineLightning(pl.LightningModule, core.Configurable):
         if 'data_stats' in checkpoint and hasattr(self.task, 'tabasco_model'):
             self.task.tabasco_model.set_data_stats(checkpoint['data_stats'])
             logger.info("Restored Tabasco data_stats from checkpoint")
+
+        has_fresh_property_norms = getattr(self.task, 'property_norms', None) is not None
+        if 'property_norms' in checkpoint:
+            if has_fresh_property_norms:
+                logger.info("Skipping property_norms from checkpoint — using fresh stats from new dataset")
+            else:
+                self.task.property_norms = checkpoint['property_norms']
+                logger.info("Restored property_norms from checkpoint")
 
         if 'reference_indices' in checkpoint:
             self.task.reference_indices = checkpoint['reference_indices']

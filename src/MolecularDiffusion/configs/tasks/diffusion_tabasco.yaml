@@ -4,6 +4,15 @@
 _target_: MolecularDiffusion.modules.tasks.diffusion_tabasco.ModelTaskFactory
 task_type: diffusion_tabasco
 
+# Property-conditioning / classifier-free guidance -- same config signature
+# as configs/tasks/diffusion.yaml (en_diffusion's EGNN formulation).
+condition_names: []
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10   # None | "maxmin" | "mad" | "value_N"
+adapter_conditions: []          # subset of condition_names routed through the adapter MLP(s)
+use_adapter_module: false       # deprecated-but-supported: route ALL conditions through the adapter
+
 # Automatically populated from dataset
 num_atom_types: ???
 

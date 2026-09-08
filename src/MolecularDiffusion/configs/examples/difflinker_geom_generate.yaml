@@ -2,9 +2,9 @@
 # Fragment/linker generation from a real, working DiffLinker checkpoint
 # trained by this project from scratch on GEOM fragment/linker/anchor data
 # (configs/difflinker_train_geom.yaml) -- NOT upstream's own released
-# geom_difflinker.ckpt, which was removed from the zoo after being found
-# permanently broken for generation (tanh: false numerical instability,
-# reproduced against unmodified upstream code -- see
+# geom_difflinker.ckpt, which was removed from the zoo when it appeared
+# unable to generate (a diagnosis later overturned -- the cause was this
+# port's edge-mask sign convention, not the weights; see
 # docs/model_integrations/difflinker/FINAL_REPORT.md). This checkpoint
 # actually generates: 48-molecule smoke test, 48/48 (100%) clean, no atom
 # clashes, no floating atoms, 33 unique linker atom-compositions.

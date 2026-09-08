@@ -41,6 +41,7 @@ from MolecularDiffusion.modules.models.flowmol.vector_field import (
 from MolecularDiffusion.modules.tasks.diffusion_tabasco import (
     TabascoNodeDistribution,
 )
+from MolecularDiffusion.utils import prepare_context, compute_mean_mad_from_dataloader
 
 
 def _atom_onehot(batch: Dict[str, torch.Tensor], n_atom_types: int):
@@ -73,7 +74,9 @@ class PointCloudToDGLAdapter(nn.Module):
         self.n_charges = n_charges
         self.neutral_charge_index = neutral_charge_index
 
-    def forward(self, batch: Dict[str, torch.Tensor]) -> dgl.DGLGraph:
+    def forward(
+        self, batch: Dict[str, torch.Tensor], condition: Optional[torch.Tensor] = None
+    ) -> dgl.DGLGraph:
         coords = batch["coords"]
         node_mask = batch["node_mask"].bool()
         atom_oh = _atom_onehot(batch, self.n_atom_types)
@@ -100,6 +103,8 @@ class PointCloudToDGLAdapter(nn.Module):
             g_i.ndata["x_1_true"] = coords_b
             g_i.ndata["a_1_true"] = a_b
             g_i.ndata["c_1_true"] = c_b
+            if condition is not None:
+                g_i.ndata["cond"] = condition[b][mask_b]
             graphs.append(g_i)
 
         return dgl.batch(graphs)
@@ -222,6 +227,12 @@ class FlowMolTaskFactory:
             default_n_timesteps=self.default_n_timesteps,
             dataset_stats=self.dataset_stats,
             atom_vocab=self.atom_vocab,
+            condition_names=self.kwargs.get("condition_names", []),
+            context_mask_rate=self.kwargs.get("context_mask_rate", 0.0),
+            mask_value=self.kwargs.get("mask_value", 0.0),
+            normalize_condition=self.kwargs.get("normalize_condition", None),
+            adapter_conditions=self.kwargs.get("adapter_conditions", None),
+            use_adapter_module=self.kwargs.get("use_adapter_module", False),
         )
         return self.task
 
@@ -241,8 +252,45 @@ class FlowMolFlowMatchingTask(nn.Module):
         default_n_timesteps: int,
         dataset_stats: dict,
         atom_vocab: Optional[list] = None,
+        condition_names: list = [],
+        context_mask_rate: float = 0.0,
+        mask_value: float = 0.0,
+        normalize_condition: Optional[str] = None,
+        adapter_conditions: Optional[list] = None,
+        use_adapter_module: bool = False,
     ):
         super().__init__()
+
+        # Property-conditioning / CFG setup -- same config signature as
+        # en_diffusion.py's GeomMolecularGenerative / TABASCO's
+        # TabascoDiffusionTask, mirroring runmodes/train/tasks_egcl.py's
+        # adapter/concat validation exactly.
+        self.condition = condition_names
+        self.context_mask_rate = context_mask_rate
+        self.mask_value = mask_value
+        self.normalize_condition = normalize_condition
+        self.property_norms = None  # built in preprocess()
+
+        if adapter_conditions:
+            for ac in adapter_conditions:
+                if ac not in condition_names:
+                    raise ValueError(
+                        f"adapter_conditions entry '{ac}' not found in "
+                        f"condition_names {condition_names}"
+                    )
+            self.adapter_indices = [condition_names.index(ac) for ac in adapter_conditions]
+            self.concat_indices = [
+                i for i in range(len(condition_names)) if i not in self.adapter_indices
+            ]
+        elif use_adapter_module:
+            self.adapter_indices = list(range(len(condition_names)))
+            self.concat_indices = []
+        else:
+            self.adapter_indices = []
+            self.concat_indices = list(range(len(condition_names)))
+        self.n_adapter_context = len(self.adapter_indices)
+        self.n_concat_context = len(self.concat_indices)
+
         self.canonical_feat_order = ["x", "a", "c"]
         self.n_atom_types = n_atom_types
         self.n_charges = n_charges
@@ -265,6 +313,8 @@ class FlowMolFlowMatchingTask(nn.Module):
             canonical_feat_order=self.canonical_feat_order,
             interpolant_scheduler=self.interpolant_scheduler,
             n_charges=n_charges,
+            adapter_indices=self.adapter_indices,
+            concat_indices=self.concat_indices,
             **vector_field_config,
         )
 
@@ -295,11 +345,58 @@ class FlowMolFlowMatchingTask(nn.Module):
         g.ndata["c_0"] = uniform_simplex_prior(n, self.n_charges).to(g.device)
         return g
 
+    def preprocess(self, train_set=None, valid_set=None, test_set=None):
+        """Build self.property_norms for CFG conditioning (train-side only).
+
+        Called generically by cli/train.py if this attribute exists. Does
+        NOT touch node_dist_model/n_node_dist -- those come from
+        dataset_stats at __init__ time via FlowMolTaskFactory, a separate
+        mechanism. Deliberately skips DistributionProperty/prop_dist_model
+        (out of scope -- generation always takes an explicit target_value).
+        """
+        if train_set is None or len(self.condition) == 0:
+            return
+        from . import _preprocess_cache as _ppcache
+
+        base, subset_indices = _ppcache.resolve_dataset_and_indices(train_set)
+        prop_indices = _ppcache.property_sample_indices(len(train_set), subset_indices)
+        props = torch.stack([
+            _ppcache.get_property_subset(base, name, prop_indices) for name in self.condition
+        ])
+        self.property_norms = compute_mean_mad_from_dataloader(props, self.condition)
+
     # ------------------------------------------------------------------ #
     # training / evaluation                                              #
     # ------------------------------------------------------------------ #
     def forward(self, batch: Dict[str, torch.Tensor]):
-        g = self.to_dgl(batch)
+        condition = None
+        if len(self.condition) > 0:
+            if self.property_norms is None:
+                raise RuntimeError(
+                    "condition_names is set but property_norms is None -- "
+                    "did preprocess() run? (cli/train.py calls it only if "
+                    "hasattr(task, 'preprocess'))"
+                )
+            condition = prepare_context(
+                self.condition, batch, self.property_norms, self.normalize_condition
+            ).to(batch["coords"].device)
+            if self.context_mask_rate > 0:
+                drop = torch.rand(condition.size(0), device=condition.device) < self.context_mask_rate
+                if self.n_adapter_context > 0:
+                    null_value = torch.empty(
+                        condition.shape[-1], device=condition.device, dtype=condition.dtype
+                    )
+                    null_value[self.adapter_indices] = 0.0
+                    null_value[self.concat_indices] = self.mask_value
+                else:
+                    null_value = torch.full(
+                        (condition.shape[-1],), self.mask_value,
+                        device=condition.device, dtype=condition.dtype,
+                    )
+                condition = torch.where(drop.view(-1, 1, 1), null_value.view(1, 1, -1), condition)
+                condition = condition * batch["node_mask"].unsqueeze(-1).to(condition.dtype)
+
+        g = self.to_dgl(batch, condition=condition)
         node_batch_idx = get_node_batch_idxs(g)
         batch_size = g.batch_size
 
@@ -391,6 +488,88 @@ class FlowMolFlowMatchingTask(nn.Module):
         g = self._sample_prior(g, node_batch_idx)
 
         g = self.vector_field.integrate(g, node_batch_idx, n_timesteps=num_steps)
+
+        pc = self.to_pc(g, self.n_atom_types)
+        return pc["one_hot"], pc["charges"], pc["coords"], pc["node_mask"]
+
+    def _normalize_target(self, value, key):
+        if self.normalize_condition is None:
+            return value
+        norms = self.property_norms[key]
+        if self.normalize_condition == "mad":
+            return (value - norms["mean"]) / norms["mad"]
+        elif self.normalize_condition == "maxmin":
+            return 2 * (value - norms["min"]) / (norms["max"] - norms["min"]) - 1
+        elif "value" in self.normalize_condition:
+            return value / float(self.normalize_condition.split("_")[1])
+        raise ValueError(f"Unknown normalization method: {self.normalize_condition}")
+
+    @torch.no_grad()
+    def sample_guidance_conitional(
+        self,
+        target_function=None,
+        target_value=None,
+        negative_target_value=None,
+        nodesxsample: Optional[torch.Tensor] = None,
+        cfg_scale: float = 1,
+        cfg_scale_schedule: Optional[str] = None,
+        guidance_ver: str = "cfg",
+        n_frames: int = 0,
+        num_steps: Optional[int] = None,
+        **kwargs,
+    ):
+        """
+        Classifier-free-guidance generation. Matches the call signature
+        GenerativeFactory.conditional_generation() hardcodes for
+        task_type == "cfg" (runmodes/generate/tasks_generate.py), and returns
+        (one_hot, charges, x, node_mask) like sample() -- "EDM compatibility".
+
+        Simpler than TABASCO's version: FlowMol's DGL graphs are node-native
+        (no per-molecule padding dimension), so a per-molecule condition
+        value broadcasts via `context_per_mol[node_batch_idx]` directly --
+        no dense (B,N,D) intermediate needed.
+        """
+        if guidance_ver != "cfg":
+            raise NotImplementedError(
+                f"FlowMolFlowMatchingTask only supports guidance_ver='cfg' (got {guidance_ver!r}); "
+                "gradient-guidance variants are out of scope."
+            )
+        if n_frames:
+            print(f"WARNING: n_frames={n_frames} is not supported for FlowMol CFG sampling; ignoring.")
+        if num_steps is None:
+            num_steps = self.fm_num_timesteps
+
+        sizes = nodesxsample.to(self.device).long()
+
+        vals = [self._normalize_target(target_value[i], key) for i, key in enumerate(self.condition)]
+        context_per_mol = torch.tensor(vals, dtype=torch.float, device=self.device).unsqueeze(0).expand(len(sizes), -1)
+
+        if negative_target_value:
+            neg = [self._normalize_target(negative_target_value[i], key) for i, key in enumerate(self.condition)]
+            negative_context_per_mol = torch.tensor(neg, dtype=torch.float, device=self.device).unsqueeze(0).expand(len(sizes), -1)
+        else:
+            # No explicit negative given -- reuse the same null value training's
+            # context_mask_rate dropout used (mask_value / 0.0 for adapter cols).
+            if self.n_adapter_context > 0:
+                null_value = torch.empty(len(self.condition), device=self.device)
+                null_value[self.adapter_indices] = 0.0
+                null_value[self.concat_indices] = self.mask_value
+            else:
+                null_value = torch.full((len(self.condition),), self.mask_value, device=self.device)
+            negative_context_per_mol = null_value.unsqueeze(0).expand(len(sizes), -1)
+
+        g = self._build_graphs(sizes)
+        node_batch_idx = get_node_batch_idxs(g)
+        g = self._sample_prior(g, node_batch_idx)
+
+        condition = context_per_mol[node_batch_idx]
+        negative_condition = negative_context_per_mol[node_batch_idx]
+
+        g = self.vector_field.integrate(
+            g, node_batch_idx, n_timesteps=num_steps,
+            condition=condition, negative_condition=negative_condition,
+            cfg_scale=cfg_scale, cfg_scale_schedule=cfg_scale_schedule,
+        )
 
         pc = self.to_pc(g, self.n_atom_types)
         return pc["one_hot"], pc["charges"], pc["coords"], pc["node_mask"]

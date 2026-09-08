@@ -103,6 +103,8 @@ class EndpointVectorField(nn.Module):
         use_dst_feats: bool = False,
         dst_feat_msg_reduction_factor: float = 4,
         scprop: float = 0.5,
+        adapter_indices: list | None = None,
+        concat_indices: list | None = None,
     ) -> None:
         super().__init__()
 
@@ -174,11 +176,22 @@ class EndpointVectorField(nn.Module):
                     self.n_cat_feats[modality] + n_mask_feats
                 )
 
+        # Property-conditioning: concat-routed columns widen the scalar
+        # embedding input; adapter-routed columns get a dedicated per-layer
+        # re-injection MLP (see denoise_graph), mirroring
+        # tabasco_gvp/gvp_backbone.py's condition_adapters exactly, since
+        # this class has the identical per-layer conv-loop shape.
+        self.adapter_indices = adapter_indices or []
+        self.concat_indices = concat_indices or []
+        n_adapter_context = len(self.adapter_indices)
+        n_concat_context = len(self.concat_indices)
+
         self.scalar_embedding = nn.Sequential(
             nn.Linear(
                 self.token_dims["a"]
                 + self.token_dims["c"]
-                + self.time_embedding_dim,
+                + self.time_embedding_dim
+                + n_concat_context,
                 n_hidden_scalars,
             ),
             nn.SiLU(),
@@ -219,6 +232,11 @@ class EndpointVectorField(nn.Module):
                 )
             )
         self.conv_layers = nn.ModuleList(conv_layers)
+
+        if n_adapter_context > 0:
+            self.condition_adapters = nn.ModuleList(
+                [nn.Linear(n_adapter_context, n_hidden_scalars) for _ in self.conv_layers]
+            )
 
         self.node_position_updaters = nn.ModuleList([])
         self.edge_updaters = nn.ModuleList([])
@@ -319,6 +337,14 @@ class EndpointVectorField(nn.Module):
                 )
                 node_scalar_features.append(t_emb[node_batch_idx])
 
+            adapter_ctx = None
+            if "cond" in g.ndata:
+                cond = g.ndata["cond"]
+                if self.concat_indices:
+                    node_scalar_features.append(cond[..., self.concat_indices])
+                if self.adapter_indices:
+                    adapter_ctx = cond[..., self.adapter_indices]
+
             node_scalar_features = torch.cat(node_scalar_features, dim=-1)
             node_scalar_features = self.scalar_embedding(node_scalar_features)
 
@@ -356,6 +382,7 @@ class EndpointVectorField(nn.Module):
                         upper_edge_mask,
                         apply_softmax=True,
                         remove_com=False,
+                        adapter_ctx=adapter_ctx,
                     )
 
         if self.self_conditioning and prev_dst_dict is not None:
@@ -385,6 +412,7 @@ class EndpointVectorField(nn.Module):
             upper_edge_mask,
             apply_softmax,
             remove_com,
+            adapter_ctx=adapter_ctx,
         )
 
     def denoise_graph(  # noqa: PLR0913
@@ -398,6 +426,7 @@ class EndpointVectorField(nn.Module):
         upper_edge_mask: torch.Tensor,
         apply_softmax: bool = False,
         remove_com: bool = False,
+        adapter_ctx: torch.Tensor | None = None,
     ) -> dict:
         """The GVP message-passing stack plus the four output heads."""
         x_diff, d = self.precompute_distances(g)
@@ -412,6 +441,8 @@ class EndpointVectorField(nn.Module):
                     x_diff=x_diff,
                     d=d,
                 )
+                if adapter_ctx is not None:
+                    node_scalar_features = node_scalar_features + self.condition_adapters[conv_idx](adapter_ctx)
 
                 if (
                     conv_idx != 0
@@ -580,6 +611,25 @@ class EndpointVectorField(nn.Module):
     def vector_field(x_t, x_1, alpha_t, alpha_t_prime):
         """The endpoint-parameterized conditional vector field."""
         return alpha_t_prime / (1 - alpha_t) * (x_1 - x_t)
+
+    @staticmethod
+    def _scale_schedule(t: torch.Tensor, cfg_scale: float, schedule_type: str) -> float:
+        """Ramp guidance strength across sampling steps.
+
+        Same 3 named schedules as the plain-FlowMol/TABASCO versions -- `t`
+        here also runs 0 (noise) -> 1 (data) during `integrate()`, so the
+        ramp variable is `x = t` directly.
+        """
+        x = float(t)
+        schedule_type = schedule_type.lower()
+        if schedule_type == "linear":
+            return cfg_scale * x
+        elif schedule_type == "exponential":
+            return cfg_scale * (x ** 2)
+        elif schedule_type == "cosine":
+            import math
+            return cfg_scale * (1 - math.cos(x * math.pi / 2))
+        raise ValueError(f"Unknown scale schedule: {schedule_type}")
 
     # -- training-time interpolation ----------------------------------------
 

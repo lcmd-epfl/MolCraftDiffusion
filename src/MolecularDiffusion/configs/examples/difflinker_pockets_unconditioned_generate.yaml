@@ -28,21 +28,17 @@
 # 9-symbol GEOM vocab) + anchor_indices [11, 16] fixture, no new extraction
 # needed (Revision 9's own finding).
 #
-# KNOWN LIMITATION. Same `tanh: false` unbounded-coordinate-update
-# instability as every other released DiffLinker checkpoint
-# (INTEGRATION_PLAN.md's Revision 7) -- max_generate_attempts below bounds a
-# full-restart retry loop around it, same as every other pretrained config.
-# mol_size is the TOTAL atom count (fragment + linker), not linker size
-# alone (see INTEGRATION_PLAN.md's Post-Completion Fix section). Confirmed
-# still broken independently by Tester (attempt 7): this checkpoint builds
-# plain `Dynamics` (dense fully-connected graph), architecturally identical
-# to `geom_given_anchors_difflinker.ckpt`, and hits the identical
-# `FoundNaNException` on the very first reverse-diffusion step -- unlike its
-# three genuinely pocket-conditioned siblings
-# (backbone/full/full_no_anchors), which use `DynamicsWithPockets`'s sparser
-# graph and DO generate correctly despite sharing the same `tanh: false`
-# weight property. See docs/architectures.md for the full per-checkpoint
-# breakdown.
+# WORKING GENERATION. 20/20 clean, 100% success (Tester Log attempt 8).
+# This checkpoint is the only one of the four Pockets weights that is NOT
+# pocket-conditioned: it builds plain `Dynamics` over a dense
+# fully-connected graph, so it takes a bare fragment and no pocket_db.
+# That also made it the only one exposed to the edge-mask sign bug that
+# used to make it NaN on the first reverse step -- hence
+# `upstream_int8_edge_mask: true` below. See FINAL_REPORT.md's 2026-09-07
+# section. max_generate_attempts still bounds a full-restart retry loop as
+# a safety margin, matching every other pretrained config. mol_size is the
+# TOTAL atom count (fragment + linker), not linker size alone (see
+# INTEGRATION_PLAN.md's Post-Completion Fix section).
 
 defaults:
   - tasks: diffusion_difflinker
@@ -57,6 +53,9 @@ seed: 42
 tasks:
   in_node_nf: 9
   center_of_mass: anchors
+  # Converted upstream weight on the dense `Dynamics` path -- it was trained
+  # against DiffLinker's int8 bitwise-NOT edge mask (-1/-2), not 1/0.
+  upstream_int8_edge_mask: true
 
 interference:
   batch_size: 4

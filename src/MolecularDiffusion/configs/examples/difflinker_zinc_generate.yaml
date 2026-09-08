@@ -2,9 +2,9 @@
 # Fragment/linker generation from a real, working DiffLinker checkpoint
 # trained by this project from scratch on ZINC fragment/linker/anchor data
 # (configs/difflinker_train_zinc.yaml) -- NOT upstream's own released
-# zinc_difflinker.ckpt, which was removed from the zoo after being found
-# permanently broken for generation (tanh: false numerical instability,
-# reproduced against unmodified upstream code -- see
+# zinc_difflinker.ckpt, which was removed from the zoo when it appeared
+# unable to generate (a diagnosis later overturned -- the cause was this
+# port's edge-mask sign convention, not the weights; see
 # docs/model_integrations/difflinker/FINAL_REPORT.md). This checkpoint
 # actually generates: 48-molecule smoke test, 45/48 (93.75%) clean, no
 # atom clashes, 21 unique linker atom-compositions.

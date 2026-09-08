@@ -30,7 +30,7 @@ Mask convention: ``padding_mask`` follows TABASCO's own inverted convention
 class inverts once at the boundary.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -61,6 +61,8 @@ class EGNNBackbone(nn.Module):
         norm_diff: bool = True,
         dropout: float = 0.0,
         normalization: bool = False,
+        adapter_indices: Optional[list] = None,
+        concat_indices: Optional[list] = None,
     ):
         super().__init__()
         if activation not in _ACTIVATIONS:
@@ -69,13 +71,19 @@ class EGNNBackbone(nn.Module):
                 f"{sorted(_ACTIVATIONS)}"
             )
         self.atom_dim = atom_dim
+        self.adapter_indices = adapter_indices or []
+        self.concat_indices = concat_indices or []
+        n_adapter_context = len(self.adapter_indices)
+        n_concat_context = len(self.concat_indices)
 
-        # +1 input feature slot for scalar time-conditioning, concatenated
-        # into `h` before the EGNN stack -- the same pattern
-        # `EGNN_dynamics._forward` uses for the en_diffusion family
-        # (egcl.py:415-423).
+        # +1 input feature slot for scalar time-conditioning, +n_concat_context
+        # for concat-routed conditioning, concatenated into `h` before the
+        # EGNN stack -- the same pattern `EGNN_dynamics._forward` uses for the
+        # en_diffusion family (egcl.py:415-423). Adapter-routed conditioning
+        # reuses EGNN's own native per-layer adapter re-injection
+        # (egcl.py:132-149,199-213) via `n_adapter_context`/`context=`.
         self.egnn = EGNN(
-            in_node_nf=atom_dim + 1,
+            in_node_nf=atom_dim + 1 + n_concat_context,
             hidden_nf=hidden_dim,
             act_fn=_ACTIVATIONS[activation](),
             n_layers=num_layers,
@@ -92,6 +100,7 @@ class EGNNBackbone(nn.Module):
             aggregation_method=aggregation_method,
             dropout=dropout,
             normalization=normalization,
+            n_adapter_context=n_adapter_context,
         )
 
         # Cache of the fully-connected-with-self-loops edge index per
@@ -128,6 +137,7 @@ class EGNNBackbone(nn.Module):
         atomics: torch.Tensor,
         padding_mask: torch.Tensor,
         t: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -135,6 +145,7 @@ class EGNNBackbone(nn.Module):
             atomics: (B, N, atom_dim) one-hot (or soft) atom-type features
             padding_mask: (B, N), TABASCO convention -- 1 = padded, 0 = real
             t: (B,) timestep in [0, 1]
+            condition: (B, N, n_adapter_context + n_concat_context) or None
 
         Returns:
             coords: (B, N, 3) endpoint prediction
@@ -149,6 +160,13 @@ class EGNNBackbone(nn.Module):
         t_expand = t.reshape(batch_size, 1, 1).expand(batch_size, n_nodes, 1).to(device=coords.device, dtype=coords.dtype)
         h = torch.cat([atomics, t_expand], dim=-1)
 
+        adapter_ctx = None
+        if condition is not None:
+            if self.concat_indices:
+                h = torch.cat([h, condition[..., self.concat_indices]], dim=-1)
+            if self.adapter_indices:
+                adapter_ctx = condition[..., self.adapter_indices]
+
         node_mask_flat = node_mask.reshape(batch_size * n_nodes, 1)
         edge_mask_flat = (
             node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
@@ -156,6 +174,10 @@ class EGNNBackbone(nn.Module):
 
         h_flat = h.reshape(batch_size * n_nodes, -1) * node_mask_flat
         x_flat = coords.reshape(batch_size * n_nodes, 3) * node_mask_flat
+        adapter_ctx_flat = (
+            adapter_ctx.reshape(batch_size * n_nodes, -1) * node_mask_flat
+            if adapter_ctx is not None else None
+        )
 
         rows, cols = self._fully_connected_edges(n_nodes, batch_size, device)
 
@@ -165,6 +187,7 @@ class EGNNBackbone(nn.Module):
             [rows, cols],
             node_mask=node_mask_flat,
             edge_mask=edge_mask_flat,
+            context=adapter_ctx_flat,
         )
 
         coords_out = x_out.reshape(batch_size, n_nodes, 3)

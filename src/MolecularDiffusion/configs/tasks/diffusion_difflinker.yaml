@@ -32,6 +32,14 @@ condition_time: true
 anchors_context: true
 center_of_mass: fragments
 
+# Edge-mask sign convention (see diffusion_difflinker.py::dense_edge_mask).
+# DiffLinker's own collate builds its diagonal mask with `~torch.eye(int8)`,
+# which is a *bitwise* NOT -- so every released non-pocket weight was trained
+# against a mask of -1 (real edges) / -2 (self-loops) rather than 1/0. Leave
+# this false for weights trained here; set it true only for a converted
+# upstream checkpoint on the dense `Dynamics` path.
+upstream_int8_edge_mask: false
+
 # Diffusion (difflinker/src/edm.py::EDM), normalize_factors from
 # difflinker/configs/zinc_difflinker.yml (`normalize_factors: [1, 4, 10]`).
 diffusion_steps: 500

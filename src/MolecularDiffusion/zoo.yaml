@@ -2012,12 +2012,17 @@ assets:
     reason: 'The four non-pocket ZINC/GEOM checkpoints originally here
       (zinc_difflinker.ckpt, zinc_given_anchors_difflinker.ckpt, geom_difflinker.ckpt,
       geom_given_anchors_difflinker.ckpt) were removed and replaced by difflinker/trained
-      below: they convert and load cleanly but generation from them is permanently
-      broken (tanh:false numerical instability in the released weights themselves,
-      reproduced against unmodified upstream code, not a MolCraftDiffusion bug --
-      see FINAL_REPORT.md), and this project now has its own working replacement
-      checkpoints, so shipping known-broken weights alongside a working alternative
-      served no purpose. Kept: the four Pockets checkpoints (Revisions 8-9), still
+      below: at the time they could not generate -- every request NaN''d on the first
+      reverse step -- and this project already had its own working replacements,
+      so shipping apparently-broken weights alongside a working alternative served
+      no purpose. That diagnosis has since been overturned (2026-09-07): the cause
+      was this port feeding the dense Dynamics path an arithmetically-correct 1/0
+      edge mask, where the released weights were trained against the -1/-2 mask
+      DiffLinker''s own int8 bitwise-NOT collate produces (see the Functional
+      status note below and FINAL_REPORT.md). These four were never defective and
+      could be re-registered by re-downloading and re-converting them with
+      upstream_int8_edge_mask -- not done here, since difflinker/trained already
+      covers non-pocket linking. Kept: the four Pockets checkpoints (Revisions 8-9), still
       CC-BY-4.0 from Zenodo records 7121300 (pockets_backbone_difflinker.ckpt,
       raw pockets_difflinker_backbone.ckpt, 24,348,772 B; pockets_unconditioned_difflinker.ckpt,
       raw pockets_difflinker_unconditioned.ckpt, 24,377,320 B) and 10988017
@@ -2028,15 +2033,23 @@ assets:
       "cc-by-4.0", access_right "open". CC-BY-4.0 permits redistribution with
       attribution -- Igashov et al. (DiffLinker) must be credited, citing
       10.5281/zenodo.7121300 or 10.5281/zenodo.10988017 as applicable. Functional
-      status (a usage caveat, not a redistribution blocker -- see docs/architectures.md
-      and FINAL_REPORT.md for the full picture): pockets_unconditioned is broken
-      for the same tanh:false reason as the removed ZINC/GEOM checkpoints (it is
-      architecturally identical to them -- plain Dynamics, dense fully-connected
-      graph -- despite its name); pockets_backbone, pockets_full_no_anchors and
-      pockets_full generate correctly (Tester Log attempt 7, 9/9 trials, 3 seeds
-      each) despite sharing the identical tanh:false weights -- the sparser
-      DynamicsWithPockets distance-cutoff graph does not exhibit the same blow-up
-      the dense graph does (observed, not fully root-caused).'
+      status: all four generate. pockets_backbone, pockets_full_no_anchors and
+      pockets_full always did (Tester Log attempt 7, 9/9 trials, 3 seeds each).
+      pockets_unconditioned used to NaN on the first reverse step; that was a
+      port bug, not a weight defect, and it is fixed (2026-09-07, 20/20 clean).
+      Root cause: DiffLinker''s own collate builds its diagonal edge mask with
+      ~torch.eye(const.TORCH_INT) where TORCH_INT is torch.int8, so ~ is a
+      BITWISE not -- every released non-pocket weight was trained against a mask
+      of -1 on real edges and -2 on self-loops, not 1/0. Reproducing that
+      convention is what the task flag upstream_int8_edge_mask does; it is set
+      in this variant''s example config and defaults to false everywhere else,
+      so weights trained by this platform are unaffected. The three pocket
+      checkpoints never needed it -- DynamicsWithPockets builds its own
+      distance-cutoff edges and is called with edge_mask=None, which is why
+      only pockets_unconditioned (plain Dynamics, despite its name) was hit.
+      Verified by running the released weights through DiffLinker''s own
+      unmodified Dynamics/EDM on its own MOAD_test.pt: 5/5 clean, confirming
+      the weights were never defective. See FINAL_REPORT.md.'
     upstream:
       repo: https://github.com/igashov/difflinker
       source: https://zenodo.org/records/7121300 (Zenodo record 7121300, "DiffLinker
@@ -2061,9 +2074,9 @@ assets:
     reason: 'Not third-party weights -- these are trained by this project from
       scratch on the real ZINC/GEOM fragment/linker/anchor data (data/zinc/difflinker,
       difflinker/data), replacing DiffLinker''s own released ZINC/GEOM checkpoints
-      after those were found permanently broken for generation (tanh:false
-      numerical instability, see difflinker/pretrained''s reason above and
-      FINAL_REPORT.md). Licensed under this repository''s own MIT license (LICENSE
+      after those appeared broken for generation (see difflinker/pretrained''s reason
+      above; that diagnosis was later overturned -- the released weights were fine,
+      the port''s edge-mask sign convention was not). Licensed under this repository''s own MIT license (LICENSE
       at repo root), same as the rest of the codebase -- no upstream weight
       redistribution question applies. zinc_trained_difflinker.ckpt: real Lightning
       checkpoint from configs/difflinker_train_zinc.yaml, epoch 81 (global_step
@@ -2138,11 +2151,10 @@ assets:
       B) and declares license.id "cc-by-4.0", access_right "open". Raw byte sizes
       match the record''s own listing exactly, confirming provenance. CC-BY-4.0 permits
       redistribution with attribution -- Igashov et al. (DiffLinker, Zenodo DOI 10.5281/zenodo.7121300).
-      Functional note (not a licence issue): only useful paired with a numerically-stable
-      DiffLinker checkpoint -- the from-scratch train_full_resumed checkpoint (Tester
-      Log attempt 7, PASS, 100% success), not any of the released pretrained diffusion
-      checkpoints (all share the tanh:false instability). See INTEGRATION_PLAN.md''s
-      Revision 8.'
+      Functional note (not a licence issue): pairs with any generation-ready DiffLinker
+      checkpoint -- the from-scratch train_full_resumed checkpoint (Tester Log attempt
+      7, PASS, 100% success) as well as the released pretrained ones, which all
+      generate as of 2026-09-07. See INTEGRATION_PLAN.md''s Revision 8.'
     upstream:
       repo: https://github.com/igashov/difflinker
       source: https://zenodo.org/records/7121300 (Zenodo record 7121300, "DiffLinker
@@ -2292,38 +2304,34 @@ models:
         data: data/moad/data
     summary: 'DiffLinker generates the 3D linker that joins a set of given molecular
       fragments, keeping the fragment atoms fixed and growing only the connecting
-      atoms. DiffLinker''s own released non-pocket ZINC/GEOM checkpoints convert
-      and load cleanly -- zero state-dict key drops, byte-identical to the raw
-      weights -- but generation from them is permanently broken: every real
-      fragment-linking request NaNs partway through the reverse-diffusion loop,
-      root-caused and reproduced identically against upstream''s own unmodified
-      code -- `tanh: false`, unbounded per-layer EGNN coordinate updates, a
-      genuine numerical-instability defect in the released weights themselves,
-      not a MolCraftDiffusion porting bug. They have been removed from the zoo
-      and replaced: `zinc` and `geom` now point at `difflinker/trained`, real
-      working checkpoints this project trained from scratch on the same data
-      (48-molecule smoke test: zinc 45/48 clean, geom 48/48 clean -- see
-      difflinker/trained''s reason for exact provenance). `default` still trains
-      a fresh model from scratch yourself if you''d rather not use the pre-trained
-      snapshot; `train_full_with_size_gnn` pairs that from-scratch path with a
-      converted `SizeGNN` classifier (`extra.size_gnn`) that auto-predicts linker
-      size from fragment geometry instead of sampling a fixed/ranged `mol_size`
-      -- PASS, 100% success (Tester Log attempt 7). The four Pockets variants
-      (Revision 9) share the same `tanh: false` weight property as the removed
-      ZINC/GEOM checkpoints, yet split unevenly: `pockets_unconditioned`
-      (architecturally identical to the removed checkpoints -- plain `Dynamics`,
-      dense fully-connected graph) hits the identical NaN wall. `pockets_backbone`,
-      `pockets_full_no_anchors` and `pockets_full` (genuinely pocket-conditioned
-      -- `DynamicsWithPockets`, a sparser 4A/FC-10A-4A distance-cutoff graph)
-      **generate correctly** -- 9/9 trials PASS across 3 seeds each, non-degenerate
-      3D structures, no pocket clashes (Tester Log attempt 7) -- contradicting this
-      integration''s own prediction that the shared `tanh: false` property would
-      doom them too; the sparser graph apparently does not compound the same blow-up
-      the dense graph does (an observed pattern, not a proven root cause). See docs/model_integrations/difflinker/FINAL_REPORT.md
+      atoms. All six shipped checkpoints generate. `zinc` and `geom` point at
+      `difflinker/trained`, checkpoints this project trained from scratch on the
+      same data (48-molecule smoke test: zinc 45/48 clean, geom 48/48 clean -- see
+      difflinker/trained''s reason for exact provenance). The four Pockets variants
+      (Revision 9) are DiffLinker''s own released weights: `pockets_backbone`,
+      `pockets_full_no_anchors` and `pockets_full` are genuinely pocket-conditioned
+      (`DynamicsWithPockets`, a 4A/FC-10A-4A distance-cutoff graph) and have always
+      passed -- 9/9 trials across 3 seeds each, non-degenerate 3D structures, no
+      pocket clashes (Tester Log attempt 7). `pockets_unconditioned` is plain
+      `Dynamics` on a dense fully-connected graph despite its name, and used to NaN
+      on the first reverse-diffusion step; that was a porting bug, fixed 2026-09-07,
+      and it now generates 20/20 clean (Tester Log attempt 8). The bug: DiffLinker''s
+      own collate masks its edge diagonal with `~torch.eye(const.TORCH_INT)` where
+      `TORCH_INT` is `torch.int8`, making `~` a bitwise NOT -- so every released
+      non-pocket weight was trained against an edge mask of -1 on real edges and -2
+      on self-loops rather than 1/0, and this port fed it the arithmetically-correct
+      1/0 instead. The task flag `upstream_int8_edge_mask` reproduces the released
+      convention; it defaults to false, so weights trained here are unaffected, and
+      the three pocket checkpoints never needed it (`DynamicsWithPockets` is called
+      with `edge_mask=None`). Running the released weights through DiffLinker''s own
+      unmodified `Dynamics`/`EDM` on its own `MOAD_test.pt` gives 5/5 clean,
+      confirming the weights were never defective. `default` trains a fresh model
+      from scratch; `train_full_with_size_gnn` pairs that with a converted `SizeGNN`
+      classifier (`extra.size_gnn`) that auto-predicts linker size from fragment
+      geometry instead of sampling a fixed/ranged `mol_size` -- PASS, 100% success
+      (Tester Log attempt 7). See docs/model_integrations/difflinker/FINAL_REPORT.md
       for the full diagnostic chain and docs/architectures.md for the per-checkpoint
-      breakdown. Use `zinc`/`geom` for working non-pocket generation today, or
-      `pockets_backbone`/`pockets_full_no_anchors`/`pockets_full`, for working generation
-      today.'
+      breakdown.'
   diffpharma:
     family: pocket-conditioned-diffusion
     task_type: diffusion_diffpharma

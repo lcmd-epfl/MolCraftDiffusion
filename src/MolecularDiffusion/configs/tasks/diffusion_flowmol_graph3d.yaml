@@ -2,7 +2,9 @@
 #
 # Four modalities generated jointly: x (coords, continuous flow matching) and
 # a / c / e (atom types, formal charges, BOND ORDERS -- CTMC discrete flow
-# matching from an all-mask prior). Unconditional de novo generation only.
+# matching from an all-mask prior). Unconditional by default; set
+# condition_names below to opt into property-conditioning + CFG (same config
+# signature as configs/tasks/diffusion.yaml's en_diffusion formulation).
 #
 # Distinct from the platform's coordinate-only `diffusion_flowmol`, which stays
 # untouched: that one drops the `e` (bond) modality entirely.
@@ -22,6 +24,15 @@
 # Generation", arXiv:2508.12629 (2025).
 _target_: MolecularDiffusion.modules.tasks.diffusion_flowmol_graph3d.ModelTaskFactory
 task_type: diffusion_flowmol_graph3d
+
+# Property-conditioning / classifier-free guidance -- same config signature
+# as configs/tasks/diffusion.yaml (en_diffusion's EGNN formulation).
+condition_names: []
+context_mask_rate: 0.2
+mask_value: 5
+normalize_condition: value_10   # None | "maxmin" | "mad" | "value_N"
+adapter_conditions: []          # subset of condition_names routed through the adapter MLP(s)
+use_adapter_module: false       # deprecated-but-supported: route ALL conditions through the adapter
 
 # --- categorical vocabularies ---------------------------------------------
 # Formal charges are stored raw and signed; this model offsets by +2 into 6

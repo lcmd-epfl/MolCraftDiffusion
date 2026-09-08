@@ -81,11 +81,38 @@ class FlowMatchingModel(nn.Module):
         """Set the data statistics."""
         self.data_stats = stats
 
-    def _call_net(self, batch, t):
-        """Wrapper around `self.net` for `torch.compile` compatibility."""
-        coords, atom_logits = self.net(
-            batch["coords"], batch["atomics"], batch["padding_mask"], t
+    def _call_net(self, batch, t, condition=None, negative_condition=None, cfg_scale=0.0):
+        """Wrapper around `self.net` for `torch.compile` compatibility.
+
+        When `condition` is given and `cfg_scale != 0`, doubles the batch
+        (real condition ++ negative/null condition) along dim 0, calls
+        `self.net` ONCE, then combines the two halves via
+        `(1+cfg_scale)*cond - cfg_scale*uncond` -- the same batch-doubling
+        classifier-free-guidance pattern already used in this codebase for
+        the same purpose (`modules/models/chefnmr/score_models.py:158-183`).
+        With `condition=None` (the default, all existing configs) this is
+        byte-identical to before, aside from a new `condition=None` kwarg
+        passed to `self.net`.
+        """
+        guiding = condition is not None and (
+            (isinstance(cfg_scale, torch.Tensor) and bool((cfg_scale != 0).any()))
+            or (not isinstance(cfg_scale, torch.Tensor) and cfg_scale != 0.0)
         )
+        if guiding:
+            neg = negative_condition if negative_condition is not None else torch.zeros_like(condition)
+            coords2 = torch.cat([batch["coords"], batch["coords"]], dim=0)
+            atomics2 = torch.cat([batch["atomics"], batch["atomics"]], dim=0)
+            mask2 = torch.cat([batch["padding_mask"], batch["padding_mask"]], dim=0)
+            t2 = torch.cat([t, t], dim=0)
+            cond2 = torch.cat([condition, neg], dim=0)
+            coords_pred, atom_logits = self.net(coords2, atomics2, mask2, t2, condition=cond2)
+            half = batch["coords"].shape[0]
+            coords = (1 + cfg_scale) * coords_pred[:half] - cfg_scale * coords_pred[half:]
+            atom_logits = (1 + cfg_scale) * atom_logits[:half] - cfg_scale * atom_logits[half:]
+        else:
+            coords, atom_logits = self.net(
+                batch["coords"], batch["atomics"], batch["padding_mask"], t, condition=condition
+            )
 
         return TensorDict(
             {
@@ -96,16 +123,19 @@ class FlowMatchingModel(nn.Module):
             batch_size=batch["padding_mask"].shape[0],
         )
 
-    def forward(self, batch, compute_stats: bool = True):
+    def forward(self, batch, condition=None, compute_stats: bool = True):
         """Compute training loss and optional stats."""
 
         if self.num_random_augmentations:
             batch = apply_random_rotation(
                 batch, n_augmentations=self.num_random_augmentations
             )
+            if condition is not None:
+                naug = self.num_random_augmentations + 1
+                condition = condition.repeat(naug, 1, 1)
 
         path = self._create_path(batch)
-        pred = self._call_net(path.x_t, path.t)
+        pred = self._call_net(path.x_t, path.t, condition=condition)
 
         loss, stats_dict = self._compute_loss(path, pred, compute_stats)
         return loss, stats_dict
@@ -243,6 +273,10 @@ class FlowMatchingModel(nn.Module):
         num_steps: int = 100,
         batch_size: Optional[int] = None,
         return_trajectories: bool = False,
+        condition=None,
+        negative_condition=None,
+        cfg_scale: float = 0.0,
+        cfg_scale_schedule: Optional[str] = None,
     ):
         """Sample molecules.
 
@@ -253,6 +287,13 @@ class FlowMatchingModel(nn.Module):
             num_steps: Number of Euler steps.
             batch_size: Required when `batch` is `None`.
             return_trajectories: If True, also return intermediate snapshots.
+            condition: Optional (B, N, D) classifier-free-guidance condition.
+            negative_condition: Optional explicit negative/null condition;
+                defaults to zeros when `condition` is given but this isn't.
+            cfg_scale: Guidance strength `w` in `(1+w)*cond - w*uncond`.
+            cfg_scale_schedule: `None | "linear" | "exponential" | "cosine"`
+                -- ramps `cfg_scale` across sampling steps, see
+                `_scale_schedule`.
         """
 
         x_t = self._sample_noise_like_batch(batch, batch_size)
@@ -267,7 +308,14 @@ class FlowMatchingModel(nn.Module):
             t = T[i - 1]
             dt = T[i] - T[i - 1]
 
-            x_t = self._step(x_t, t, dt)
+            step_cfg_scale = (
+                self._scale_schedule(t, cfg_scale, cfg_scale_schedule)
+                if cfg_scale_schedule else cfg_scale
+            )
+            x_t = self._step(
+                x_t, t, dt, condition=condition, negative_condition=negative_condition,
+                cfg_scale=step_cfg_scale,
+            )
             if return_trajectories:
                 trajectories.append(deepcopy(x_t.detach().cpu()))
 
@@ -276,14 +324,38 @@ class FlowMatchingModel(nn.Module):
 
         return x_t
 
-    def _step(self, x_t, t, step_size):
+    def _step(self, x_t, t, step_size, condition=None, negative_condition=None, cfg_scale=0.0):
         """Single Euler step at time `t` using model-predicted velocity."""
         with torch.no_grad():
-            out_batch = self._call_net(x_t, t)
+            out_batch = self._call_net(
+                x_t, t, condition=condition, negative_condition=negative_condition, cfg_scale=cfg_scale
+            )
 
         x_t["coords"] = self.coords_interpolant.step(x_t, out_batch, t, step_size)
         x_t["atomics"] = self.atomics_interpolant.step(x_t, out_batch, t, step_size)
         return x_t
+
+    @staticmethod
+    def _scale_schedule(t, cfg_scale, schedule_type: str):
+        """Ramp guidance strength across sampling steps.
+
+        Mirrors en_diffusion.py's 3 named schedules, but TABASCO's `t` runs
+        0 (noise) -> 1 (data) during `sample()` -- the OPPOSITE direction of
+        en_diffusion's diffusion `t` (1 -> 0 during denoising) -- so the ramp
+        variable is `x = t` here, not en_diffusion's `x = 1 - t`. `t` is
+        uniform across the batch at a given step (see `sample`'s
+        `T.repeat(1, batch_size)`), so a single scalar suffices.
+        """
+        x = float(t.reshape(-1)[0])
+        schedule_type = schedule_type.lower()
+        if schedule_type == "linear":
+            return cfg_scale * x
+        elif schedule_type == "exponential":
+            return cfg_scale * (x ** 2)
+        elif schedule_type == "cosine":
+            import math
+            return cfg_scale * (1 - math.cos(x * math.pi / 2))
+        raise ValueError(f"Unknown scale schedule: {schedule_type}")
 
     def _sample_noise_like_batch(
         self, batch: Optional[TensorDict] = None, batch_size: Optional[int] = None

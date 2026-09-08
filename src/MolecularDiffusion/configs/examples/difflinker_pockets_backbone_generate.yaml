@@ -30,15 +30,13 @@
 # and INTEGRATION_PLAN.md's Revision 5). mol_size is the TOTAL
 # fragment+linker atom count (NOT including the pocket).
 #
-# WORKING GENERATION. Unlike the plain ZINC/GEOM pretrained checkpoints,
-# this one PASSES Tester's smoke test (attempt 7, 3/3 seeds, 9/9 trials,
-# zero exceptions, non-degenerate 3D structures) despite sharing the same
-# `tanh: false` unbounded-coordinate-update weight property Revision 7
-# root-caused for the non-pocket family -- `DynamicsWithPockets`'s sparser
-# distance-cutoff graph apparently does not compound the same blow-up the
-# dense fully-connected graph does (observed, not fully root-caused; see
-# Revision 9's Tester Log entry). max_generate_attempts below still bounds a
-# full-restart retry loop as a safety margin, matching every other
+# WORKING GENERATION. PASSES Tester's smoke test (attempt 7, 3/3 seeds,
+# 9/9 trials, zero exceptions, non-degenerate 3D structures).
+# `DynamicsWithPockets` builds its own distance-cutoff edges and is called
+# with `edge_mask=None`, so this checkpoint was never exposed to the
+# edge-mask sign convention that used to break `pockets_unconditioned` --
+# see FINAL_REPORT.md's 2026-09-07 section. max_generate_attempts below
+# still bounds a full-restart retry loop as a safety margin, every other
 # pretrained-checkpoint config's convention.
 
 defaults:
