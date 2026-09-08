@@ -66,6 +66,10 @@ if user_docs_only:
             "autoapi/**",
             "adding_new_models.md",
             "model_integrations/**",
+            # Same class of file as model_integrations above: per-model working
+            # ledgers, not user docs. They are in no toctree, so without this
+            # the strict user-only build fails the moment one is committed.
+            "model_novel/**",
         ]
     )
 
@@ -96,8 +100,14 @@ html_meta = {
 # Link checking is part of documentation CI. Avoid anchor checks because many
 # scientific publishers generate anchors dynamically.
 linkcheck_anchors = False
-linkcheck_timeout = 20
-linkcheck_retries = 2
+# 20s was not enough for zenodo.org, which reliably read-timed-out and, under
+# -W, failed the whole docs job.
+linkcheck_timeout = 60
+# The reference lists resolve ~40 arxiv.org URLs. Fired 5-wide from a shared
+# CI runner IP that reads as a burst and earns a 429, which -W turns into a
+# build failure -- so check them slowly and retry patiently instead.
+linkcheck_workers = 2
+linkcheck_retries = 4
 linkcheck_ignore = [
     # These publisher pages are valid but reject automated link-check requests.
     r"https://chemrxiv\.org/.*",
@@ -106,6 +116,12 @@ linkcheck_ignore = [
     # ACS resolves every 10.1021 DOI to pubs.acs.org, which 403s bots.
     r"https://doi\.org/10\.1021/.*",
     r"https://pubs\.acs\.org/doi/10\.1021/jacs\.5c19960",
+    # Nature resolves every 10.1038 DOI to nature.com, which 403s bots -- same
+    # situation as the ACS entry above.
+    r"https://doi\.org/10\.1038/.*",
+    # OpenReview answers automated requests with a bot-challenge redirect
+    # (/forum -> /challenge?redirect=...), never the paper.
+    r"https://openreview\.net/.*",
 ]
 
 html_theme_options = {
