@@ -8,6 +8,10 @@ def compute_mean_mad_from_dataloader(props, task_names):
         mean = torch.mean(values)
         ma = torch.abs(values - mean)
         mad = torch.mean(ma)
+        if mad == 0:
+            # ponytail: constant property (e.g. unaugmented total_charge/num_graph)
+            # -> (x-mean) is also 0, so mad=1 keeps normalization a no-op instead of 0/0=NaN.
+            mad = torch.ones_like(mad)
         property_norms[property_key] = {}
         property_norms[property_key]["mean"] = mean
         property_norms[property_key]["mad"] = mad
