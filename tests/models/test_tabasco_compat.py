@@ -121,3 +121,49 @@ def test_tabasco_factory_computes_missing_dataset_stats_from_cached_lists():
     assert factory.dataset_stats["atom_count_histogram"] == {2: 1, 3: 2}
     assert factory.dataset_stats["all_smiles"] == ["C", "O", "N"]
     assert factory.dataset_stats["max_atoms"] == 3
+
+
+def _tiny_tabasco_task(histogram):
+    from MolecularDiffusion.modules.tasks.diffusion_tabasco import TabascoDiffusionTask
+
+    return TabascoDiffusionTask(
+        transformer_config=dict(
+            spatial_dim=3, atom_dim=4, num_heads=2, num_layers=1, hidden_dim=8
+        ),
+        coords_interpolant_config={"key": "coords"},
+        atomics_interpolant_config={"key": "atomics"},
+        flow_matching_config={},
+        num_atom_types=4,
+        dataset_stats={"max_atoms": 50, "atom_count_histogram": histogram},
+    )
+
+
+def test_tabasco_node_dist_follows_data_stats_restored_by_on_load_checkpoint():
+    """Regression: generate rebuilds the task from model_config (empty histogram),
+    then on_load_checkpoint probes node_dist_model BEFORE restoring data_stats.
+    The probe used to cache an empty-histogram sampler -> uniform 5-29 sizes."""
+    from MolecularDiffusion.core.engine_lightning import EngineLightning
+
+    task = _tiny_tabasco_task(histogram={})
+    wrapper = EngineLightning(
+        optimizer_config={"optimizer_choice": "adam", "lr": 1e-3}, task=task
+    )
+    ckpt = {
+        "node_dist_model": task.node_dist_model,  # what on_save_checkpoint stores
+        "data_stats": {
+            "max_num_atoms": 50, "num_atoms_histogram": {42: 7},
+            "spatial_dim": 3, "atom_dim": 4, "all_smiles": [],
+        },
+    }
+    wrapper.on_load_checkpoint(ckpt)
+
+    random.seed(0)
+    assert set(task.node_dist_model.sample(200).tolist()) == {42}
+    assert task.n_node_dist == {42: 7}
+
+    # An explicitly assigned sampler (cli/train.py fine-tune restore) still wins.
+    from MolecularDiffusion.modules.tasks.diffusion_tabasco import TabascoNodeDistribution
+
+    fresh = TabascoNodeDistribution({"num_atoms_histogram": {9: 1}})
+    task.node_dist_model = fresh
+    assert task.node_dist_model is fresh

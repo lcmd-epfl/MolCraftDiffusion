@@ -644,13 +644,26 @@ class TabascoDiffusionTask(nn.Module):
 
     @property
     def node_dist_model(self):
-        """Return a node distribution sampler (EDM compatibility)."""
-        if self._node_dist_model is None:
-            self._node_dist_model = TabascoNodeDistribution(
-                self.tabasco_model.data_stats
-            )
-        return self._node_dist_model
-    
+        """Return a node distribution sampler (EDM compatibility).
+
+        Derived from ``tabasco_model.data_stats`` on every read, unless a
+        sampler was assigned explicitly. Deliberately NOT cached:
+        EngineLightning.on_load_checkpoint reads this *before* it restores
+        the checkpoint's data_stats, and a cached sampler froze the
+        constructor's (usually empty) histogram, so generation silently
+        fell back to uniform 5-29 atoms.
+        """
+        if self._node_dist_model is not None:
+            return self._node_dist_model
+        return TabascoNodeDistribution(self.tabasco_model.data_stats)
+
+    @node_dist_model.setter
+    def node_dist_model(self, value):
+        # Explicit sampler wins over data_stats: cli/train.py re-applies the
+        # new dataset's sampler after a fine-tune load; cli/generate.py's
+        # fallback loader and edm_stat.pkl sidecar assign one too.
+        self._node_dist_model = value
+
     @property
     def n_node_dist(self):
         """Direct access to node distribution histogram (EDM compatibility).

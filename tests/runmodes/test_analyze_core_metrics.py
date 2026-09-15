@@ -231,6 +231,25 @@ class TestSetLevelMetrics:
 
         assert _set_level_metrics(["CCO", None, ""])["n_valid_smiles"] == 1
 
+    def test_smiles_standardised_before_comparison(self):
+        """Explicit [H] and stereo notation must not make a molecule novel."""
+        from MolecularDiffusion.runmodes.analyze.compute_metrics import (
+            _set_level_metrics,
+        )
+
+        alanine_explicit_h = "[H]OC(=O)C([H])(N([H])[H])C([H])([H])[H]"
+        train = {"C[C@H](N)C(=O)O"}  # alanine, written with stereo
+        assert _set_level_metrics([alanine_explicit_h], train)[
+            "novelty"
+        ] == pytest.approx(0.0)
+        assert _set_level_metrics(["c1ccccc1"], train)[
+            "novelty"
+        ] == pytest.approx(1.0)
+        # same molecule, differing only in H / stereo notation -> one unique
+        assert _set_level_metrics(["C[C@@H](N)C(=O)O", alanine_explicit_h])[
+            "uniqueness"
+        ] == pytest.approx(0.5)
+
 
 class TestPerceiveMol:
     def test_unreadable_file_returns_none_without_raising(self, tmp_path):
@@ -287,3 +306,97 @@ class TestLoadTrainSmiles:
         p = tmp_path / "train.csv"
         p.write_text("smiles,x\nCCO,1\nc1ccccc1,2\n")
         assert _load_train_smiles(str(p)) == {"CCO", "c1ccccc1"}
+
+
+# ---------------------------------------------------------------------------
+# PoseBusters: one failing molecule must not take the run down
+# ---------------------------------------------------------------------------
+
+_METHANE = (
+    "5\n\n"
+    "C 0.000 0.000 0.000\n"
+    "H 0.629 0.629 0.629\n"
+    "H -0.629 -0.629 0.629\n"
+    "H -0.629 0.629 -0.629\n"
+    "H 0.629 -0.629 -0.629\n"
+)
+_WATER = "3\n\nO 0.000 0.000 0.000\nH 0.757 0.586 0.000\nH -0.757 0.586 0.000\n"
+_PB_CHECKS = [
+    "mol_pred_loaded", "sanitization", "inchi_convertible",
+    "all_atoms_connected", "bond_lengths", "bond_angles",
+    "internal_steric_clash", "aromatic_ring_flatness",
+    "non-aromatic_ring_non-flatness", "double_bond_flatness",
+    "internal_energy",
+]
+
+
+class TestPosebusterFailure:
+    @staticmethod
+    def _fake_buster(fail_natoms, hang=False):
+        """Stand-in for the forked PoseBusters runner (fork inherits it)."""
+        import time
+
+        import pandas as pd
+
+        def run(mols, queue):
+            if mols[0].GetNumAtoms() == fail_natoms:
+                if hang:
+                    time.sleep(60)
+                queue.put(RuntimeError("boom"))
+                return
+            queue.put(pd.DataFrame({c: [True] for c in _PB_CHECKS}))
+
+        return run
+
+    def test_failed_molecule_keeps_a_row(self, tmp_path, monkeypatch):
+        pytest.importorskip("posebusters")
+        pytest.importorskip("openbabel")
+        import argparse
+
+        import pandas as pd
+
+        from MolecularDiffusion.runmodes.analyze import compute_metrics
+        from MolecularDiffusion.utils import geom_metrics
+
+        (tmp_path / "good.xyz").write_text(_METHANE)
+        (tmp_path / "bad.xyz").write_text(_WATER)
+        monkeypatch.setattr(
+            geom_metrics, "_run_buster", self._fake_buster(fail_natoms=3)
+        )
+        out = tmp_path / "out" / "m.csv"
+        compute_metrics.runner(argparse.Namespace(
+            input=str(tmp_path), output=str(out), metrics="posebuster",
+            portion=1.0, recheck_topo=False, check_neutrality=False,
+            skip_atoms=None, split=1,
+        ))
+
+        df = pd.read_csv(tmp_path / "out" / "m_postbuster.csv")
+        assert len(df) == 2
+        rows = df.set_index("filename")
+        assert not rows.loc["bad.xyz", "valid_posebuster"]
+        assert not rows.loc["bad.xyz", "valid_posebuster_connected"]
+        assert "boom" in rows.loc["bad.xyz", "posebuster_error"]
+        assert rows.loc["good.xyz", "valid_posebuster"]
+        assert rows.loc["good.xyz", "num_atoms"] == 5
+        assert rows.loc["bad.xyz", "num_atoms"] == 3
+
+    def test_timeout_keeps_a_row_only_when_named(self, monkeypatch):
+        pytest.importorskip("posebusters")
+        from rdkit import Chem
+
+        from MolecularDiffusion.utils import geom_metrics
+
+        monkeypatch.setattr(
+            geom_metrics, "_run_buster",
+            self._fake_buster(fail_natoms=3, hang=True),
+        )
+        mols = [Chem.MolFromSmiles("C"), Chem.MolFromSmiles("CCC")]
+
+        named = geom_metrics.run_postbuster(mols, timeout=1, names=["a", "b"])
+        assert named["filename"].tolist() == ["a", "b"]
+        assert named["posebuster_error"].isna().tolist() == [True, False]
+
+        # names=None is the training-eval path: failed batches still dropped
+        legacy = geom_metrics.run_postbuster(mols, timeout=1)
+        assert len(legacy) == 1
+        assert "filename" not in legacy and "posebuster_error" not in legacy

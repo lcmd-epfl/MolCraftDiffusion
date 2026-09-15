@@ -311,12 +311,45 @@ def _rdkit_valid(mol):
         return False
 
 
+def _standardize_smiles(smiles):
+    """Canonical SMILES with no explicit H and no stereo; None if unparseable.
+
+    Every set metric compares strings, so both sides must pass through this.
+    Perceived SMILES carry explicit ``[H]`` and reference sets are canonical
+    heavy-atom SMILES (some with stereo): compared raw they match nothing and
+    novelty sits at ~1.0 whatever the model. Formal charges and every fragment
+    are kept on purpose -- the largest fragment is not taken.
+    """
+    from rdkit import Chem  # noqa: PLC0415
+
+    if not isinstance(smiles, str) or not smiles:
+        return None
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
+        return Chem.MolToSmiles(Chem.RemoveHs(mol), isomericSmiles=False)
+    except Exception:  # noqa: BLE001 -- a bad SMILES is data, not an error
+        return None
+
+
 def _set_level_metrics(smiles, train_smiles=None):
-    """Uniqueness, novelty and diversity over the valid molecules."""
+    """Uniqueness, novelty and diversity over the valid molecules.
+
+    Generated and reference SMILES are both standardised with
+    ``_standardize_smiles``; a generated SMILES RDKit cannot parse does not
+    count as a valid SMILES.
+    """
     from rdkit import Chem  # noqa: PLC0415
     from rdkit.Chem import AllChem, DataStructs  # noqa: PLC0415
 
-    smiles = [s for s in smiles if s]
+    raw = [s for s in smiles if s]
+    smiles = [s for s in map(_standardize_smiles, raw) if s]
+    if len(smiles) < len(raw):
+        logging.warning(
+            f"{len(raw) - len(smiles)} generated SMILES could not be parsed "
+            "by RDKit and are excluded from uniqueness/novelty/diversity"
+        )
     out = {"n_valid_smiles": len(smiles), "uniqueness": None,
            "novelty": None, "diversity": None}
     if not smiles:
@@ -326,7 +359,18 @@ def _set_level_metrics(smiles, train_smiles=None):
     out["uniqueness"] = len(unique) / len(smiles)
 
     if train_smiles:
-        known = set(train_smiles)
+        # one pass per run (~1 min for GEOM's 292k); only strings are kept
+        known, n_skipped = set(), 0
+        for s in train_smiles:
+            std = _standardize_smiles(s)
+            if std is None:
+                n_skipped += 1
+            else:
+                known.add(std)
+        logging.info(
+            f"Reference SMILES standardised: {len(known)} unique kept, "
+            f"{n_skipped} skipped as unparseable by RDKit"
+        )
         out["novelty"] = sum(s not in known for s in unique) / len(unique)
 
     mols = [m for m in (Chem.MolFromSmiles(s) for s in unique) if m is not None]
@@ -601,11 +645,14 @@ def runner(args):
             neutral_mols = [None] * len(xyz_passed)
 
 
-        postbuster_results = run_postbuster(mols, timeout=3000)
+        names = [os.path.basename(xyz) for xyz in xyz_passed]
+        # names= keeps a row (tagged posebuster_error) for every molecule
+        # PoseBusters fails or times out on, so columns align by filename below
+        postbuster_results = run_postbuster(mols, timeout=3000, names=names)
         if postbuster_results is not None:
-            num_atoms_list = [mol.GetNumAtoms() for mol in mols]
-            postbuster_results['num_atoms'] = num_atoms_list
-            
+            num_atoms_by_name = {n: mol.GetNumAtoms() for n, mol in zip(names, mols)}
+            postbuster_results['num_atoms'] = postbuster_results['filename'].map(num_atoms_by_name)
+
             posebuster_checks = [
                 'bond_lengths', 'bond_angles', 'internal_steric_clash',
                 'aromatic_ring_flatness', 'non-aromatic_ring_non-flatness',
@@ -614,6 +661,14 @@ def runner(args):
             postbuster_results['valid_posebuster'] = postbuster_results[posebuster_checks].all(axis=1)
             posebuster_checks_connected = posebuster_checks + ['all_atoms_connected']
             postbuster_results['valid_posebuster_connected'] = postbuster_results[posebuster_checks_connected].all(axis=1)
+            if 'posebuster_error' in postbuster_results:
+                # .all() skips NaN, so a molecule that never ran would pass
+                failed = postbuster_results['posebuster_error'].notna()
+                postbuster_results.loc[failed, ['valid_posebuster', 'valid_posebuster_connected']] = False
+                logging.warning(
+                    f"PoseBusters failed or timed out on {int(failed.sum())} of "
+                    f"{len(failed)} molecules; kept with valid_posebuster=False"
+                )
             if args.output is None:
                 postbuster_output_path = _default_metric_path(metrics_input, "postbuster_metrics.csv")
                 hist_path = _default_metric_path(metrics_input, "postbuster_molecular_size_histogram.png")
@@ -622,8 +677,9 @@ def runner(args):
                 postbuster_output_path = f"{base}_postbuster{ext}"
                 hist_path = f"{base}_postbuster_molecular_size_histogram.png"
 
-            postbuster_results['neutral_molecule'] = neutral_mols
-            postbuster_results["filename"] = [os.path.basename(xyz) for xyz in xyz_passed]
+            postbuster_results['neutral_molecule'] = postbuster_results['filename'].map(dict(zip(names, neutral_mols)))
+            # moved last, where it has always been in the CSV
+            postbuster_results["filename"] = postbuster_results.pop("filename")
             postbuster_results = _add_db_row_ids(postbuster_results, metrics_input)
             postbuster_results.to_csv(postbuster_output_path, index=False)
             result_tables.append(("posebuster", postbuster_results, postbuster_output_path))

@@ -703,7 +703,7 @@ def _run_buster(mols, queue):
         queue.put(e)
 
 
-def run_postbuster(mols, timeout=60, batch_size=1):
+def run_postbuster(mols, timeout=60, batch_size=1, names=None):
     """
     Run PoseBusters on a list of RDKit molecules, optionally in batches, with a timeout per batch.
     
@@ -715,6 +715,11 @@ def run_postbuster(mols, timeout=60, batch_size=1):
         timeout (int, optional): Maximum time (in seconds) allowed for each batch calculation. Default is 60.
         batch_size (int, optional): Number of molecules to process in a single batch. 
                                     If None, processes all molecules in one batch. Default is None.
+        names (list of str, optional): One label per molecule. When given, every row gets a
+                                    ``filename`` column, and a batch that fails or times out
+                                    yields one row per molecule (checks NaN, ``posebuster_error``
+                                    set) instead of being dropped. Default None keeps the old
+                                    drop-the-batch behaviour that training eval relies on.
                                     
     Returns:
         pd.DataFrame or None: DataFrame containing PoseBusters results for all processed molecules.
@@ -729,7 +734,16 @@ def run_postbuster(mols, timeout=60, batch_size=1):
         batch_size = len(mols)
 
     all_results = []
+    n_succeeded = 0
     num_batches = (len(mols) + batch_size - 1) // batch_size
+
+    def _keep_failed(i, error):
+        # without a row the caller's per-molecule columns misalign and crash
+        if names is not None:
+            all_results.append(pd.DataFrame({
+                "filename": names[i * batch_size : (i + 1) * batch_size],
+                "posebuster_error": error,
+            }))
     
     for i in tqdm(range(num_batches), desc="Processing PoseBusters batches"):
         batch_mols = mols[i * batch_size : (i + 1) * batch_size]
@@ -743,21 +757,28 @@ def run_postbuster(mols, timeout=60, batch_size=1):
             process.terminate()
             process.join()
             logger.warning(f"PoseBusters timed out after {timeout} seconds (Batch {i+1}/{num_batches}). Skipping batch.")
+            _keep_failed(i, f"timed out after {timeout} s")
             continue
         
         try:
             result = queue.get(timeout=5)
         except Exception:
             logger.error(f"PoseBusters failed to return result (Batch {i+1}/{num_batches}). Skipping batch.")
+            _keep_failed(i, "no result returned")
             continue
 
         if isinstance(result, Exception):
             logger.error(f"PoseBusters failed with an exception: {result}. Skipping batch.")
+            _keep_failed(i, f"{type(result).__name__}: {result}")
             continue
         
+        if names is not None:
+            result["filename"] = names[i * batch_size : (i + 1) * batch_size]
         all_results.append(result)
+        n_succeeded += 1
 
-    if not all_results:
+    # no batch ran: None as before, there are no check columns to report
+    if n_succeeded == 0:
         return None
 
     try:

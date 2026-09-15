@@ -671,12 +671,16 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         seed_everything(cfg.seed, workers=True)
 
-    # Reconcile diffusion_steps: Prefer Root config, then Tasks config
-    diffusion_steps = cfg.get("diffusion_steps", 0)
-    if (diffusion_steps == 0 or diffusion_steps == 900) and "diffusion_steps" in cfg.tasks:
-        # Fallback to tasks config if root is default or zero
+    # Reconcile diffusion_steps: a root value > 0 always wins; only 0, None or an
+    # absent root key falls back to tasks.diffusion_steps. There is deliberately
+    # no "900 means unset" sentinel: it made a root 900 silently lose to a
+    # tasks default (e.g. diffusion_painn's 400).
+    diffusion_steps = cfg.get("diffusion_steps") or 0
+    if diffusion_steps == 0 and "diffusion_steps" in cfg.tasks:
         diffusion_steps = cfg.tasks.diffusion_steps
         log.info(f"Using diffusion_steps from tasks config: {diffusion_steps}")
+    elif diffusion_steps > 0:
+        log.info(f"Using diffusion_steps from root config: {diffusion_steps}")
 
     task = load_model(
         cfg.chkpt_directory,
