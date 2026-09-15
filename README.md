@@ -145,6 +145,20 @@ The analysis suite covers structural validation, geometry optimisation and compa
 - [Tutorials](https://preghosh.github.io/MolCraftDiffusion/tutorials/index.html)
 - [Configuration templates](https://preghosh.github.io/MolCraftDiffusion/config_templates.html)
 
+## Data and Trained Models
+
+The datasets, trained checkpoints and configuration files behind each paper are
+archived on Zenodo. Each record is citable by its own DOI and is linked to the
+corresponding publication.
+
+| Archive | Contents | Paper |
+|---|---|---|
+| [10.5281/zenodo.19511401](https://doi.org/10.5281/zenodo.19511401) | `data.zip`, `models.zip`, `cfg_examples.zip` for every experiment in the platform paper | [Modular Framework for 3D Molecular Generation](https://pubs.acs.org/doi/10.1021/jacs.5c19960) |
+| [10.5281/zenodo.20829155](https://doi.org/10.5281/zenodo.20829155) | `data.zip`, `models.zip` for the augmented and annotated training sets and the conditioned diffusion models | [A Diffusion Framework for Geometrically Valid and Practically Viable 3D Molecular Generation](https://chemrxiv.org/doi/full/10.26434/chemrxiv.15005231/v1) |
+
+Model weights and datasets are also mirrored on
+[Hugging Face](https://huggingface.co/pregH/MolecularDiffusion).
+
 ## Project Structure
 
 ```

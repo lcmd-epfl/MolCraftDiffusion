@@ -1,0 +1,38 @@
+name: Bug report
+description: Report something that does not work as documented
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The command you ran, plus the config file or script if there is one.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Traceback or log output
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: MolCraftDiffusion version
+      description: Output of `pip show molcraftdiffusion`, or the commit hash.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Platform and Python version
+      placeholder: Ubuntu 22.04, Python 3.11, CUDA 12.1
+    validations:
+      required: true
