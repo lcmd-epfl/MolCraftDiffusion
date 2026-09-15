@@ -138,6 +138,20 @@ MolCraftDiff analyze --help
 
 The analysis suite covers structural validation, geometry optimisation and comparison, electronic properties, molecular representations, and feature extraction. See the [analysis tutorial](https://preghosh.github.io/MolCraftDiffusion/tutorials/09_analyze.html) for commands and optional dependencies.
 
+## Tutorials and Tests
+
+Twelve step-by-step tutorials ship with the repository in
+[`docs/tutorials/`](./docs/tutorials), covering data preparation, training a
+diffusion model, regressors, guidance models, fine-tuning, generation,
+structure-guided and property-directed sampling, sweeps, evaluation and
+analysis. Each is self-contained, with the commands and the configuration
+inline, and the templates they copy from are in [`configs/`](./configs). They
+are also rendered in the
+[documentation](https://preghosh.github.io/MolCraftDiffusion/tutorials/index.html).
+
+The automated test suite is separate, in [`tests/`](./tests), and is run with
+`just check`.
+
 ## Documentation
 
 - [Installation](https://preghosh.github.io/MolCraftDiffusion/installation.html)
