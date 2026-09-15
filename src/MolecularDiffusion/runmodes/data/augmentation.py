@@ -5,21 +5,30 @@ Handles random charge, distortion, and size augmentation.
 """
 
 import sys
+import os
 import random
 import logging
+import argparse
+import subprocess
+import shutil
+import glob
+import csv
 from pathlib import Path
-from typing import List, Tuple,  Optional
+from typing import List, Tuple, Dict, Any, Optional
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
+from ase import Atoms, data
 from ase.db import connect
 from ase.symbols import symbols2numbers
 from mendeleev import element
 
 # Try importing PyG dependencies (similar to random_charge.py)
 try:
+    from torch_geometric.data import Data
+    from torch_cluster import radius_graph
     from torch_geometric.utils import to_networkx
     import networkx as nx
 except ImportError:
@@ -135,8 +144,63 @@ def augment_charge(
         np.random.seed(seed)
 
     if is_db_mode:
-        # DB Implementation
-        pass
+        db_path = Path(input_source)
+        output_db_path = Path(output_target)
+
+        db = connect(str(db_path))
+        output_db = connect(str(output_db_path))
+
+        all_ids = [row.id for row in db.select()]
+        if fraction < 1.0:
+            all_ids = random.sample(all_ids, int(len(all_ids) * fraction))
+
+        for row_id in tqdm(all_ids, desc="Augmenting Charge (DB)"):
+            try:
+                row = db.get(id=row_id)
+                atoms_obj = row.toatoms()
+                atoms = list(atoms_obj.get_chemical_symbols())
+                coords = atoms_obj.get_positions()
+
+                n_change = random.randint(1, max_h_change)
+                actions = []
+                if len([a for a in atoms if a == 'H']) >= n_change:
+                    actions.append('remove')
+                if any(a not in ['C', 'H'] for a in atoms):
+                    actions.append('add')
+
+                if not actions:
+                    continue
+                action = random.choice(actions)
+
+                curr_atoms, curr_coords = list(atoms), coords.copy()
+                total_charge = 0
+
+                valid = True
+                for _ in range(n_change):
+                    res = None
+                    if action == 'add':
+                        res = add_h_unit(curr_atoms, curr_coords)
+                    elif action == 'remove':
+                        res = remove_h_unit(curr_atoms, curr_coords)
+
+                    if res:
+                        curr_atoms, curr_coords, inc = res
+                        total_charge += inc
+                    else:
+                        valid = False
+                        break
+
+                if not valid:
+                    continue
+
+                new_atoms_obj = Atoms(symbols=curr_atoms, positions=curr_coords)
+                kv = row.key_value_pairs.copy()
+                kv['total_charge'] = total_charge
+                output_db.write(new_atoms_obj, key_value_pairs=kv)
+                logger.info(f"Augmented row {row_id}: {action} {n_change} H, charge {total_charge}")
+
+            except Exception as e:
+                logger.error(f"Failed to process row {row_id}: {e}")
     else:
         # XYZ Implementation
         input_dir = Path(input_source)
@@ -259,9 +323,13 @@ def augment_distortion(
         
         db = connect(str(db_path))
         output_db = connect(str(output_db_path))
-        num_entries = len(db)
-        
-        for row in tqdm(db.select(), total=num_entries, desc="Distorting molecules"):
+
+        all_ids = [row.id for row in db.select()]
+        if fraction < 1.0:
+            all_ids = random.sample(all_ids, int(len(all_ids) * fraction))
+
+        for row_id in tqdm(all_ids, desc="Distorting molecules"):
+            row = db.get(id=row_id)
             try:
                 atoms = row.toatoms()
                 coords = torch.tensor(atoms.get_positions(), dtype=torch.float32)
@@ -307,7 +375,9 @@ def augment_distortion(
         output_dir.mkdir(exist_ok=True)
         
         files = sorted(list(input_dir.glob("*.xyz")))
-        
+        if fraction < 1.0:
+            files = random.sample(files, int(len(files) * fraction))
+
         records = []
         for f in tqdm(files, desc="Distorting XYZs"):
             try:
