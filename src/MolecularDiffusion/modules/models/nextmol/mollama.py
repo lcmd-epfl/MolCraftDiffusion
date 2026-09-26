@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 
 import torch
+from MolecularDiffusion.device import get_device
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def sample_smiles(  # noqa: PLR0913
     """
     import selfies as sf
 
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = device or (str(get_device()))
     model, tokenizer = load_mollama(model_id, device, dtype=dtype)
     try:
         bos_token_id = tokenizer.bos_token_id
@@ -166,5 +167,7 @@ def sample_smiles(  # noqa: PLR0913
         del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
     return sorted(out)[:n]

@@ -310,7 +310,11 @@ class EMAOptimizer(torch.optim.Optimizer):
         if self.stream is not None:
             self.stream.wait_stream(torch.cuda.current_stream())
 
-        with torch.cuda.stream(self.stream):
+        # torch.cuda.stream(None) raises on macOS (probes torch.mps.current_device).
+        stream_ctx = (
+            torch.cuda.stream(self.stream) if self.stream is not None else contextlib.nullcontext()
+        )
+        with stream_ctx:
             current_model_state = tuple(
                 param.data.to(self.device, non_blocking=True)
                 for param in self.all_parameters()

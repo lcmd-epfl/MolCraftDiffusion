@@ -11,6 +11,7 @@ import torch.nn as nn
 import itertools
 
 import torch
+from MolecularDiffusion.device import get_device
 
 from MolecularDiffusion.modules.models.syncogen.api.atomics.coordinates import Coordinates
 from MolecularDiffusion.modules.models.syncogen.api.atomics.pharmacophores import ShepherdPharmacophores
@@ -70,7 +71,7 @@ class Diffusion(nn.Module):
         data_manager: Any,
         losses: Sequence[LossBase] = (),
         device: Optional[torch.device] = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
+            str(get_device())
         ),
         augmentations: Optional[list[str]] = ["center", "normalize", "random_rotate"],
         normalization_scale: Optional[float] = 1.0 / COORDS_STD,

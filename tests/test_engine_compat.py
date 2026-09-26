@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from tests.conftest import TinyGenerationTask, TinyTask
@@ -15,6 +16,7 @@ def test_engine_initializes_on_cpu_and_uses_default_graph_collate(monkeypatch):
     monkeypatch.delenv("SLURM_PROCID", raising=False)
     monkeypatch.delenv("SLURM_GPUS_ON_NODE", raising=False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    monkeypatch.setenv("MOLCRAFT_DEVICE", "cpu")  # no-GPU box: keep Apple MPS out too
     monkeypatch.setattr(comm, "get_world_size", lambda: 1)
     monkeypatch.setattr(comm, "get_rank", lambda: 0)
 
@@ -38,6 +40,32 @@ def test_engine_initializes_on_cpu_and_uses_default_graph_collate(monkeypatch):
     assert task.device == torch.device("cpu")
 
 
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="Apple MPS not available")
+def test_engine_picks_mps_on_mac(monkeypatch):
+    from MolecularDiffusion.core.engine import Engine
+    from MolecularDiffusion.utils import comm
+
+    monkeypatch.delenv("SLURM_PROCID", raising=False)
+    monkeypatch.delenv("SLURM_GPUS_ON_NODE", raising=False)
+    monkeypatch.delenv("MOLCRAFT_DEVICE", raising=False)
+    monkeypatch.setattr(comm, "get_world_size", lambda: 1)
+    monkeypatch.setattr(comm, "get_rank", lambda: 0)
+
+    task = TinyTask()
+    engine = Engine(
+        task=task,
+        train_set=["train"],
+        valid_set=["valid"],
+        test_set=["test"],
+        optimizer=None,
+        logger="logging",
+    )
+
+    assert engine.device.type == "mps"
+    assert engine.pin_memory is False
+    assert next(task.parameters()).device.type == "mps"
+
 def test_engine_inference_mode_forces_logging_logger(monkeypatch):
     from MolecularDiffusion.core import LoggingLogger
     from MolecularDiffusion.core.engine import Engine
@@ -46,6 +74,7 @@ def test_engine_inference_mode_forces_logging_logger(monkeypatch):
     monkeypatch.delenv("SLURM_PROCID", raising=False)
     monkeypatch.delenv("SLURM_GPUS_ON_NODE", raising=False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    monkeypatch.setenv("MOLCRAFT_DEVICE", "cpu")  # no-GPU box: keep Apple MPS out too
     monkeypatch.setattr(comm, "get_world_size", lambda: 1)
     monkeypatch.setattr(comm, "get_rank", lambda: 0)
 
@@ -172,6 +201,7 @@ def test_saved_hyperparameters_exclude_datasets(monkeypatch):
     monkeypatch.delenv("SLURM_PROCID", raising=False)
     monkeypatch.delenv("SLURM_GPUS_ON_NODE", raising=False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    monkeypatch.setenv("MOLCRAFT_DEVICE", "cpu")  # no-GPU box: keep Apple MPS out too
     monkeypatch.setattr(comm, "get_world_size", lambda: 1)
     monkeypatch.setattr(comm, "get_rank", lambda: 0)
 

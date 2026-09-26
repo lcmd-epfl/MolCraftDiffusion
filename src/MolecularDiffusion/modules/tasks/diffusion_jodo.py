@@ -48,6 +48,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 import torch
+from MolecularDiffusion.device import get_device
 from torch import nn
 from torch.nn import functional as F  # noqa: N812
 
@@ -727,6 +728,8 @@ class JodoDiffusionTask(nn.Module):
         """
         if self.device.type == "cpu" and torch.cuda.is_available():
             self.to("cuda")
+        elif self.device.type == "cpu" and get_device().type == "mps":
+            self.to(torch.device("mps"))
 
     @torch.no_grad()
     def sample(  # noqa: PLR0913

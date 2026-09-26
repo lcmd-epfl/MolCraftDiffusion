@@ -96,6 +96,7 @@ from typing import Any, ClassVar, Optional, Sequence
 
 import numpy as np
 import torch
+from MolecularDiffusion.device import get_device
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -329,7 +330,7 @@ class ElucidationGenerator:
         self.top_k = tuple(int(k) for k in top_k)
         self.seed = int(seed)
         self.output_path = output_path
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or (str(get_device()))
 
     # --- hooks ---------------------------------------------------------------
 

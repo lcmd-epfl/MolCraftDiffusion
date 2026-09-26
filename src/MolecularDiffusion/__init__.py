@@ -2,7 +2,14 @@
 MolecularDiffusion - A unified generative AI framework for 3D molecular generation.
 """
 
+import os as _os
+import sys as _sys
 from importlib.metadata import PackageNotFoundError, version
+
+# macOS only: let aten ops Apple MPS lacks fall back to CPU instead of raising.
+# torch reads this when it is first imported, so it has to be set here.
+if _sys.platform == "darwin":
+    _os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 _BANNER = r"""
 ░█▄█░█▀█░█░░░█▀▀░█▀▄░█▀█░█▀▀░▀█▀░█▀▄░▀█▀░█▀▀░█▀▀

@@ -9,7 +9,6 @@ import torch
 from ase import Atoms, neighborlist
 from ase.data import covalent_radii
 from ase.data.vdw_alvarez import vdw_radii
-from morfeus import SASA
 from networkx.algorithms import community as nx_comm
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -724,6 +723,8 @@ def atom_geom(z, coords):
         print("Some atoms are incredibly close to each other!")
 
     # a_volume, a_surface = atomic_vs(coords, vdw_radii)
+    from morfeus import SASA  # lazy: only SASA features need morfeus-ml
+
     sasa = SASA(z, coords, vdw_radii, probe_radius=0.0, density=0.01)
     sa_volume = np.fromiter(sasa.atom_volumes.values(), dtype=float)
     sa_surface = np.fromiter(sasa.atom_areas.values(), dtype=float)
@@ -950,6 +951,8 @@ def atom_geom_v2(z, coords):
         print("Some atoms are incredibly close to each other!")
 
     # a_volume, a_surface = atomic_vs(coords, vdw_radii)
+    from morfeus import SASA  # lazy: only SASA features need morfeus-ml
+
     sasa = SASA(z, coords, vdw_radii, probe_radius=0.0, density=0.01)
     sa_volume = np.fromiter(sasa.atom_volumes.values(), dtype=float)
     sa_surface = np.fromiter(sasa.atom_areas.values(), dtype=float)

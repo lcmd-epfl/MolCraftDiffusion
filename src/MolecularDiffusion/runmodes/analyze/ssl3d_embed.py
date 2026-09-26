@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+from MolecularDiffusion.device import get_device
 import torch.nn as nn
 
 
@@ -132,7 +133,7 @@ def load_ssl3d_task(checkpoint_path: str | Path, device: str | None = None):
     """
     path = Path(checkpoint_path)
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = str(get_device())
 
     ckpt = torch.load(path, map_location=device, weights_only=False)
     atom_vocab = _read_atom_vocab(ckpt)

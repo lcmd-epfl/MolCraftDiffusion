@@ -134,10 +134,10 @@ class SSL3DFeaturizer(BaseFeaturizer):
         edge_radius: float = 5.0,
         atom_vocab: list[str] | None = None,
     ) -> None:
-        import torch
+        from MolecularDiffusion.device import get_device
         from .ssl3d_embed import load_ssl3d_task
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or str(get_device())
         self.batch_size = batch_size
         self.pooling = pooling
         self.edge_radius = edge_radius

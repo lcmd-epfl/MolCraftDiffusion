@@ -22,6 +22,7 @@ from collections import Counter
 from typing import Dict, List, Optional
 
 import torch
+from MolecularDiffusion.device import get_device
 import torch.nn as nn
 
 from MolecularDiffusion.modules.models.equifm.cnflows import Cnflows
@@ -207,6 +208,8 @@ class EquiFMTask(nn.Module):
         """
         if self.device.type == "cpu" and torch.cuda.is_available():
             self.to("cuda")
+        elif self.device.type == "cpu" and get_device().type == "mps":
+            self.to(torch.device("mps"))
 
     def _sync_dynamics_device(self) -> None:
         """``EGNN_dynamics_QM9`` caches its edge index on ``self.device``, an

@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import Dict, List
 
 import torch
+from MolecularDiffusion.device import get_device
 import torch.nn.functional as F
 from ase.data import chemical_symbols
 from rdkit import Chem
@@ -2030,7 +2031,7 @@ class GuidanceModelPrediction(Task, core.Configurable):
                     )
 
             self.train_set_size = len(train_set)
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            device = get_device()
             self.weight_classes = self.weight_classes.to(device)
         else:
             self.train_set_size = 0

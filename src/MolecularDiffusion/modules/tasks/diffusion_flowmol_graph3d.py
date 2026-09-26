@@ -40,6 +40,7 @@ from typing import Any
 
 import dgl
 import torch
+from MolecularDiffusion.device import get_device
 import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
@@ -835,6 +836,8 @@ class FlowMolGraph3DTask(nn.Module):
                 torch.cuda.current_device(),
             )
             self.to(torch.device("cuda"))
+        elif self.device.type == "cpu" and get_device().type == "mps":
+            self.to(torch.device("mps"))
 
     def _build_graphs(self, sizes: torch.Tensor) -> dgl.DGLGraph:
         graphs = []

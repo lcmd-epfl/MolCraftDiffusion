@@ -32,6 +32,8 @@ def _kabsch(z: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     zero-CoM subspace throughout, so no re-centring here).
     """
     cov = z.transpose(0, 1) @ y  # (3, 3)
+    if cov.device.type == "mps":  # MPS has no float64: do the 3x3 SVD on CPU
+        cov = cov.cpu()
     u, _, vt = torch.linalg.svd(cov.double())
     d = torch.sign(torch.linalg.det(vt.transpose(0, 1) @ u.transpose(0, 1)))
     correction = torch.diag(
@@ -39,7 +41,7 @@ def _kabsch(z: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     ).clone()
     correction[2, 2] = d
     rot = vt.transpose(0, 1) @ correction @ u.transpose(0, 1)
-    return rot.to(z.dtype)
+    return rot.to(dtype=z.dtype, device=z.device)
 
 
 @torch.no_grad()

@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, Tuple
 
 import numpy as np
 import torch
+from MolecularDiffusion.device import get_device
 import torch.nn as nn
 
 logger = logging.getLogger(__name__)
@@ -258,7 +259,7 @@ class PharmacophoreEnVariationalDiff(nn.Module):
         super().__init__()
 
         if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            device = get_device()
 
         if model_params is None:
             raise ValueError(

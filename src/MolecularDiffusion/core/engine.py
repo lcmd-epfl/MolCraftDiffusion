@@ -15,6 +15,7 @@ from torch.utils import data as torch_data
 from MolecularDiffusion import utils, core, data
 from MolecularDiffusion.utils import comm, pretty, recursive_module_to_device
 from MolecularDiffusion.callbacks import EMA, Queue, gradient_clipping
+from MolecularDiffusion.device import get_device, to_device
 
 module = sys.modules[__name__]
 logger = logging.getLogger(__name__)
@@ -127,8 +128,13 @@ class Engine(core.Configurable):
             )
 
         if self.gpus is None:
-            module.logger.info("Using CPU")
-            self.device = torch.device("cpu")
+            if self.world_size == 1 and get_device().type == "mps":
+                module.logger.info("Using Apple MPS")
+                self.device = torch.device("mps")
+                self.pin_memory = False  # pinned memory is a CUDA feature
+            else:
+                module.logger.info("Using CPU")
+                self.device = torch.device("cpu")
         else:
             assert gpus_per_node == torch.cuda.device_count()
             if len(self.gpus) != self.world_size:
@@ -176,6 +182,8 @@ class Engine(core.Configurable):
             task._ddp_params_and_buffers_to_ignore = set(buffers_to_ignore)
         if self.device.type == "cuda" and task is not None:
             task = task.cuda(self.device)
+        elif self.device.type == "mps" and task is not None:
+            task = task.to(self.device)
 
         if not(hasattr(task, 'device')) and task is not None:
             recursive_module_to_device(task, self.device)
@@ -321,6 +329,8 @@ class Engine(core.Configurable):
                     continue
                 if self.device.type == "cuda":
                     batch = utils.cuda(batch, device=self.device)
+                elif self.device.type == "mps":
+                    batch = to_device(batch, self.device)
 
                 # --- 1. Forward Pass ---
                 with autocast(enabled=use_amp, dtype=amp_dtype, device_type=self.device.type):
@@ -349,7 +359,7 @@ class Engine(core.Configurable):
                     loss = loss / accumulation_steps
 
                 # --- 2. Backward Pass (Accumulate) ---
-                if use_amp:
+                if scaler is not None:
                     scaler.scale(loss).backward()
                 else:
                     loss.backward()
@@ -363,7 +373,7 @@ class Engine(core.Configurable):
                 if is_update_step:
 
                     # A. Explicit Unscale
-                    if use_amp:
+                    if scaler is not None:
                         scaler.unscale_(self.optimizer)
 
                     # B. Log & Check Gradients
@@ -393,7 +403,7 @@ class Engine(core.Configurable):
                             grad_norms = self.clipper(model, self.clip_value)
 
                         # D. Step
-                        if use_amp:
+                        if scaler is not None:
                             scaler.step(self.optimizer)
                             scaler.update()
                         else:
@@ -523,6 +533,8 @@ class Engine(core.Configurable):
                 continue
             if self.device.type == "cuda":
                 batch = utils.cuda(batch, device=self.device)
+            elif self.device.type == "mps":
+                batch = to_device(batch, self.device)
 
             try:
                 # AMP: Autocast context for mixed precision during evaluation

@@ -55,6 +55,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from MolecularDiffusion.device import get_device
 from torch import nn
 from torch_geometric.utils import to_dense_batch
 
@@ -658,7 +659,7 @@ class NextMolGenerator:
         self.seed = seed
         self.output_path = output_path
         self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
+            device or (str(get_device()))
         )
 
     # -- step 1: get SMILES -------------------------------------------------

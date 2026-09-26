@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import hydra
 import torch
+from MolecularDiffusion.device import get_device
 from omegaconf import DictConfig, OmegaConf
 
 from MolecularDiffusion.core import Engine
@@ -776,7 +777,7 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             f"token so decoding uses the one-hot path instead of the raw atomic-number channel."
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     if not hasattr(task, 'device'):
         recursive_module_to_device(task, device)
     else:

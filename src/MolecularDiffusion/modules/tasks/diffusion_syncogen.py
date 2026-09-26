@@ -47,6 +47,7 @@ import os
 from typing import Any, Sequence
 
 import torch
+from MolecularDiffusion.device import get_device
 from torch import nn
 
 from MolecularDiffusion.modules.models.syncogen.vocab import ensure_vocabulary
@@ -533,6 +534,8 @@ class SyncogenDiffusionTask(nn.Module):
         """
         if self.device.type == "cpu" and torch.cuda.is_available():
             self.to("cuda")
+        elif self.device.type == "cpu" and get_device().type == "mps":
+            self.to(torch.device("mps"))
 
     @property
     def node_dist_model(self) -> SyncogenSizePrior:

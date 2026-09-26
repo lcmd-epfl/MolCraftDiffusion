@@ -18,6 +18,7 @@ from typing import List
 from tqdm import tqdm
 import pandas as pd
 import torch
+from MolecularDiffusion.device import get_device
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import radius_graph
 from MolecularDiffusion.data.component.pointcloud import PointCloud_Mol
@@ -1371,7 +1372,7 @@ class GenerativeFactory:
         bs, n_nodes, _ = xh.shape
         
         mol = {}
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = get_device()
         mol = {}
         coords = xh[:, :, :DIM].view(n_nodes*bs, DIM).to(device)
         h = xh[:, :, DIM:-1].view(n_nodes*bs, -1).to(device)

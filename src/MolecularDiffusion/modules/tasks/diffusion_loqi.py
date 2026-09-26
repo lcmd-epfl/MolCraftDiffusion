@@ -57,6 +57,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from MolecularDiffusion.device import get_device
 import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Batch, Data
@@ -527,6 +528,8 @@ class LoQIConformerTask(nn.Module):
         if self.device.type == "cpu" and torch.cuda.is_available():
             logger.info("sample(): parameters were on CPU; moving to cuda")
             self.to(torch.device("cuda"))
+        elif self.device.type == "cpu" and get_device().type == "mps":
+            self.to(torch.device("mps"))
 
     def conditioning_pool(self) -> list:
         if not self._pool:

@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
+from MolecularDiffusion.device import get_device
 from tqdm import tqdm
 
 try:
@@ -1168,7 +1169,7 @@ def optimize_shape_alignment(pts_gen: np.ndarray, pts_ref: np.ndarray, alpha=ALP
     # Initial guess: PCA alignment
     p_gen_init = pca_align(pts_gen - pts_gen.mean(axis=0), pts_ref - pts_ref.mean(axis=0))
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     t_ref = torch.tensor(pts_ref - pts_ref.mean(axis=0), dtype=torch.float32, device=device)
     t_gen = torch.tensor(p_gen_init, dtype=torch.float32, device=device)
 

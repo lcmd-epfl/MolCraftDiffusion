@@ -168,6 +168,18 @@ cpu = [
     "torch_cluster",
     "torch_spline_conv",
 ]
+# macOS / Apple Silicon (MPS GPU) install -- see docs/installation.md:
+#   pip install -e '.[mac]' && pip install ./mac_shims
+# Plain PyPI torch on macOS arm64 ships MPS. The PyG C++ extensions are left
+# out: they have no MPS kernels, and ./mac_shims provides pure-torch
+# `torch_scatter` / `torch_cluster` instead. torch_geometric is capped below
+# 2.8 because 2.8 ignores torch_cluster and needs pyg-lib>=0.6 for
+# radius_graph/knn_graph, which has no torch-2.6 build. Linux/WSL: use [gpu]/[cpu].
+mac = [
+    "torch==2.6.0",
+    "torch_geometric<2.8",
+    "morfeus-ml",
+]
 # `huggingface_hub` is here and NOT in the runtime dependencies on purpose.
 # Users only ever DOWNLOAD zoo assets, which `MolecularDiffusion/assets.py`
 # does over plain HTTPS through `utils/file.py::download` -- stdlib urllib,

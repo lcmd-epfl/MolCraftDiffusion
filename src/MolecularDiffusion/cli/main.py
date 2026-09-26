@@ -37,6 +37,8 @@ def log_system_info():
         logger.info(f"PyTorch: {torch.__version__}")
         if torch.cuda.is_available():
             logger.info(f"CUDA: {torch.version.cuda}, GPUs: {torch.cuda.device_count()}")
+        elif torch.backends.mps.is_available():
+            logger.info("Apple MPS: available")
     except ImportError:
         pass
     

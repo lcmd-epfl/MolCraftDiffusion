@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+from MolecularDiffusion.device import get_device
 import torch.nn as nn
 
 from MolecularDiffusion.data.component.diffdec_data import (
@@ -546,7 +547,7 @@ class DiffDecScaffoldGenerator:
         self.output_path = output_path
         self.save_reference = save_reference
         self.seed = seed
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or (str(get_device()))
 
     # ------------------------------------------------------------------ util
     @staticmethod

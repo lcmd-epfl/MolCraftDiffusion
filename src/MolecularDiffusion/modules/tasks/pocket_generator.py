@@ -58,6 +58,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+from MolecularDiffusion.device import get_device
 from tqdm import tqdm
 
 INT_TYPE = torch.int64
@@ -188,7 +189,7 @@ class PocketGenerator:
         self.output_path = output_path
         self.seed = seed
         self.device = device or (
-            "cuda" if torch.cuda.is_available() else "cpu"
+            str(get_device())
         )
 
     # --- hooks -----------------------------------------------------------

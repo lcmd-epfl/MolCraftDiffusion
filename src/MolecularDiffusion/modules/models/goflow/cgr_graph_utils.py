@@ -23,7 +23,13 @@ import torch
 from rdkit.Chem.rdchem import BondType
 from torch_geometric.nn import radius, radius_graph
 from torch_geometric.utils import dense_to_sparse, to_dense_adj
-from torch_sparse import coalesce
+try:
+    from torch_sparse import coalesce
+except ImportError:  # macOS/MPS route ships no torch_sparse; same result via PyG.
+    from torch_geometric.utils import coalesce as _pyg_coalesce
+
+    def coalesce(index, value, m, n, op="add"):
+        return _pyg_coalesce(index, value, max(m, n), reduce="sum" if op == "add" else op)
 
 BOND_TYPES = {t: i for i, t in enumerate(BondType.names.values())}
 

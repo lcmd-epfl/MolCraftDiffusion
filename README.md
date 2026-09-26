@@ -70,6 +70,8 @@ pip install molcraftdiffusion[cpu] \
     --find-links https://data.pyg.org/whl/torch-2.6.0+cpu.html
 ```
 
+**macOS (Apple Silicon, MPS GPU):** from a clone, `pip install -e '.[mac]' && pip install ./mac_shims`. See the [macOS section of the installation guide](https://preghosh.github.io/MolCraftDiffusion/installation.html#macos-apple-silicon).
+
 See the [installation guide](https://preghosh.github.io/MolCraftDiffusion/installation.html) for optional capabilities, platform-specific dependencies, and development setup.
 
 ## Usage

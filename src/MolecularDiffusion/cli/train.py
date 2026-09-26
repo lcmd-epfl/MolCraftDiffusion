@@ -8,6 +8,7 @@ import inspect
 import math
 import os
 import pickle
+import sys
 import logging
 import time
 
@@ -360,10 +361,20 @@ def lightning_wrapper(task_module, data_module, trainer_module, logger_module, e
         if result is not None:
             data_module.train_set, data_module.valid_set, data_module.test_set = result
     
+    num_workers = int(OmegaConf.select(engine_cfg, "num_workers", default=0) or 0)
+    if sys.platform == "darwin" and num_workers > 0:
+        # macOS starts DataLoader workers with `spawn`, which must pickle the
+        # collate fn; closure-based collates (pointcloud_collate) cannot be.
+        try:
+            pickle.dumps(data_module.collate_fn)
+        except Exception:
+            log.warning("macOS: collate function cannot be sent to DataLoader workers; using num_workers=0")
+            num_workers = 0
+
     pl_data_module = MolecularDiffusionDataModule(
         data_module=data_module,
         batch_size=data_module.batch_size,
-        num_workers=int(OmegaConf.select(engine_cfg, "num_workers", default=0) or 0),
+        num_workers=num_workers,
         pin_memory=bool(OmegaConf.select(engine_cfg, "pin_memory", default=True)),
         persistent_workers=bool(OmegaConf.select(engine_cfg, "persistent_workers", default=False)),
         prefetch_factor=int(OmegaConf.select(engine_cfg, "prefetch_factor", default=1) or 1),

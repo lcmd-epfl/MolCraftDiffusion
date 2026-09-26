@@ -32,7 +32,13 @@ from torch import Tensor, nn
 from torch_geometric.nn import radius_graph
 from torch_geometric.utils import dense_to_sparse, remove_self_loops, to_dense_adj
 from torch_scatter import scatter_add
-from torch_sparse import coalesce
+try:
+    from torch_sparse import coalesce
+except ImportError:  # macOS/MPS route ships no torch_sparse; same result via PyG.
+    from torch_geometric.utils import coalesce as _pyg_coalesce
+
+    def coalesce(index, value, m, n, op="add"):
+        return _pyg_coalesce(index, value, max(m, n), reduce="sum" if op == "add" else op)
 
 #: ``len(rdkit.Chem.rdchem.BondType.names)`` -- see module docstring.
 NUM_BOND_TYPES = 22
