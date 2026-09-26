@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+# macOS / Apple-MPS ONLY. Pure-torch stand-ins for the PyG C++ extensions
+# `torch_scatter` and `torch_cluster`, which ship no MPS kernels. Never install
+# this next to the real extensions (Linux/WSL keep using those): it provides
+# the same top-level module names and would shadow them.
+[project]
+name = "molcraft-mac-shims"
+version = "0.1.0"
+description = "Pure-torch torch_scatter / torch_cluster stand-ins for MolCraftDiffusion on Apple MPS"
+requires-python = ">=3.10,<3.14"
+license = {text = "MIT"}
+dependencies = ["torch"]
+
+[tool.setuptools]
+packages = ["torch_scatter", "torch_scatter.composite", "torch_cluster"]
