@@ -829,7 +829,9 @@ def compute_drug_likeness(mol) -> dict:
     if mol is None:
         return {}
     return {
-        "SA_score": calculateScore(mol),
+        # SA is defined on the heavy-atom graph (explicit H atoms would
+        # inflate it by ~5 points), same as the db `sascore` annotation.
+        "SA_score": calculateScore(Chem.RemoveHs(mol)),
         "QED": QED.qed(mol),
         "LogP": Descriptors.MolLogP(mol),
         "fsp3": rdMolDescriptors.CalcFractionCSP3(mol),

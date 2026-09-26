@@ -23,6 +23,29 @@ from __future__ import annotations
 RING_SIZES = range(3, 10)
 
 
+def _scscore(mol):
+    """SCScore of an already-perceived molecule; NaN when the model is absent.
+
+    Reuses the mol built for the other columns instead of re-perceiving the
+    xyz. The model lives in ``assets/scscore`` (``get_scscore_model`` warns
+    once when it is missing). Unlike SA_score, explicit H atoms are kept
+    (matches the established procedure in
+    ``compute_scscore_from_pdb.py``/``synthesis_and_novelty_metrics_procedure.md``:
+    ``MolFromPDBFile(..., removeHs=False)`` -- stripping Hs here would silently
+    diverge from previously published SCScore numbers for this project).
+    """
+    from rdkit import Chem  # noqa: PLC0415
+
+    from MolecularDiffusion.runmodes.data.preparation import (  # noqa: PLC0415
+        get_scscore_model,
+    )
+
+    model = get_scscore_model()
+    if model is None:
+        return float("nan")
+    return float(model.get_score_from_smi(Chem.MolToSmiles(mol))[1])
+
+
 def _lipinski(mol):
     """Number of Lipinski rules obeyed, 0-5."""
     from rdkit.Chem import Crippen, Descriptors, Lipinski, rdMolDescriptors  # noqa: PLC0415
@@ -114,6 +137,7 @@ def compute(mol, with_rdkit_rmsd=False, n_conf=20):
     from MolecularDiffusion.utils.geom_metrics import compute_drug_likeness  # noqa: PLC0415
 
     row = dict(compute_drug_likeness(mol))  # QED, SA_score, LogP, fsp3, MW, HBD, HBA
+    row["SCScore"] = _scscore(mol)
     row["lipinski"] = _lipinski(mol)
     row["pains_pass"] = _pains_pass(mol)
     row["ring_filter_pass"] = _ring_filter_pass(mol)

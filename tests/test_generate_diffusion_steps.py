@@ -17,7 +17,7 @@ class _Captured(Exception):
 
 
 def _fake_load_model(chkpt_directory, task_config=None, atom_vocab=None,
-                     total_step=0, base_chkpt_path=None):
+                     total_step=0, base_chkpt_path=None, use_ema=False):
     raise _Captured(total_step)
 
 

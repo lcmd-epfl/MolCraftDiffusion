@@ -113,6 +113,60 @@ def _task_config_defines_atom_vocab(task_config):
     return vocab is not None and vocab != "???"
 
 
+def _extract_ema_state_dict(ckpt):
+    """EMA weights of a checkpoint as {bare module name: tensor}, or None if it has none.
+
+    Looks for the new-format top-level `ema_model_state_dict` first, then old-format
+    `ema_model.*` keys embedded inside `state_dict`.
+    """
+    # New-format top-level EMA dict (keys already unprefixed).
+    ema = ckpt.get("ema_model_state_dict") or ckpt.get("ema_model")
+    if ema:
+        return {k[len("task."):] if k.startswith("task.") else k: v for k, v in ema.items()}
+
+    # Old-format EMA embedded as `...ema_model.<name>` keys inside state_dict.
+    sd = ckpt.get("state_dict") or ckpt.get("model")
+    if sd:
+        marker = "ema_model."
+        ema_keys = [k for k in sd if marker in k]
+        if ema_keys:
+            return {k[k.index(marker) + len(marker):]: sd[k] for k in ema_keys}
+    return None
+
+
+def _apply_ema_weights(task, ckpt, use_ema):
+    """Overwrite `task`'s weights with the checkpoint's EMA weights when `use_ema`.
+
+    Loading a Lightning checkpoint restores only the raw `task.*` weights and sets the
+    EMA copy aside, so generation silently runs on the raw weights. Opt-in rather than
+    default: some checkpoints hold a stale EMA that generates worse than the raw weights.
+    """
+    ema = _extract_ema_state_dict(ckpt)
+    if not ema:
+        if use_ema:
+            log.warning("use_ema=True but the checkpoint has no EMA weights; using the raw weights.")
+        return
+    if not use_ema:
+        log.info(
+            "Checkpoint also holds EMA weights; generating from the raw weights. "
+            "Set use_ema=true to generate from the EMA weights instead."
+        )
+        return
+    target = task.state_dict()
+    usable = {k: v for k, v in ema.items() if k in target and v.shape == target[k].shape}
+    task.load_state_dict(usable, strict=False)
+    log.info(
+        f"Using EMA weights: {len(usable)} of the model's {len(target)} tensors loaded "
+        f"from the checkpoint's EMA copy ({len(ema) - len(usable)} EMA tensors skipped as "
+        "missing or shape-mismatched)."
+    )
+    if len(usable) < len(target):
+        log.warning(
+            f"{len(target) - len(usable)} tensors kept their raw weights, so the model "
+            "mixes raw and EMA weights."
+        )
+
+
 def _extract_clean_state_dict(ckpt, prefer_ema=True):
     """Return a {name: tensor} dict from a checkpoint, normalized to bare module names.
 
@@ -121,22 +175,14 @@ def _extract_clean_state_dict(ckpt, prefer_ema=True):
     leading `task.` and any `ema_model.` prefix; the raw fallback drops embedded EMA keys so
     they don't collide with the real weights.
     """
-    # New-format top-level EMA dict (keys already unprefixed).
     if prefer_ema:
-        ema = ckpt.get("ema_model_state_dict") or ckpt.get("ema_model")
+        ema = _extract_ema_state_dict(ckpt)
         if ema:
-            return {k[len("task."):] if k.startswith("task.") else k: v for k, v in ema.items()}
+            return ema
 
     sd = ckpt.get("state_dict") or ckpt.get("model")
     if sd is None:
         raise KeyError("Checkpoint has no loadable state dict (state_dict/ema_model_state_dict).")
-
-    # Old-format EMA embedded as `...ema_model.<name>` keys inside state_dict.
-    if prefer_ema:
-        marker = "ema_model."
-        ema_keys = [k for k in sd if marker in k]
-        if ema_keys:
-            return {k[k.index(marker) + len(marker):]: sd[k] for k in ema_keys}
 
     # Raw weights — drop any embedded EMA keys so they don't shadow the real ones.
     cleaned = {}
@@ -219,8 +265,11 @@ def _caller_overrides(ckpt_config, caller_config, base_keys=()):
     return overrides
 
 
-def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0):
-    """Load model from Lightning checkpoint (.ckpt)."""
+def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0, use_ema=False):
+    """Load model from Lightning checkpoint (.ckpt).
+
+    `use_ema=True` generates from the checkpoint's EMA weights instead of the raw ones.
+    """
     log.info(f"Loading Lightning checkpoint from: {chkpt_path}")
 
     expected_task_type = task_config.get("task_type") if task_config is not None else None
@@ -248,7 +297,8 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
 
         wrapper = EngineLightning.load_from_checkpoint(chkpt_path, map_location="cpu", strict=False, weights_only=False, **load_kwargs)
         log.info("Successfully loaded model using EngineLightning.load_from_checkpoint")
-        
+        _apply_ema_weights(wrapper.task, raw_ckpt, use_ema)
+
         if atom_vocab and hasattr(wrapper.task, 'atom_vocab') and wrapper.task.atom_vocab is None:
             wrapper.task.atom_vocab = atom_vocab
         
@@ -405,6 +455,7 @@ def load_lightning_model(chkpt_path, task_config, atom_vocab=None, total_step=0)
             "and generation will run on partly random weights. "
             f"First missing: {missing[:5]} | first unexpected: {unexpected[:5]}"
         )
+    _apply_ema_weights(task, checkpoint, use_ema)
     _stamp_condition_names(task, checkpoint)
 
     if 'data_stats' in checkpoint:
@@ -469,7 +520,7 @@ def _preimport_task_target(task_config) -> None:
             pass
 
 
-def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0, base_chkpt_path=None):
+def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0, base_chkpt_path=None, use_ema=False):
     """Load model from checkpoint directory with auto-detection.
 
     If the selected checkpoint is a LoRA-only delta (marked `lora_only`), `base_chkpt_path`
@@ -526,7 +577,7 @@ def load_model(chkpt_directory, task_config=None, atom_vocab=None, total_step=0,
             _apply_total_step_override(task, total_step)
             task.eval()
         else:
-            task = load_lightning_model(best_checkpoint, task_config, atom_vocab, total_step)
+            task = load_lightning_model(best_checkpoint, task_config, atom_vocab, total_step, use_ema=use_ema)
 
         try:
             with open(os.path.join(sidecar_dir, "edm_stat.pkl"), "rb") as file:
@@ -698,8 +749,9 @@ def generate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         atom_vocab=cfg.atom_vocab,
         total_step=diffusion_steps,
         base_chkpt_path=cfg.get("base_chkpt_path"),
+        use_ema=bool(cfg.get("use_ema", False)),
     )
-    
+
     if not hasattr(task, 'atom_vocab') or task.atom_vocab is None:
         task.atom_vocab = cfg.atom_vocab
 

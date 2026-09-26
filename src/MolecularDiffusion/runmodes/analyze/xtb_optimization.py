@@ -14,8 +14,8 @@ from MolecularDiffusion.utils import create_pyg_graph, correct_edges
 from MolecularDiffusion.utils.geom_utils import read_xyz_file
 from MolecularDiffusion.utils.geom_metrics import is_fully_connected
 
-def check_neutrality(filename: str, 
-                     charge: int = -1, 
+def check_neutrality(filename: str,
+                     charge: int = 0,
                      timeout: int=180) -> bool:
     """
     Checks if a molecule described in an XYZ file is neutral using xTB.
@@ -31,7 +31,10 @@ def check_neutrality(filename: str,
 
     Args:
         filename (str): The path to the XYZ file of the molecule to check.
-        charge (int): The molecular charge to use for the xTB calculation. Defaults to -1.
+        charge (int): The molecular charge to use for the xTB calculation. Defaults to 0
+            (the call site never overrides this, so this default IS the neutrality test:
+            asking xTB to accept the molecule as charge-0 and checking it doesn't
+            complain about an electron-count/spin-multiplicity mismatch).
         timeout (int): The maximum time in seconds to wait for the xTB process to complete.
 
     Returns:

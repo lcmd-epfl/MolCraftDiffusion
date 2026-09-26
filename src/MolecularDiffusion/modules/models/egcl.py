@@ -450,21 +450,29 @@ class EGNN_dynamics(nn.Module, core.Configurable):
             h_final = h_final[:, :-1]
 
         vel = vel.view(bs, n_nodes, -1)
+        h_final = h_final.view(bs, n_nodes, -1)
 
-        if torch.any(torch.isnan(vel)):
-            warnings.warn("detected nan, resetting EGNN output to zero.", RuntimeWarning, stacklevel=2)
-            vel = torch.zeros_like(vel)
-            h_final = torch.zeros_like(h_final)
+        # Reset per molecule: a batch-wide reset lets one diverging molecule zero
+        # the prediction of every other molecule in the batch.
+        nan_mol = torch.isnan(vel).flatten(1).any(dim=1)
+        if nan_mol.any():
+            warnings.warn(
+                f"detected nan in {int(nan_mol.sum())}/{bs} molecule(s), "
+                "resetting their EGNN output to zero.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            nan_mol = nan_mol.view(bs, 1, 1)
+            vel = torch.where(nan_mol, torch.zeros_like(vel), vel)
+            h_final = torch.where(nan_mol, torch.zeros_like(h_final), h_final)
+
+        if node_mask is None:
+            vel = remove_mean(vel)
         else:
-            if node_mask is None:
-                vel = remove_mean(vel)
-            else:
-                vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
+            vel = remove_mean_with_mask(vel, node_mask.view(bs, n_nodes, 1))
 
         if h_dims == 0:
             return vel
-        else:
-            h_final = h_final.view(bs, n_nodes, -1)
         return torch.cat([vel, h_final], dim=2)
     
     

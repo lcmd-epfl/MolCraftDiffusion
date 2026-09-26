@@ -98,6 +98,52 @@ def test_extract_clean_state_dict_raw_path_drops_embedded_ema_keys():
     assert torch.equal(state["weight"], torch.tensor([1.0]))
 
 
+def _linear_with_weight(value):
+    model = torch.nn.Linear(1, 1, bias=False)
+    model.weight.data.fill_(value)
+    return model
+
+
+def test_apply_ema_weights_is_opt_in_and_overwrites_raw_weights():
+    from MolecularDiffusion.cli.generate import _apply_ema_weights
+
+    ckpt = {
+        "state_dict": {
+            "task.weight": torch.tensor([[1.0]]),
+            "ema_model.weight": torch.tensor([[3.0]]),
+        }
+    }
+    model = _linear_with_weight(1.0)
+
+    _apply_ema_weights(model, ckpt, use_ema=False)
+    assert model.weight.item() == 1.0
+
+    _apply_ema_weights(model, ckpt, use_ema=True)
+    assert model.weight.item() == 3.0
+
+
+def test_apply_ema_weights_skips_shape_mismatched_tensors():
+    from MolecularDiffusion.cli.generate import _apply_ema_weights
+
+    ckpt = {"state_dict": {"ema_model.weight": torch.zeros(2, 2)}}
+    model = _linear_with_weight(1.0)
+
+    _apply_ema_weights(model, ckpt, use_ema=True)
+
+    assert model.weight.item() == 1.0
+
+
+def test_apply_ema_weights_without_ema_in_checkpoint_keeps_raw_weights():
+    from MolecularDiffusion.cli.generate import _apply_ema_weights
+
+    ckpt = {"state_dict": {"task.weight": torch.tensor([[1.0]])}}
+    model = _linear_with_weight(1.0)
+
+    _apply_ema_weights(model, ckpt, use_ema=True)
+
+    assert model.weight.item() == 1.0
+
+
 def test_total_step_override_updates_supported_task_shapes(namespace_factory):
     from MolecularDiffusion.cli.generate import _apply_total_step_override
 

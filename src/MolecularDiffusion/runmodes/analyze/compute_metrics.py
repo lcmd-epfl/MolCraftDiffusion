@@ -1011,10 +1011,40 @@ def runner(args):
         logging.info("Skipping similarity3d metrics: no --reference-mol given")
 
     if want_druglike or want_similarity:
+        import multiprocessing as mp  # noqa: PLC0415
+
         from rdkit import Chem  # noqa: PLC0415
 
         from MolecularDiffusion.runmodes.analyze import druglike as druglike_mod  # noqa: PLC0415
         from MolecularDiffusion.runmodes.analyze import similarity3d as sim_mod  # noqa: PLC0415
+
+        item_timeout = getattr(args, "timeout", 10)
+
+        def _perceive_and_druglike(xyz, with_rmsd, n_conf):
+            """Perception + scoring for one molecule; run in a subprocess (see
+            below) so a molecule that hangs RDKit can be killed without
+            losing the rest of the run."""
+            mol = xyz_to_rdkit_mol(xyz)
+            if mol is None:
+                return None, False, None
+            return (Chem.MolToSmiles(mol), True,
+                    druglike_mod.compute(mol, with_rdkit_rmsd=with_rmsd, n_conf=n_conf))
+
+        def _run_with_timeout(func, args_, timeout):
+            """func(*args_) in a forked subprocess; None (and the subprocess
+            killed) if it doesn't finish within timeout. A hard kill is
+            needed here -- a hang inside RDKit's C++ code doesn't respond to
+            signal.alarm in the same process."""
+            ctx = mp.get_context("fork")
+            q = ctx.Queue()
+            p = ctx.Process(target=lambda: q.put(func(*args_)))
+            p.start()
+            p.join(timeout)
+            if p.is_alive():
+                p.terminate()
+                p.join()
+                return None
+            return q.get() if not q.empty() else None
 
         # if the standard list excluded everything (e.g. only *_opt.xyz), fall back
         _xyzs = xyzs if xyzs else glob.glob(f"{xyz_dir}/*.xyz")
@@ -1050,6 +1080,28 @@ def runner(args):
         )
         for xyz in tqdm(_xyzs, desc=desc):
             name = os.path.basename(xyz)
+
+            if want_druglike and not want_similarity:
+                # common case: isolate each molecule with a hard timeout
+                # (druglike scoring has hung on a handful-in-thousands
+                # pathological structures; skip that one, keep the run going)
+                result = _run_with_timeout(
+                    _perceive_and_druglike, (xyz, with_rmsd, n_conf), item_timeout,
+                )
+                if result is None:
+                    logging.warning(
+                        f"{name}: druglike computation exceeded {item_timeout}s, "
+                        "skipping (treated as invalid)"
+                    )
+                    smiles, mol_ok, dl_row = None, False, None
+                else:
+                    smiles, mol_ok, dl_row = result
+                row = {"file": name, "valid_rdkit": mol_ok, "smiles": smiles}
+                if dl_row:
+                    row.update(dl_row)
+                druglike_rows.append(row)
+                continue
+
             mol = xyz_to_rdkit_mol(xyz)
             smiles = Chem.MolToSmiles(mol) if mol else None
 
@@ -1113,7 +1165,7 @@ def runner(args):
                     ratio = float(df_druglike[col].mean())
                     summary[col] = ratio
                     logging.info(f"Ring size {size} ratio: {ratio:.3f}")
-            for col in ("rdkit_rmsd_min", "rdkit_rmsd_median", "rdkit_rmsd_max"):
+            for col in ("SCScore", "rdkit_rmsd_min", "rdkit_rmsd_median", "rdkit_rmsd_max"):
                 if col in df_druglike.columns and df_druglike[col].notna().any():
                     value = float(df_druglike[col].mean())
                     summary[f"{col}_mean"] = value
